@@ -244,6 +244,16 @@ pub enum FeatureLookup<'a> {
         /// How many values this series has discarded.
         evicted: u64,
     },
+    /// The subject's source was marked unreliable over the instant asked for
+    /// (R12-RES-7102): a gap or corrupt book contaminated everything derived
+    /// from it from `since` until integrity was restored. The store holds the
+    /// values for audit and answers none of them; an older value is not
+    /// offered in their place, because serving the last clean value across an
+    /// unreliable span is how a feature reaches back over the hole.
+    Quarantined {
+        /// When the unreliable span began.
+        since: Timestamp,
+    },
 }
 
 impl<'a> FeatureLookup<'a> {
@@ -251,7 +261,7 @@ impl<'a> FeatureLookup<'a> {
     pub fn value(self) -> Option<&'a FeatureValue> {
         match self {
             Self::Value(value) => Some(value),
-            Self::NoValue | Self::Truncated { .. } => None,
+            Self::NoValue | Self::Truncated { .. } | Self::Quarantined { .. } => None,
         }
     }
 
@@ -463,6 +473,11 @@ pub struct FeatureStore {
     /// this platform is minting keys it should not, or a source is — and
     /// either way the store is the only place that saw it happen.
     refused: u64,
+    /// Unreliable spans per subject, oldest first: `[since, ended)`, open
+    /// while `ended` is `None`. Values stamped inside a span are contaminated
+    /// for good — lifting the quarantine stops the next value being hidden,
+    /// it does not rehabilitate the ones that fell in the hole.
+    quarantines: BTreeMap<String, Vec<(Timestamp, Option<Timestamp>)>>,
 }
 
 impl Default for FeatureStore {
@@ -473,6 +488,7 @@ impl Default for FeatureStore {
             history_limit: FEATURE_HISTORY,
             series_limit: FEATURE_SERIES_LIMIT,
             refused: 0,
+            quarantines: BTreeMap::new(),
         }
     }
 }
@@ -522,7 +538,64 @@ impl FeatureStore {
             history_limit,
             series_limit,
             refused: 0,
+            quarantines: BTreeMap::new(),
         })
+    }
+
+    /// Mark `subject`'s source unreliable from `since` (R12-RES-7102): a
+    /// sequence gap or corrupt book contaminated what is derived from it.
+    /// Every value for the subject stamped at or after `since` is withheld
+    /// from reads until [`Self::lift_quarantine`], and stays withheld after.
+    ///
+    /// Idempotent while open: a second call keeps the first instant, because
+    /// the span began then, not when the second report arrived.
+    pub fn quarantine_subject(&mut self, subject: &str, since: Timestamp) {
+        let spans = self.quarantines.entry(subject.to_string()).or_default();
+        if spans.last().is_none_or(|(_, ended)| ended.is_some()) {
+            spans.push((since, None));
+        }
+    }
+
+    /// Close `subject`'s open span at `at`, when its integrity is restored:
+    /// values stamped from `at` on read normally again. Returns when the span
+    /// began, or `None` if the subject was not quarantined. Refuses an `at`
+    /// before the span's start rather than closing an empty or inverted span.
+    pub fn lift_quarantine(&mut self, subject: &str, at: Timestamp) -> Result<Option<Timestamp>> {
+        let Some(span) = self
+            .quarantines
+            .get_mut(subject)
+            .and_then(|spans| spans.last_mut())
+            .filter(|(_, ended)| ended.is_none())
+        else {
+            return Ok(None);
+        };
+        if at < span.0 {
+            return Err(Error::invalid(
+                "a quarantine cannot be lifted before it began; lift it at the instant the \
+                 rebuilt state is valid from, which is not earlier than the first unreliable \
+                 instant",
+            ));
+        }
+        span.1 = Some(at);
+        Ok(Some(span.0))
+    }
+
+    /// When `subject`'s open quarantine began, if it is quarantined now.
+    pub fn quarantined_since(&self, subject: &str) -> Option<Timestamp> {
+        self.quarantines
+            .get(subject)?
+            .last()
+            .filter(|(_, ended)| ended.is_none())
+            .map(|(since, _)| *since)
+    }
+
+    /// The span of `subject`'s quarantine that covers `instant`, if any.
+    fn contaminated(&self, subject: &str, instant: Timestamp) -> Option<Timestamp> {
+        self.quarantines
+            .get(subject)?
+            .iter()
+            .find(|(since, ended)| instant >= *since && ended.is_none_or(|end| instant < end))
+            .map(|(since, _)| *since)
     }
 
     /// Values retained per `(feature, subject)` series.
@@ -793,10 +866,14 @@ impl FeatureStore {
         let Some(series) = self.values.get(&(feature.to_string(), subject.to_string())) else {
             return FeatureLookup::NoValue;
         };
-        let candidate = series
-            .values
-            .iter()
-            .rfind(|v| v.valid_at <= valid_at && v.available_at <= known_at);
+        if let Some(since) = self.contaminated(subject, valid_at) {
+            return FeatureLookup::Quarantined { since };
+        }
+        let candidate = series.values.iter().rfind(|v| {
+            v.valid_at <= valid_at
+                && v.available_at <= known_at
+                && self.contaminated(subject, v.valid_at).is_none()
+        });
 
         let Some(candidate) = candidate else {
             // Nothing retained answers the read. If the read reaches at or
@@ -814,6 +891,17 @@ impl FeatureStore {
                 _ => FeatureLookup::NoValue,
             };
         };
+
+        // A quarantine that began after this value and before the read lies
+        // between them: answering with the value would reach back across the
+        // unreliable span, which the rebuilt state must never do.
+        if self.quarantines.get(subject).is_some_and(|spans| {
+            spans
+                .iter()
+                .any(|(since, _)| *since > candidate.valid_at && *since <= valid_at)
+        }) {
+            return FeatureLookup::NoValue;
+        }
 
         // Beyond its staleness window a feature is not a value, it is a memory.
         if let Some(definition) = self.definitions.get(feature) {
@@ -843,7 +931,10 @@ impl FeatureStore {
                 series
                     .values
                     .iter()
-                    .filter(|v| v.available_at <= known_at)
+                    .filter(|v| {
+                        v.available_at <= known_at
+                            && self.contaminated(subject, v.valid_at).is_none()
+                    })
                     .collect()
             })
             .unwrap_or_default()
