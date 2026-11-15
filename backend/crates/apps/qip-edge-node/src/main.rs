@@ -83,6 +83,7 @@ use qip_edge_node::outbox::{
 };
 use qip_edge_node::pass::PassMeter;
 use qip_edge_node::quote_limits::{QUOTE_LIMITS_VARIABLE, VenueQuoteLimits};
+use qip_edge_node::reflex_host::{REFLEX_HORIZON_VARIABLE, ReflexHost, parse_reflex_horizon};
 use qip_edge_node::reprice::{REPRICE_VARIABLE, Requoter, parse_reprice};
 use qip_edge_node::risk::{CellRiskLimits, RISK_LIMITS_VARIABLE};
 use qip_edge_node::rollback::{ROLLBACK_VARIABLE, RollbackRequest, RollbackWire};
@@ -282,6 +283,9 @@ struct NodeConfig {
     /// consults is a control that reads as one — see
     /// `qip_edge_node::reprice`.
     reprice: Option<RepricePolicy>,
+    /// The microsecond row's horizon in microseconds, when the operator
+    /// declares one (ADR 0633). `None` hosts no issuer.
+    reflex_horizon_us: Option<u64>,
     /// When the simulated venue settles what it fills (ADR 0530). Instant
     /// unless a cycle is stated; a cycle with no feed to run passes is
     /// refused, because no pass would ever fill or settle under it — see
@@ -460,6 +464,8 @@ impl NodeConfig {
             _ => None,
         };
         let reprice = parse_reprice(std::env::var(REPRICE_VARIABLE).ok().as_deref())?;
+        let reflex_horizon_us =
+            parse_reflex_horizon(std::env::var(REFLEX_HORIZON_VARIABLE).ok().as_deref())?;
         let settlement = parse_settlement(std::env::var(SETTLEMENT_VARIABLE).ok().as_deref())?;
         if !settlement.is_instant() && feed.is_none() {
             return Err(Error::invalid(format!(
@@ -485,6 +491,14 @@ impl NodeConfig {
             std::env::var(QUOTE_LIMITS_VARIABLE).ok().as_deref(),
             &venues,
         )?;
+        if reflex_horizon_us.is_some() && feed.is_none() {
+            return Err(Error::invalid(format!(
+                "configuration: {REFLEX_HORIZON_VARIABLE} is set and {FEED_VARIABLE} is not; a \
+                 node that runs no pass places no order for the issuer to forecast, and a \
+                 forecaster nothing feeds reads as a measurement. Set \
+                 {FEED_VARIABLE}={SIMULATED_FEED} or unset {REFLEX_HORIZON_VARIABLE}"
+            )));
+        }
         if reprice.is_some() && feed.is_none() {
             return Err(Error::invalid(format!(
                 "configuration: {REPRICE_VARIABLE} is set and {FEED_VARIABLE} is not; a node \
@@ -543,6 +557,7 @@ impl NodeConfig {
             pricing,
             plan_path,
             reprice,
+            reflex_horizon_us,
             settlement,
             mirror,
             quote_limits,
@@ -1520,6 +1535,9 @@ fn run() -> Result<()> {
     }
     if let Some(feed) = feed {
         decisions = decisions.with_feed(feed, requoter);
+    }
+    if let Some(horizon_us) = config.reflex_horizon_us {
+        decisions = decisions.with_reflex(ReflexHost::new(config.cell_id.clone(), horizon_us)?);
     }
     if let Some(installer) = installer {
         decisions = decisions.with_desk(installer);

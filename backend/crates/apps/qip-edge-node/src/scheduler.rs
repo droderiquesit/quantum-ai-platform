@@ -70,6 +70,7 @@ use crate::health::HealthSnapshot;
 use crate::market_state::market_state_of;
 use crate::mesh::{MAX_INBOUND_CAPACITY, MeshHealth, MeshInbound, MeshWorker, apply_inbound};
 use crate::pass::{DetachedSink, PassLog, PassMeter, PassOutcome, PassStats, run_pass};
+use crate::reflex_host::ReflexHost;
 use crate::reprice::Requoter;
 use crate::rollback::{RollbackOutcome, RollbackWire};
 use crate::share::RegionShareStatus;
@@ -298,6 +299,9 @@ pub struct DecisionLoop {
     /// stalled log reader never holds the decision thread (OBS-9142).
     log_sink: DetachedSink,
     stats: PassStats,
+    /// The microsecond row's issuer, when the operator declared a horizon
+    /// (ADR 0633). Fed from the pass outcome; read by nothing the pass decides.
+    reflex: Option<ReflexHost>,
     last_report: WorkReport,
     last_pressure: Option<JournalPressure>,
     last_polled: Option<PolledHalt>,
@@ -372,6 +376,7 @@ impl DecisionLoop {
             pass_log: PassLog::new(5, qip_core::Duration::from_secs(10))?,
             log_sink: DetachedSink::spawn(std::io::stderr(), LOG_LINES_IN_FLIGHT)?,
             stats: PassStats::default(),
+            reflex: None,
             last_report: WorkReport::default(),
             last_pressure: None,
             last_polled: None,
@@ -389,6 +394,18 @@ impl DecisionLoop {
         self.feed = Some(feed);
         self.requoter = requoter;
         self
+    }
+
+    /// Host the microsecond row's issuer, fed from every pass this loop runs.
+    #[must_use]
+    pub fn with_reflex(mut self, host: ReflexHost) -> Self {
+        self.reflex = Some(host);
+        self
+    }
+
+    /// The issuer's host, for inspection.
+    pub fn reflex(&self) -> Option<&ReflexHost> {
+        self.reflex.as_ref()
     }
 
     #[must_use]
@@ -543,6 +560,19 @@ impl DecisionLoop {
                 None => pass(),
             };
             self.pass_log.write(now, &outcome, &mut self.log_sink);
+            // After the pass and read-only: the issuer never feeds back into
+            // what the cell decides. A refusal from it is the issuer's own
+            // (a bound, a malformed record) and is reported, not allowed to
+            // stop the loop that the wires and the flush depend on.
+            if let (Some(host), Ok(done)) = (self.reflex.as_mut(), &outcome)
+                && let Err(error) = host.observe(done, now)
+                && self.turns % 100 == 1
+            {
+                eprintln!(
+                    "qip-edge-node: the reflex issuer refused an observation: {}",
+                    error.message()
+                );
+            }
             let mut fed = None;
             match outcome {
                 Ok(PassOutcome::Ran { feed, report, .. }) => {

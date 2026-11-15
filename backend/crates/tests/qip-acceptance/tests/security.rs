@@ -2858,7 +2858,16 @@ const RETURN_TYPE_PROBES: [(&str, bool); 6] = [
 /// exclusion is invisible at review time — it is how the three previous
 /// versions of this scan came to guard nothing — whereas a row with a wrong
 /// reason is something a reader can argue with.
-const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 14] = [
+const REVIEWED_WEIGHT_MOVERS: [(&str, &str, &str); 15] = [
+    (
+        "apps/qip-edge-node/src/reflex_host.rs",
+        "observe",
+        "R12-WORLD-3084 (ADR 0633): the node's host calling `ReflexIssuer::issue`, which states a \
+         microsecond *fill-probability forecast* from the cell's own observed outcomes and moves \
+         no capital. Nothing in the cell's pass reads what it issues (ADR 0506 decision 5), and \
+         `reflex_forecast_boundary` refuses any central reader. Listed for the same reason as \
+         `lattice_stage.rs::run`: the `issue` token cannot tell a forecast from an envelope",
+    ),
     (
         "runtime/qip-kernel/src/lattice_stage.rs",
         "run",
