@@ -26990,6 +26990,29 @@ impl Platform {
         probe: &mut dyn SourceProbe,
         now: Timestamp,
     ) -> Result<SourceAssessment> {
+        self.assess_sources_scouted(
+            candidates,
+            probe,
+            now,
+            crate::scout_record::ScoutChecks::ALL,
+        )
+    }
+
+    /// [`Self::assess_sources`] with the scout checks it records chosen by
+    /// the caller (R12-DATA-1102, R12-DATA-1103): every candidate's
+    /// access-rights verdict and novelty reach the log, first passes
+    /// included, and a disabled check is recorded as absent.
+    pub fn assess_sources_scouted(
+        &mut self,
+        candidates: Vec<SourceCandidate>,
+        probe: &mut dyn SourceProbe,
+        now: Timestamp,
+        checks: crate::scout_record::ScoutChecks,
+    ) -> Result<SourceAssessment> {
+        // Read before the finder registers anything: after the pass every
+        // accepted candidate is held, and "first pass" would read false.
+        let held_before: std::collections::BTreeSet<String> =
+            self.data_finder.registry().keys().cloned().collect();
         // Read before anything registers: a target is something no source
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
@@ -27003,6 +27026,7 @@ impl Platform {
         // `source_lifecycle` for why a move the log does not hold must not
         // be reported as a pass.
         self.journal_source_transitions(&decisions, now)?;
+        self.journal_scout_verdicts(&decisions, &held_before, checks, now)?;
         let mut claims_invalidated = Vec::new();
         let mut claims_downweighted = Vec::new();
         // A source policy stopped is a dataset the mesh must stop offering.
