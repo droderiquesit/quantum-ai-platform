@@ -115,6 +115,7 @@ pub mod futures;
 pub mod record;
 pub mod regret;
 pub mod value;
+pub mod worlds;
 
 pub use asof::{DecisionView, Liquidity, TwinMarket};
 pub use capture::{
