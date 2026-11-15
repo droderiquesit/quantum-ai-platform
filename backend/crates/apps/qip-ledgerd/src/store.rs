@@ -258,6 +258,11 @@ pub struct OrderRow {
     pub state: OrderState,
     /// The venue's answer to the withdrawal, when the row was withdrawn.
     pub withdrawn: Option<String>,
+    /// The multi-region cycle this order is a leg of, when its `OrderSent`
+    /// named one (R12-LEDGER-10114, ADR 0652). Absent on rows written before
+    /// the field existed and on orders that are no cycle's leg.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_id: Option<String>,
     /// The journal sequence that opened the row.
     pub opened_at: u64,
     /// The journal sequence that last moved it.
@@ -685,6 +690,12 @@ impl LedgerStore {
             .unwrap_or_default())
     }
 
+    /// What became of each multi-region cycle the register has legs of
+    /// (R12-LEDGER-10114, ADR 0652).
+    pub fn cycles(&self) -> Result<Vec<crate::cycles::CycleReport>> {
+        Ok(crate::cycles::evaluate(&self.orders()?))
+    }
+
     /// Every row of the order register (ADR 0490): each order and hedge a
     /// cell sent, with what has filled against it and whether it was
     /// withdrawn, ordered by cell, session and order id.
@@ -713,7 +724,12 @@ impl LedgerStore {
         let cell = outcome.cell.as_str();
         let session = outcome.session;
         let sequence = outcome.entry.sequence;
-        let opened = |kind, order_id: &str, venue: &str, object: Option<&str>, quantity: &str| {
+        let opened = |kind,
+                      order_id: &str,
+                      venue: &str,
+                      object: Option<&str>,
+                      quantity: &str,
+                      cycle_id: Option<&String>| {
             let quantity = parse_quantity(order_id, "quantity", quantity)?;
             Ok::<_, Error>(OrderRow {
                 cell: cell.to_string(),
@@ -726,6 +742,7 @@ impl LedgerStore {
                 filled: Decimal::ZERO,
                 state: OrderState::Open,
                 withdrawn: None,
+                cycle_id: cycle_id.cloned(),
                 opened_at: sequence,
                 last_moved_at: sequence,
             })
@@ -735,8 +752,16 @@ impl LedgerStore {
                 order_id,
                 venue,
                 quantity,
+                cycle_id,
                 ..
-            } => Some(opened(OrderKind::Intent, order_id, venue, None, quantity)?),
+            } => Some(opened(
+                OrderKind::Intent,
+                order_id,
+                venue,
+                None,
+                quantity,
+                cycle_id.as_ref(),
+            )?),
             Decision::Hedged {
                 order_id,
                 venue,
@@ -749,6 +774,7 @@ impl LedgerStore {
                 venue,
                 Some(object),
                 quantity,
+                None,
             )?),
             _ => None,
         };

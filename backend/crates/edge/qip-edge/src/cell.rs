@@ -7024,6 +7024,7 @@ impl Cell {
             schedule.equalised(),
             grants,
             justification.rendered(),
+            None,
             now,
         );
         self.open_chain(&order_id, net_intent, now);
@@ -7477,6 +7478,7 @@ impl Cell {
         equalised: bool,
         grants: Vec<(String, String)>,
         grounds: Vec<String>,
+        cycle_id: Option<String>,
         now: Timestamp,
     ) {
         let order = &working.order;
@@ -7492,6 +7494,7 @@ impl Cell {
                     equalised,
                     grants,
                     grounds: grounds.clone(),
+                    cycle_id,
                 },
                 now,
             )
@@ -11090,6 +11093,7 @@ impl Cell {
             schedule.equalised(),
             grants,
             justification.rendered(),
+            Some(cycle.cycle_id.clone()),
             now,
         );
         if let Some(desk) = self.desk.as_mut().map(|installed| &mut installed.desk) {
