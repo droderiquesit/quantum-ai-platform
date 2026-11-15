@@ -32,6 +32,7 @@ pub mod dark;
 pub mod edge_quotes;
 pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
+pub mod fabric_discovery;
 pub mod feed;
 pub mod gateway;
 /// The second halt wire: a flag on the node's own filesystem, polled.

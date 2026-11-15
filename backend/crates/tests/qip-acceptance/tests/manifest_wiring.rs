@@ -1514,7 +1514,37 @@ const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain l
      it also names are never read by this binary, though the source walk counts them \
      with the rest of the family.";
 
+const NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The edge node \
+     bootstraps the fabric endpoint from the broker's SRV record only when a \
+     resolver, a zone, a per-query timeout and an attempt count are all set \
+     (R12-FABRIC-10016). No environment instantiates the event-fabric broker \
+     module that publishes the record, and the timeout and attempt count are \
+     figures nobody has given, so a deployment setting them would be choosing \
+     them. Absent, the node uses QIP_FABRIC_URL, which is the last rung of the \
+     ladder anyway. The entries end when a broker is deployed and the owner \
+     names the resolver and the two figures.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_RESOLVER",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_ZONE",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_TIMEOUT_MS",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_ATTEMPTS",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
     ("qip-api", "QIP_LEDGERD_URL", NO_LEDGERD_IS_DEPLOYED),
     (
         "qip-api",

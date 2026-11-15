@@ -1417,7 +1417,28 @@ fn run() -> Result<()> {
     // it stops its renewal loop.
     let mut issued: Option<qip_transport::cas::CasIdentity> = None;
     match config.fabric.take() {
-        Some(fabric) => {
+        Some(mut fabric) => {
+            // R12-FABRIC-10016: the broker's address from its SRV record when a
+            // resolver and zone are configured; the configured endpoint is the
+            // last rung, so an unreachable resolver never stops the node.
+            if let Some(discovery) =
+                qip_edge_node::fabric_discovery::FabricDiscovery::read(&|name| {
+                    std::env::var(name).ok()
+                })?
+            {
+                let found = discovery.resolve(&fabric.url, Arc::clone(&clock))?;
+                qip_edge_node::fabric_discovery::record_source(metrics, found.source);
+                println!(
+                    "qip-edge-node: fabric endpoint {} from {}{}",
+                    found.url,
+                    found.source.as_label(),
+                    found
+                        .lookup_failure
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                );
+                fabric.url = found.url;
+            }
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said
