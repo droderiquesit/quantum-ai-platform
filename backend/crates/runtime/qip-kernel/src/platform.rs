@@ -23537,6 +23537,14 @@ impl Platform {
             .attribution_lineage
             .last()
             .and_then(|pass| crate::attribution::by_forecaster(pass).ok());
+        // R12-REASON-9032: challenges a second brain journaled are answered
+        // from the dossiers the tournament retained.
+        if let Err(error) = self.answer_challenges(now) {
+            outcome = outcome.with_problem(format!(
+                "journaled challenges could not be answered: {}",
+                error.message()
+            ));
+        }
         match self
             .tournament
             .learn(&self.bar_history, attributed.as_ref(), self.cycle, now)
