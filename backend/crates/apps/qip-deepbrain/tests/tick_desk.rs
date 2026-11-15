@@ -1363,3 +1363,56 @@ fn a_proposal_that_sent_orders_on_two_instruments_replays_as_one_saga_and_a_sing
     );
     Ok(())
 }
+
+/// R12-TICK-1177. Mutation: in `order_reactions`, build the move's `Placed`
+/// with `Duration::ZERO` instead of the tick's uncertainty (every reaction is
+/// ordered as if the clock were exact), or drop the call in `round_with_fills`.
+///
+/// The failure this prevents: a market move read off a tick whose capture
+/// clock was good to fifteen seconds was credited as following an event it
+/// preceded by ten seconds, because the subtraction trusted the stamp.
+#[test]
+fn a_reaction_inside_the_capture_clocks_doubt_is_unordered_and_the_same_reaction_on_a_good_clock_is_not()
+-> Result<()> {
+    use qip_sequencing::align::Order;
+    let run = |uncertainty: Option<Duration>| -> Result<Vec<qip_deepbrain::fusion_clock::ReactionTiming>> {
+        let lake = Arc::new(MemoryBlobStore::new());
+        match uncertainty {
+            Some(doubt) => {
+                seal_session_uncertain(&lake, "vendor-depth", doubt)?;
+            }
+            None => {
+                seal_session(&lake, "vendor-depth")?;
+            }
+        }
+        let mut desk = TickDesk::new(
+            config(),
+            Arc::clone(&lake) as Arc<dyn BlobStore>,
+            Arc::new(MemoryBlobStore::new()),
+        );
+        let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+        assert_eq!(round.fused_events, 1, "premise: the event was fused");
+        Ok(round.reaction_timing)
+    };
+    let exact = run(None)?;
+    let doubtful = run(Some(Duration::from_secs(15)))?;
+    assert!(
+        !exact.is_empty() && !doubtful.is_empty(),
+        "premise: the event drew a measured reaction ({exact:?} / {doubtful:?})"
+    );
+    assert!(
+        doubtful.iter().all(|t| t.order == Order::Unordered),
+        "a move inside fifteen seconds of clock doubt was ordered: {doubtful:?}"
+    );
+    assert!(
+        doubtful
+            .iter()
+            .all(|t| t.lag_uncertainty >= Duration::from_secs(15)),
+        "{doubtful:?}"
+    );
+    assert!(
+        exact.iter().any(|t| t.order == Order::Before),
+        "on a good clock a later move is ordered after its event: {exact:?}"
+    );
+    Ok(())
+}

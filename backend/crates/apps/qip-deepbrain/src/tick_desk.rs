@@ -357,6 +357,10 @@ pub struct TickRound {
     /// the output rather than inferred from a count.
     pub reactions: Vec<qip_kernel::fusion::MeasuredReaction>,
     pub mismatches: usize,
+    /// Each fused reaction's order against its event once the capture
+    /// clocks' uncertainty is counted (R12-TICK-1177): `Unordered` where the
+    /// move sits inside it.
+    pub reaction_timing: Vec<crate::fusion_clock::ReactionTiming>,
     pub map: Option<OpportunityMap>,
     pub shipped_to: BTreeSet<String>,
     pub refused_regions: BTreeMap<String, String>,
@@ -883,7 +887,7 @@ impl TickDesk {
         // nothing below trains or promotes from it.
         let labelled = match plan
             .clock_precision()?
-            .admit(&round.manifest, precision_events)
+            .admit(&round.manifest, precision_events.clone())
         {
             Ok(_) => build_examples(&observations, &trades, &plan)?,
             Err(imprecise) => {
@@ -1005,6 +1009,7 @@ impl TickDesk {
             max_events: 1_024,
         };
         let fused = fuse(graph, &traces, now, &fusion_config)?;
+        round.reaction_timing = crate::fusion_clock::order_reactions(&fused, &precision_events)?;
         self.posteriors = fused.posteriors();
         let mut priors = fused.outside_priors();
         // Strongest first: the smallest multiplier either way is the prior that
