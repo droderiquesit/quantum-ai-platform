@@ -20149,6 +20149,10 @@ impl Platform {
             .signals_mut()
             .forget_theses(theses.iter().map(|thesis| thesis.hypothesis_id.as_str()));
         let released = sizing.released;
+        // R12-CAPITAL-4085 (ADR 0686): the society's survival agent reads the
+        // figure the waterfall actually released this cycle, so on a default
+        // path it no longer abstains. The agent can only lower a line.
+        self.central.record_survival_budget(released)?;
         let budget = released.checked_mul(multiplier).ok_or_else(|| {
             Error::numeric(format!(
                 "the released budget {released} narrowed by the degradation multiplier \

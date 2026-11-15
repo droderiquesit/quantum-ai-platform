@@ -10471,3 +10471,79 @@ fn the_microstructure_model_is_rebuilt_from_the_log_on_a_restart() -> Result<()>
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// R12-CAPITAL-4085 (ADR 0686). Written without being compiled or run; no
+// mutation was run against either test.
+// ---------------------------------------------------------------------------
+
+/// The horizon arming budgets the pools with the society-settled plan, so
+/// the gate and the deployed plan read one figure. Mutation to run: revert
+/// `settle_through_society` in `arm_or_refuse` to the bare allocator plan and
+/// the narrowed arming equals the full one.
+#[test]
+fn the_horizon_arming_budgets_the_pools_with_the_society_settled_plan() -> Result<()> {
+    let first = StrategyId::new("horizon-first");
+    let second = StrategyId::new("horizon-second");
+    let mut platform =
+        platform_with_horizons(horizon_policy(&[&first, &second], dec!("4000000"))?)?;
+    register(platform.central_mut(), &first, CELL)?;
+    register(platform.central_mut(), &second, CELL)?;
+    assert!(
+        platform.central().society().is_empty(),
+        "premise: no allocation has been recorded yet"
+    );
+
+    let full = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.0, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the arming produced a standing"))?;
+    assert!(
+        full.budgeted > dec!("1"),
+        "premise: the allocator budgets more than one unit: {}",
+        full.describe()
+    );
+    assert_eq!(
+        platform.central().society().len(),
+        qip_capital::society::CapitalAgent::ALL.len(),
+        "the arming recorded every agent's plan before it chose"
+    );
+
+    platform.central_mut().record_survival_budget(dec!("1"))?;
+    let narrowed = platform
+        .central_mut()
+        .arm_horizons(Decimal::ZERO, 0.0, start())?
+        .ok_or_else(|| qip_core::Error::not_found("the narrowed arming produced a standing"))?;
+    assert!(
+        narrowed.budgeted < full.budgeted,
+        "the survival agent's bound was not read by the gate: {} against {}",
+        narrowed.budgeted,
+        full.budgeted
+    );
+    Ok(())
+}
+
+/// A negative released budget is refused and does not replace a good one.
+#[test]
+fn a_negative_survival_budget_is_refused_and_leaves_the_recorded_one() -> Result<()> {
+    let mut plane = plane()?;
+    plane.record_survival_budget(dec!("5"))?;
+    let refusal = plane
+        .record_survival_budget(dec!("-1"))
+        .expect_err("a negative budget is refused");
+    assert!(refusal.message().contains("zero or"), "{refusal:?}");
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let _ = plane.allocate(0.0, start())?;
+    let survival = plane
+        .society()
+        .into_iter()
+        .find(|plan| plan.agent == qip_capital::society::CapitalAgent::Survival)
+        .expect("the survival agent is recorded");
+    assert!(
+        matches!(survival.proposal, qip_capital::society::Proposal::Lines(_)),
+        "the five on record is still read, so the agent does not abstain"
+    );
+    Ok(())
+}
