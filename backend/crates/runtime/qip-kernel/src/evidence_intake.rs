@@ -208,6 +208,11 @@ struct AdmittedClaim<'a> {
     key: &'a ClaimKey,
     value: &'a str,
     document_hash: &'a str,
+    /// Where the claim came from and how it was extracted: the manifest the
+    /// connector declared, so the delta says which source stood behind it
+    /// without carrying the document (R12-DATA-8120).
+    source_identity: &'a str,
+    extraction_method: &'a str,
     weight: f64,
     contradicts: &'a [String],
     /// The fabric's version before and after the claim; one apart.
@@ -265,7 +270,12 @@ fn knowledge_delta_for(claim: &AdmittedClaim<'_>, now: Timestamp) -> Result<Know
             key: delta_key(claim.key),
             value: claim.value.to_string(),
         }],
-        provenance: vec![claim.id.to_string(), format!("doc:{}", claim.document_hash)],
+        provenance: vec![
+            claim.id.to_string(),
+            format!("doc:{}", claim.document_hash),
+            format!("source:{}", claim.source_identity),
+            format!("via:{}", claim.extraction_method),
+        ],
         // Rounded from a value just proven to be in [0, 1], so the cast
         // cannot leave [0, 10000].
         confidence_bp: (claim.weight * 10_000.0).round() as u32,
@@ -505,6 +515,8 @@ impl Platform {
                     continue;
                 }
                 let id = checked.record.id.clone();
+                let source_identity = checked.record.source_identity.clone();
+                let extraction_method = checked.record.extraction_method.clone();
                 let claim = ClaimKey::of(&checked.record);
                 let before = world.evidence().version();
                 let mut journaled = JournaledClaim {
@@ -534,6 +546,8 @@ impl Platform {
                                 key: &key,
                                 value: &value,
                                 document_hash: &checked.document_hash,
+                                source_identity: &source_identity,
+                                extraction_method: &extraction_method,
                                 weight: verdict.belief_weight,
                                 contradicts: &verdict.contradicts,
                                 versions: (before, world.evidence().version()),

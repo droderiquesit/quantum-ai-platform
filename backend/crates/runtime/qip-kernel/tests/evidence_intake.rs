@@ -873,7 +873,12 @@ fn a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys() 
     assert_eq!((second.base_version, second.new_version), (1, 2));
     assert_eq!(
         first.provenance,
-        vec!["a1".to_string(), format!("doc:{}", hash('a'))]
+        vec![
+            "a1".to_string(),
+            format!("doc:{}", hash('a')),
+            "source:https://a.example".to_string(),
+            "via:connector:test/1.0".to_string(),
+        ]
     );
     assert!(
         matches!(&first.changes[..], [ChangeOp::Assert { key, value }]
@@ -1278,5 +1283,60 @@ fn a_now_manifest_entry_from_connector_data_resolves_to_its_source_and_document_
     assert!(
         resolved[1].is_none(),
         "an in-process name resolves to nothing"
+    );
+}
+
+/// R12-DATA-8120: the delta a fixture source leaves carries the manifest of
+/// where the claim came from (source and extraction method), the document's
+/// hash and the claim's id, and carries none of the claim's text. A delta
+/// that quoted the statement would be the raw payload kept after the stage
+/// that was meant to discard it. Mutation: drop the `source:` entry from
+/// `knowledge_delta_for` — the first assertion fails.
+#[test]
+fn a_fixture_source_leaves_a_delta_with_its_manifest_and_provenance_and_none_of_its_text() {
+    let mut platform = platform();
+    assert!(
+        journalled_deltas(&platform).is_empty(),
+        "premise: no delta before the fixture is absorbed"
+    );
+    let statement = "the fixture sentence the source published verbatim";
+    let item = checked(
+        "f1",
+        "https://fixture.example/feed",
+        statement,
+        "1.10",
+        &hash('f'),
+    );
+    assert!(
+        item.record.statement.contains("fixture sentence"),
+        "premise: the record the connector hands over holds the text"
+    );
+
+    let intake = platform.absorb_evidence(vec![item], at(30));
+    assert_eq!(intake.knowledge_deltas, 1, "{intake:?}");
+
+    let deltas = journalled_deltas(&platform);
+    assert_eq!(deltas.len(), 1);
+    let fields = deltas[0].fields();
+    assert!(
+        fields
+            .provenance
+            .contains(&"source:https://fixture.example/feed".to_string()),
+        "{:?}",
+        fields.provenance
+    );
+    assert!(
+        fields
+            .provenance
+            .contains(&"via:connector:test/1.0".to_string()),
+        "{:?}",
+        fields.provenance
+    );
+    assert!(fields.provenance.contains(&format!("doc:{}", hash('f'))));
+    assert!(fields.provenance.contains(&"f1".to_string()));
+    let text = format!("{fields:?}");
+    assert!(
+        !text.contains("fixture sentence"),
+        "the delta kept the payload: {text}"
     );
 }
