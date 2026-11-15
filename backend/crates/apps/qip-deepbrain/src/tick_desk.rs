@@ -620,6 +620,9 @@ pub fn dispatch_mismatches(
                 question: q.reason,
                 rank_bp,
                 entities: vec![q.instrument],
+                // What these requests meant before a request named its
+                // acquisition (R12-DATA-3105): a new source query.
+                kind: qip_contracts::ambient::AcquisitionKind::NewSourceQuery,
             });
         }
     }
@@ -630,6 +633,9 @@ pub fn dispatch_mismatches(
                 question: format!("a better source for {}: {}", c.event, c.reason),
                 rank_bp,
                 entities: c.instruments,
+                // What these requests meant before a request named its
+                // acquisition (R12-DATA-3105): a new source query.
+                kind: qip_contracts::ambient::AcquisitionKind::NewSourceQuery,
             });
         }
     }

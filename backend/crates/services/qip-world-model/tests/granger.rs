@@ -310,7 +310,7 @@ fn horizon_reaction(
     event: &str,
     horizon: usize,
     sign: f64,
-) -> qip_world_model::reaction::ReactionEpisode {
+) -> qip_core::error::Result<qip_world_model::reaction::ReactionEpisode> {
     let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
     qip_world_model::reaction::ReactionEpisode::new(
         format!("{event}@{horizon}"),
@@ -323,7 +323,6 @@ fn horizon_reaction(
         "test".to_string(),
         t0.saturating_add(qip_core::Duration::from_days(horizon as i64)),
     )
-    .unwrap()
 }
 
 /// R12-WORLD-6015: the 1-, 5- and 20-bar reactions to one event are three
@@ -360,7 +359,7 @@ fn one_contradicting_event_weakens_an_edge_once_however_many_horizons_it_is_read
     for horizon in [1, 5, 20] {
         let outcome = apply_reaction(
             &mut graph,
-            &horizon_reaction("evt-1", horizon, -1.0),
+            &horizon_reaction("evt-1", horizon, -1.0).unwrap(),
             1.0,
             Mechanism::TemporalPrecedence,
             now,
@@ -379,7 +378,7 @@ fn one_contradicting_event_weakens_an_edge_once_however_many_horizons_it_is_read
 
     let next = apply_reaction(
         &mut graph,
-        &horizon_reaction("evt-2", 1, -1.0),
+        &horizon_reaction("evt-2", 1, -1.0).unwrap(),
         1.0,
         Mechanism::TemporalPrecedence,
         now,
@@ -404,7 +403,7 @@ fn a_first_reaction_against_the_mechanism_establishes_no_edge() {
     let mut graph = CausalGraph::new();
     let against = apply_reaction(
         &mut graph,
-        &horizon_reaction("evt-1", 1, -1.0),
+        &horizon_reaction("evt-1", 1, -1.0).unwrap(),
         1.0,
         Mechanism::TemporalPrecedence,
         t0.saturating_add(qip_core::Duration::from_days(2)),
@@ -418,7 +417,7 @@ fn a_first_reaction_against_the_mechanism_establishes_no_edge() {
     assert_eq!(graph.len(), 0);
     let with = apply_reaction(
         &mut graph,
-        &horizon_reaction("evt-1", 1, 1.0),
+        &horizon_reaction("evt-1", 1, 1.0).unwrap(),
         1.0,
         Mechanism::TemporalPrecedence,
         t0.saturating_add(qip_core::Duration::from_days(2)),
