@@ -5098,6 +5098,33 @@ impl EventBody for RegistrationEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// An authenticated operator's authorisation to apply the generated joint
+/// tail world to the survival reserve (R12-RISK-4116, ADR 0685). Journalled
+/// before the switch moves, so [`Platform::replay_joint_tail_reserve_authorised`]
+/// rebuilds it from the log alone: applying the world raises the reserve, and a
+/// raised reserve with nobody's name on it is a control change nobody made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JointTailReserveAuthorisation {
+    /// The authenticated operator's subject, taken from the identity and never
+    /// from a request body.
+    pub operator: String,
+}
+
+impl EventBody for JointTailReserveAuthorisation {
+    /// A compliance decision, told apart from registrations and eligibility
+    /// records by producer ([`JOINT_TAIL_ORIGIN`]).
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer a joint-tail authorisation is journalled under.
+const JOINT_TAIL_ORIGIN: &str = "kernel/joint-tail-reserve";
+
+/// How recently an operator authenticated to authorise the joint tail reserve.
+/// PROVISIONAL (ADR 0685): no figure was given, so the shortest age the
+/// platform already uses for an operator act is reused rather than a new one.
+const JOINT_TAIL_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
 /// An operator's declaration that a claim is expected to fall due (ADR 0159
 /// decision 9). It records an expectation and moves nothing: the platform
 /// never processes a withdrawal (ADR 0021). Journalled before it is adopted,
@@ -13039,6 +13066,58 @@ impl Platform {
     /// and no composition root does.
     pub fn set_joint_tail_reserve_applied(&mut self, applied: bool) {
         self.apply_joint_tail_reserve = applied;
+    }
+
+    /// The operator intent that applies the generated joint tail world to the
+    /// survival reserve and hedge selection (R12-RISK-4116, ADR 0685).
+    ///
+    /// This is what a composition root or the API's typed intent calls instead
+    /// of [`Self::set_joint_tail_reserve_applied`]: the API never mutates the
+    /// platform (`api_boundary`), and a configuration value must not raise a
+    /// reserve by itself. It only ever tightens: the reserve rises, never
+    /// falls, and there is no counterpart that switches it back off. A stale
+    /// credential is refused and changes nothing; an accepted authorisation is
+    /// journalled before the switch moves. Applying takes effect from the next
+    /// SIMULATE.
+    pub fn authorise_joint_tail_reserve(
+        &mut self,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, JOINT_TAIL_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to authorise the \
+                 joint tail reserve",
+                operator.subject(),
+                JOINT_TAIL_CREDENTIAL_AGE
+            )));
+        }
+        self.journal_record(
+            JointTailReserveAuthorisation {
+                operator: operator.subject().to_string(),
+            },
+            JOINT_TAIL_ORIGIN,
+            now,
+        )?;
+        self.apply_joint_tail_reserve = true;
+        Ok(())
+    }
+
+    /// Whether the log holds an authorisation of the joint tail reserve: the
+    /// switch's state rebuilt from the log alone, for comparison with the
+    /// running platform.
+    pub fn replay_joint_tail_reserve_authorised(&self) -> Result<bool> {
+        for record in self.event_log.records() {
+            if record.event.topic != JointTailReserveAuthorisation::TOPIC
+                || record.event.lineage.producer != JOINT_TAIL_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            envelope.decode::<JointTailReserveAuthorisation>()?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The stressed-liquidity reserve the current stress demands at the
