@@ -169,11 +169,6 @@ pub enum InstrumentType {
     // Composite
     StructuredNote,
     SyntheticBasket,
-    // Prediction
-    /// A fully-funded payoff bounded to one unit (ADR 0658): it pays one
-    /// unit if its declared outcome occurs and nothing otherwise, so its
-    /// price is a probability and can never leave `[0, 1]`.
-    EventContract,
 }
 
 impl InstrumentType {
@@ -232,8 +227,6 @@ impl InstrumentType {
             Self::Cash | Self::MoneyMarketInstrument => AssetClass::Cash,
 
             Self::StructuredNote | Self::SyntheticBasket => AssetClass::StructuredProduct,
-
-            Self::EventContract => AssetClass::Prediction,
         }
     }
 
@@ -285,7 +278,6 @@ impl InstrumentType {
             Self::MoneyMarketInstrument => "money_market_instrument",
             Self::StructuredNote => "structured_note",
             Self::SyntheticBasket => "synthetic_basket",
-            Self::EventContract => "event_contract",
         }
     }
 
