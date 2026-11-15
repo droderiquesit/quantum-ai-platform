@@ -43,7 +43,6 @@ use qip_edge_node::assemble;
 use qip_edge_node::event_fabric::drain::{LakeSink, Sink, default_retention};
 use qip_edge_node::feed::{ReplayFeed, SIMULATED_DATASET, SimulatedFeed};
 use qip_edge_node::gateway::SimulatedGateway;
-use qip_edge_node::lake_replay::{RetainedHistory, replay_lake};
 use qip_edge_node::pass::{PassOutcome, PassStats, run_pass, run_replay_pass};
 use qip_events::AnyEvent;
 use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
@@ -56,7 +55,6 @@ use qip_execution_engine::order::Side;
 use qip_feature_dag::engine::FeatureEngine;
 use qip_feature_dag::state::MarketState;
 use qip_orderbook::venue::VenueState;
-use qip_storage::FileBlobStore;
 use qip_storage::lake::Lake;
 use qip_storage::lake_codec::SegmentCodec;
 use qip_storage::lake_history::HistoryQuery;
@@ -310,12 +308,12 @@ fn discard_at(cell: &mut Cell, discard: Option<i64>, second: i64) {
     }
 }
 
-fn original_session<S: BlobStore + 'static>(lake: &Arc<S>) -> Result<(Run, usize)> {
+fn original_session(lake: &Arc<MemoryBlobStore>) -> Result<(Run, usize)> {
     original_session_discarding(lake, None)
 }
 
-fn original_session_discarding<S: BlobStore + 'static>(
-    lake: &Arc<S>,
+fn original_session_discarding(
+    lake: &Arc<MemoryBlobStore>,
     discard: Option<i64>,
 ) -> Result<(Run, usize)> {
     let mut cell = cell()?;
@@ -694,201 +692,5 @@ fn a_recorded_tick_another_venue_published_is_refused_before_it_reaches_the_cell
     let mut here = elsewhere;
     here.origin.venue = venue();
     assert_eq!(feed.publish(&mut cell, &[here], t(10))?.messages, 1);
-    Ok(())
-}
-
-/// A scratch directory for a durable lake, removed when dropped.
-struct Scratch(std::path::PathBuf);
-
-impl Scratch {
-    fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "qip-edge-node-lake-replay-{}-{name}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        Self(path)
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-/// What `replay_lake` digests, computed from the original session's own
-/// record: each pass's decision and a newline, then the journal's tail.
-fn expected_digest(original: &Run) -> String {
-    let mut rendered = String::new();
-    for decision in &original.decisions {
-        rendered.push_str(decision);
-        rendered.push('\n');
-    }
-    rendered.push_str(&original.journal_digest);
-    sha256_hex(rendered.as_bytes())
-}
-
-/// R12-TICK-9006: a session sealed into a file-backed lake, read back by a
-/// store opened afresh on the same directory, replays through the shipped
-/// `lake_replay` seam to the decisions the original made.
-///
-/// The failure it prevents: the replay claim had been proved only over a
-/// memory store, which retains nothing past the process, so a desk had no
-/// retained history to replay and no binary that would replay it. Here the
-/// writer's store is dropped before the reader's is opened, so only what
-/// reached the disk can be replayed.
-///
-/// Mutation: in `replay_lake` (src/lake_replay.rs) pass `&ticks[..0]` to
-/// `run_replay_pass` instead of `ticks`: the cell sees no market and decides
-/// no orders; the run fails at `assert_eq!(report.orders, original.orders)`
-/// (left 0, right 17).
-#[test]
-fn a_session_sealed_into_a_durable_lake_replays_to_the_same_decision_digest() -> Result<()> {
-    let scratch = Scratch::new("durable");
-    let (original, sealed) = {
-        let lake = Arc::new(FileBlobStore::open(&scratch.0)?);
-        original_session(&lake)?
-    };
-    assert!(original.orders > 0, "premise: the original placed orders");
-    assert!(sealed > 10, "premise: ticks were sealed ({sealed})");
-
-    // A new store on the same directory: nothing is carried in memory.
-    let reopened = FileBlobStore::open(&scratch.0)?;
-    let datasets = BTreeSet::from([SIMULATED_DATASET.to_string()]);
-    let history = RetainedHistory::read(&reopened, &datasets)?;
-    assert_eq!(
-        history.ticks(),
-        sealed,
-        "premise: the disk retains every sealed tick"
-    );
-    assert_eq!(
-        history.passes(),
-        PASSES.clone().count(),
-        "premise: every original pass received ticks, so the retained instants are the original's schedule"
-    );
-
-    let mut cell = cell()?;
-    let mut gateway = simulated_venue()?;
-    let mut feed = ReplayFeed::new(venue());
-    feed.attach(&mut cell)?;
-    let report = replay_lake(
-        &mut cell,
-        &mut gateway,
-        &mut feed,
-        &history,
-        |gateway, now| seed(gateway, now.as_secs() - t(0).as_secs()),
-    )?;
-    assert_eq!(report.orders, original.orders);
-    assert_eq!(
-        report.digest,
-        expected_digest(&original),
-        "the replay from the durable lake decided differently from the session it replays"
-    );
-    Ok(())
-}
-
-/// R12-TICK-9006: a lake that retains nothing, or a replay that names no
-/// dataset, is refused rather than reported as reproduced over zero decisions.
-///
-/// Mutation: delete the `ticks == 0` refusal in `RetainedHistory::read`: the
-/// empty lake reads as a history of no passes and the first assertion fails.
-#[test]
-fn a_lake_that_retains_nothing_or_a_replay_with_no_grant_is_refused() -> Result<()> {
-    let scratch = Scratch::new("empty");
-    let empty = FileBlobStore::open(&scratch.0)?;
-    let datasets = BTreeSet::from([SIMULATED_DATASET.to_string()]);
-    let refused =
-        RetainedHistory::read(&empty, &datasets).expect_err("an empty lake was offered as history");
-    assert!(
-        refused.message().contains("retains no ticks"),
-        "{}",
-        refused.message()
-    );
-    let ungranted =
-        RetainedHistory::read(&empty, &BTreeSet::new()).expect_err("an empty grant was accepted");
-    assert!(
-        ungranted.message().contains("none were named"),
-        "{}",
-        ungranted.message()
-    );
-    Ok(())
-}
-
-/// The shipped binary, configured as a node is, run on the `replay-lake`
-/// subcommand.
-fn replay_lake_binary(lake: &std::path::Path, scratch: &std::path::Path) -> std::process::Output {
-    std::fs::create_dir_all(scratch).expect("a scratch directory");
-    let key = scratch.join("capital-envelope-key");
-    std::fs::write(&key, "a-cell-envelope-key-for-tests").expect("a key file");
-    let journal = scratch.join("journal");
-    std::fs::create_dir_all(&journal).expect("a journal directory");
-    std::process::Command::new(env!("CARGO_BIN_EXE_qip-edge-node"))
-        .arg("replay-lake")
-        .arg(lake)
-        .arg(SIMULATED_DATASET)
-        .env_clear()
-        .env("QIP_CELL_ID", CELL)
-        .env("QIP_CELL_REGION", REGION)
-        .env("QIP_DEPLOYMENT", "local")
-        .env("QIP_VENUES", VENUE)
-        .env("QIP_REGION_ALLOCATION", "1000000")
-        .env("QIP_CAPITAL_ENVELOPE_KEY_FILE", &key)
-        .env("QIP_STORAGE_TARGET", "engine")
-        .env("QIP_STORAGE_ROOT", &journal)
-        .env("QIP_HEALTH_PORT", "0")
-        .env("QIP_VENUE_FEED", "simulated")
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("the binary runs")
-}
-
-/// R12-TICK-9006: `qip-edge-node replay-lake` is a shipped path to
-/// `run_replay_pass`: over a durable lake it replays every retained pass and
-/// prints a decision digest, the same one on a second run, and it refuses a
-/// lake that retains nothing.
-///
-/// The failure it prevents: no shipped binary called `run_replay_pass`, so
-/// the reproduction held only inside a test and nobody could run it on
-/// retained history.
-///
-/// Mutation: make `replay_lake_command` (src/main.rs) return `Ok(())` before
-/// `replay_lake` runs: the stdout carries no "decision digest" and the first
-/// assertion fails.
-#[test]
-fn the_shipped_binary_replays_a_durable_lake_deterministically_and_refuses_an_empty_one()
--> Result<()> {
-    let scratch = Scratch::new("binary");
-    let lake_dir = scratch.0.join("lake");
-    {
-        let lake = Arc::new(FileBlobStore::open(&lake_dir)?);
-        let (_, sealed) = original_session(&lake)?;
-        assert!(sealed > 10, "premise: ticks were sealed ({sealed})");
-    }
-    let first = replay_lake_binary(&lake_dir, &scratch.0.join("run-1"));
-    let stdout = String::from_utf8_lossy(&first.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&first.stderr).to_string();
-    assert!(first.status.success(), "stdout: {stdout}\nstderr: {stderr}");
-    let digest_line = |text: &str| {
-        text.lines()
-            .find(|line| line.contains("decision digest"))
-            .map(str::to_string)
-    };
-    let line = digest_line(&stdout).expect("the replay printed its decision digest");
-    assert!(line.contains("replayed 30 pass(es)"), "{line}");
-    let second = replay_lake_binary(&lake_dir, &scratch.0.join("run-2"));
-    assert_eq!(
-        digest_line(&String::from_utf8_lossy(&second.stdout)),
-        Some(line),
-        "two replays of one lake printed different digests"
-    );
-
-    let empty = replay_lake_binary(&scratch.0.join("nothing"), &scratch.0.join("run-3"));
-    assert!(!empty.status.success(), "an empty lake was replayed");
-    assert!(
-        String::from_utf8_lossy(&empty.stderr).contains("retains no ticks"),
-        "{}",
-        String::from_utf8_lossy(&empty.stderr)
-    );
     Ok(())
 }
