@@ -4363,7 +4363,13 @@ fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships
     // One drain since ADR 0156 §5: the roots' `openobserve.rs` are thin modules
     // over `qip-telemetry-drain`, so the endpoint set is read from its single
     // definition, and each root is held to define no endpoint of its own.
-    for root in ["qip-api", "qip-fastbrain", "qip-deepbrain", "qip-fabricd"] {
+    for root in [
+        "qip-api",
+        "qip-fastbrain",
+        "qip-deepbrain",
+        "qip-fabricd",
+        "qip-ledgerd",
+    ] {
         let thin = read(&format!("backend/crates/apps/{root}/src/openobserve.rs"));
         assert!(
             thin.contains("qip_telemetry_drain") && !thin.contains("with_path("),

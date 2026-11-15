@@ -58,3 +58,19 @@ the Conditional arm having no test that fails when its push is deleted.
 
 Nothing in this ADR was compiled or run. The tests it relies on are named in
 `docs/blueprint/lanes/b52-41.json`, each marked "mutation: not run".
+
+## Row R12-OBS-9140: what changed
+
+- `qip-ledgerd` depends on `qip-telemetry-drain`; `src/openobserve.rs` is the
+  same thin module the other four roots hold, and `main.rs` spawns the drain
+  after `start` returns, handing it the ledger's own `Metrics`. Unset
+  `QIP_OPENOBSERVE_URL` exports nothing, as before.
+- The earlier draft's unit test set the URL alone and failed: the drain
+  refuses a URL with no organisation. The test now supplies both and a third
+  pins the refusal.
+- `qip-acceptance/tests/otlp_coverage.rs` enumerates `backend/crates/apps/*`
+  and fails a binary that neither links the drain nor is named, with a reason,
+  on `EXPORTERLESS`. `qip-edge-node`, `qip-web` and `qip-cli` are named; the
+  row stays PARTIAL while the list is non-empty.
+- No manifest sets a collector URL (ADR 0156 5.4); nothing has been shown to
+  ingest.
