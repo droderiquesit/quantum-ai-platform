@@ -95,6 +95,20 @@ pub struct BookPurpose {
 pub struct RiskView {
     pub state: RiskState,
     pub limits: LimitSet,
+    /// What the capital plane last granted, as the central plane recorded it
+    /// (R12-CAPITAL-3020). `None` until an allocation has run: a grant nobody
+    /// made is not reported as zero.
+    pub grants: Option<GrantsReading>,
+}
+
+/// The last capital allocation as a reading: the allocator's total, what was
+/// granted once the capital society and the forecast disagreement had
+/// narrowed it, and the grant per cell. Read and never recomputed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrantsReading {
+    pub allocator_total: qip_core::Decimal,
+    pub granted_total: qip_core::Decimal,
+    pub by_cell: BTreeMap<String, qip_core::Decimal>,
 }
 
 /// Which way an execution went, as the desk tells its readers.
@@ -457,6 +471,7 @@ impl Desk {
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),

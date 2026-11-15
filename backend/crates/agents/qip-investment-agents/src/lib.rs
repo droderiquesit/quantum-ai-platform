@@ -39,5 +39,5 @@ pub mod vocabulary;
 pub mod world_model_brain;
 
 pub use chief::{ChiefInvestmentIntelligence, Organisation, OrganisationReport};
-pub use desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
+pub use desk::{BookView, ComplianceView, Desk, GrantsReading, MarketView, RiskView};
 pub use manifests::{ids, owners, roster};
