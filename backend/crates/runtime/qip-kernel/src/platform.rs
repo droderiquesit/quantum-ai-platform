@@ -16712,12 +16712,40 @@ impl Platform {
             &review,
             inputs.instruments.iter().map(|view| view.subject.clone()),
         );
+        // The widest disagreement among the forecasting members narrows the
+        // capital society's grants (R12-CAPITAL-10122). A spread the arithmetic
+        // cannot carry is a problem on this pass, not a silent clamp.
+        let widest = review
+            .arbitrations
+            .iter()
+            .map(|a| a.disagreement.spread)
+            .fold(None, |widest: Option<f64>, spread| {
+                Some(widest.map_or(spread, |w| w.max(spread)))
+            });
+        let forecast_problem = match widest.map(qip_core::Decimal::from_f64) {
+            Some(None) => Some("forecast disagreement spread is not a finite figure".to_string()),
+            Some(Some(spread)) => self
+                .central
+                .set_forecast_spread(Some(spread))
+                .err()
+                .map(|error| error.message().to_string()),
+            None => self
+                .central
+                .set_forecast_spread(None)
+                .err()
+                .map(|e| e.message().to_string()),
+        };
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
             .iter()
             .map(|(model, why)| format!("world model federation refused `{model}`: {why}"))
             .collect();
+        if let Some(problem) = forecast_problem {
+            problems.push(format!(
+                "capital society kept its last forecast spread: {problem}"
+            ));
+        }
         // Charge each resolved forecast to the member that made it, so a
         // world model is scored in the self-model like every other component
         // once its outcome resolves (R12-MODEL-6016).

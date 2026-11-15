@@ -2002,6 +2002,10 @@ impl CentralPlane {
         // widen a line.
         let plans = qip_capital::society::propose_all(&plan, &self.society_inputs)?;
         let settled = qip_capital::society::settle(&plan, &plans);
+        let settled = qip_capital::society::narrow_for_disagreement(
+            &settled,
+            self.society_inputs.forecast_spread,
+        )?;
         *self.society.lock().unwrap_or_else(|e| e.into_inner()) = plans;
         Ok(settled)
     }
@@ -2010,6 +2014,16 @@ impl CentralPlane {
     /// allocation on. Only narrows: see [`qip_capital::society::settle`].
     pub fn set_society_inputs(&mut self, inputs: qip_capital::society::SocietyInputs) {
         self.society_inputs = inputs;
+    }
+
+    /// The widest forecast disagreement this cycle, as a spread in `[0, 1]`,
+    /// narrowing every allocation line from the next allocation on
+    /// (R12-CAPITAL-10122). `None` withdraws it. A spread outside `[0, 1]`
+    /// is refused here so a bad figure never replaces a good one.
+    pub fn set_forecast_spread(&mut self, spread: Option<qip_core::Decimal>) -> Result<()> {
+        qip_capital::society::check_spread(spread)?;
+        self.society_inputs.forecast_spread = spread;
+        Ok(())
     }
 
     /// The non-allocation claims the coordinator settles from the next

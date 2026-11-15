@@ -10471,3 +10471,60 @@ fn the_microstructure_model_is_rebuilt_from_the_log_on_a_restart() -> Result<()>
     let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
+
+/// R12-CAPITAL-10122: a wider forecast disagreement emits a smaller grant, a
+/// spread outside [0, 1] is refused rather than clamped, and no disagreement
+/// leaves the allocator's line alone.
+///
+/// Mutation: replace `1 - spread` with `1 + spread` in
+/// `society::narrow_for_disagreement` (or drop the call in `allocate`) and the
+/// narrower line is not smaller than the wider's.
+#[test]
+fn wider_forecast_disagreement_reduces_the_emitted_grant() -> Result<()> {
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let line = |plane: &mut CentralPlane| -> Result<qip_core::Decimal> {
+        Ok(plane
+            .allocate(0.0, start())?
+            .allocations
+            .iter()
+            .find(|a| a.strategy == id)
+            .map(|a| a.notional)
+            .expect("premise: the piloted strategy holds a line"))
+    };
+    let agreed = line(&mut plane)?;
+    assert!(agreed.is_positive(), "premise: the line is sized");
+
+    plane.set_forecast_spread(Some(qip_core::Decimal::ZERO))?;
+    assert_eq!(line(&mut plane)?, agreed, "no disagreement narrows nothing");
+
+    let quarter = qip_core::Decimal::from_raw(250_000_000);
+    let half = qip_core::Decimal::from_raw(500_000_000);
+    plane.set_forecast_spread(Some(quarter))?;
+    let narrow = line(&mut plane)?;
+    plane.set_forecast_spread(Some(half))?;
+    let wide = line(&mut plane)?;
+    assert!(narrow < agreed, "a quarter spread did not narrow the grant");
+    assert!(
+        wide < narrow,
+        "a wider spread did not narrow the grant further"
+    );
+
+    let refused = plane.set_forecast_spread(Some(qip_core::Decimal::from_raw(1_500_000_000)));
+    assert!(refused.is_err(), "a spread above one was admitted");
+    assert_eq!(
+        line(&mut plane)?,
+        wide,
+        "a refused spread replaced the good one"
+    );
+
+    plane.set_forecast_spread(None)?;
+    assert_eq!(
+        line(&mut plane)?,
+        agreed,
+        "withdrawing the reading restores the line"
+    );
+    Ok(())
+}
