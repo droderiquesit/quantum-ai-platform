@@ -286,6 +286,10 @@ pub struct DecisionLoop {
     peers: Option<ReflexPort>,
     peer_series: Option<PeerSeries>,
     peer_offers_dropped: u64,
+    /// The peer status read once this turn; every other reader uses this copy
+    /// because reading it consumes `rebalance_new` (R12-CAPITAL-5067).
+    peer_status: Option<qip_peer_link::boundary::PeerStatus>,
+    rebalance_kept: crate::rebalance_kept::RebalanceKept,
     health: Option<(HealthSnapshot, HealthFacts)>,
     /// The fabric link's issued certificate under `QIP_TLS_MODE=cas` (ADR
     /// 0112 §2), reported in the health body as it is at each turn.
@@ -364,6 +368,8 @@ impl DecisionLoop {
             peers: None,
             peer_series: None,
             peer_offers_dropped: 0,
+            peer_status: None,
+            rebalance_kept: crate::rebalance_kept::RebalanceKept::new(),
             health: None,
             certificate: None,
             relay: None,
@@ -457,6 +463,11 @@ impl DecisionLoop {
     /// The peer link's port, if the node has one.
     pub fn peers(&self) -> Option<&ReflexPort> {
         self.peers.as_ref()
+    }
+
+    /// The rebalancing tasks read from the peer link and not yet handed on.
+    pub fn rebalance_kept(&mut self) -> &mut crate::rebalance_kept::RebalanceKept {
+        &mut self.rebalance_kept
     }
 
     /// Turns on which the port refused this cell's offer.
@@ -646,8 +657,17 @@ impl DecisionLoop {
                 );
             }
         }
-        if let (Some(port), Some(series)) = (&self.peers, &self.peer_series) {
-            series.observe(&port.status());
+        // The one read of the peer status this turn: it consumes the new
+        // rebalancing tasks, so the telemetry and the health body below use
+        // the copy kept here and the tasks are kept for whoever journals them.
+        if let Some(port) = &self.peers {
+            let mut status = port.status();
+            self.rebalance_kept
+                .absorb(std::mem::take(&mut status.rebalance_new));
+            if let Some(series) = &self.peer_series {
+                series.observe(&status);
+            }
+            self.peer_status = Some(status);
         }
         if let Some((snapshot, facts)) = &self.health {
             snapshot.publish(self.health_body(facts, pressure, retained, now));
@@ -985,12 +1005,11 @@ impl DecisionLoop {
             ),
             None => "null".to_string(),
         };
-        let peer_mesh = match &self.peers {
+        let peer_mesh = match (&self.peers, &self.peer_status) {
             // Read from atomics the session thread stores, so it is one
             // session turn behind the wire; the figures are diagnostic and
             // nothing decides on them (ADR 0116, "What it costs").
-            Some(port) => {
-                let status = port.status();
+            (Some(_), Some(status)) => {
                 format!(
                     r#"{{"edge_states_held":{},"refusals":{},"sent":{},"send_failures":{},"queued_drops":{},"received":{},"inbound_drops":{},"publish_failures":{},"dropped_offers":{},"quotes_refused":{},"quotes_withheld":{},"session_turns":{},"clocks_measured":{},"cycles_originated":{},"reservations":{},"declines":{},"fires":{},"legs_sent":{},"fills":{},"unwinds":{},"cycles_rejected":{},"cycles_expired":{}}}"#,
                     status.edge_peers_held,
@@ -1017,7 +1036,7 @@ impl DecisionLoop {
                     status.cycles_expired,
                 )
             }
-            None => "null".to_string(),
+            _ => "null".to_string(),
         };
         let pass = match &self.feed {
             Some(feed) => format!(
