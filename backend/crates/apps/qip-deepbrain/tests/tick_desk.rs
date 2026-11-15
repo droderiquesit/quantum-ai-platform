@@ -1302,3 +1302,64 @@ fn a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled(
     );
     Ok(())
 }
+
+/// R12-TICK-1176. Mutation: in `plans_of`, drop the `instruments.len() < 2`
+/// guard (slices of one instrument become a plan) or skip `set_plans` in
+/// `maybe_round_with_orders` (no saga is replayed): the matching assertion
+/// below fails.
+///
+/// The failure this prevents: a proposal that sends legs on two instruments
+/// was replayed as two unrelated orders, so the one thing that can go wrong
+/// with it, a later leg failing while an earlier leg stands open, was never
+/// replayed against the recorded market.
+#[test]
+fn a_proposal_that_sent_orders_on_two_instruments_replays_as_one_saga_and_a_single_instrument_proposal_does_not()
+-> Result<()> {
+    use qip_execution_engine::order::OrderType;
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let mut leg_a = platform_order("leg-a", OrderType::Market, 150_000, None);
+    leg_a.proposal_id = "proposal-pair".to_string();
+    let mut leg_b = platform_order("leg-b", OrderType::Market, 152_000, None);
+    leg_b.proposal_id = "proposal-pair".to_string();
+    // The second instrument has no recorded book: the saga's second leg fails.
+    leg_b.object_id = ObjectId::from_string("obj-NOBOOK");
+    // Two slices of one instrument under one proposal: not legs.
+    let mut slice_a = platform_order("slice-a", OrderType::Market, 160_000, None);
+    slice_a.proposal_id = "proposal-slices".to_string();
+    let mut slice_b = platform_order("slice-b", OrderType::Market, 161_000, None);
+    slice_b.proposal_id = "proposal-slices".to_string();
+    let orders = vec![leg_a, leg_b, slice_a, slice_b];
+
+    let round = desk
+        .maybe_round_with_orders(&graph()?, 1, at(400_000), &orders, &[])?
+        .expect("cadence 1 runs every cycle");
+
+    let replay = round.replay.as_ref().expect("the history was replayed");
+    assert_eq!(
+        replay.plans.len(),
+        1,
+        "premise: exactly the two-instrument proposal became a plan: {:?}",
+        replay.plans
+    );
+    let outcome = &replay.plans[0];
+    assert_eq!(outcome.plan_id, "proposal-pair");
+    assert_eq!(outcome.failed_leg, Some(1), "the book-less leg failed");
+    assert!(!outcome.completed);
+    let ids: Vec<&str> = round
+        .order_rows
+        .iter()
+        .map(|row| row.order_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["slice-a", "slice-b"],
+        "the legs are replayed as the plan, not also as independent orders"
+    );
+    Ok(())
+}
