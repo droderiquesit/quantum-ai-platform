@@ -527,6 +527,36 @@ impl SymbolicDerivation {
         })
     }
 
+    /// The rule ids whose firing made the pack find the thesis eligible
+    /// (R12-EXPAND-6044, the direction a veto cannot see): the trace steps
+    /// that derived `eligible`. Empty when the pack did not find it eligible,
+    /// and when review had not approved, because eligibility the pack derives
+    /// for a hypothesis nobody approved is not what was acted on. Read from
+    /// the verdict's own trace, as [`Self::veto_rules`] is, so a renamed rule
+    /// is named by its new id.
+    pub fn eligible_rules(&self) -> Vec<String> {
+        let Step::Derived(verdict) = &self.rules.verdict else {
+            return Vec::new();
+        };
+        let approved = self
+            .rules
+            .inputs
+            .iter()
+            .any(|(name, value)| name == "status" && *value == Value::Text("approved".into()));
+        if !approved || verdict.facts.get("eligible") != Some(&Value::Bool(true)) {
+            return Vec::new();
+        }
+        let mut rules: Vec<String> = verdict
+            .trace
+            .iter()
+            .filter(|step| step.fact == "eligible" && step.value == Value::Bool(true))
+            .map(|step| step.rule.clone())
+            .collect();
+        rules.sort();
+        rules.dedup();
+        rules
+    }
+
     /// The rule and invariant ids whose firing made [`Self::veto`]
     /// (R12-EXPAND-6044): the trace steps that derived the two hard-stop
     /// facts, and the pack's live-authority invariant where the ceiling was
@@ -1711,6 +1741,29 @@ mod tests {
             cash_headroom: Some(900_000),
             contract_expiry_margin_days: None,
         }
+    }
+
+    /// R12-EXPAND-6044: the rules that made the pack find a thesis eligible
+    /// are read from the trace, and none are named for a thesis the pack
+    /// did not find eligible. Mutation: make `eligible_rules` return the
+    /// whole trace's rule ids; the second assert fails.
+    #[test]
+    fn eligible_rules_names_the_rule_that_admitted_and_nothing_when_not_eligible() {
+        let admitted = derive(input(), &CausalGraph::default(), at(20));
+        assert_eq!(admitted.eligible_rules(), vec!["r10-eligible".to_string()]);
+        let expiring = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(-1),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(
+            expiring.eligible_rules().is_empty(),
+            "{:?}",
+            expiring.eligible_rules()
+        );
     }
 
     /// REASON-3057, contracts: a hypothesis on a dated contract that expires
