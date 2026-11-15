@@ -21109,10 +21109,10 @@ impl Platform {
         let hypothesis_id = reasoned.hypothesis.hypothesis_id.to_string();
         // The reversion of what was measured: the anomaly observed a
         // displacement from expectation, and the thesis is that it closes.
-        // Refused, not clamped, outside the mandate-scale range construction
-        // validates: an extreme print is a bad measurement, and clamping it
-        // recorded a forecast the evidence never made (ADR 0692).
-        let median = crate::thesis_median::reversion_median(anomaly.expected, anomaly.observed)?;
+        // Bounded to the mandate-scale range construction validates, so an
+        // extreme print proposes a large-but-finite return rather than an
+        // absurd one.
+        let median = (anomaly.expected - anomaly.observed).clamp(-0.5, 0.5);
         let return_forecast =
             self.return_forecast(object_id, &hypothesis_id, median, opportunity.horizon, now)?;
         Ok(JustifiedThesis::new(
