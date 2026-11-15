@@ -1,0 +1,92 @@
+{
+ "lane": "04",
+ "note": "ADR numbers: only 0608 and 0609 are used; the digest and replay-shard decisions are parts 2 and 3 of 0609. Rows were written without compiling after the owner's 2026-11-15 instruction, except 3097.",
+ "rows": [
+  {
+   "id": "R12-TICK-2084",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "qip_kernel::mismatch routes each fused mismatch to one paper-only record (research question, evidence challenge, proposed hypothesis); a falsification Book intake, Platform::admit_proposed_hypotheses and tick_desk::dispatch_mismatches wired beside the outside-prior hand-off. ADR 0609 (Proposed). Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). An earlier version of this same code passed its tests (fusion 10 passed; deepbrain test passed; five mutations fired) before the container was lost; this commit is a rewrite from that text.",
+   "remains": "Tick desk off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant); proposals not evaluated by Book::review; EvidenceChallenge::lowered not applied to a live evidence weight; research questions ride the scout queue, not a separate research intake.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_world_market_mismatch_reaches_its_one_paper_only_consumer",
+    "backend/crates/apps/qip-deepbrain/src/node.rs::tests::a_rounds_mismatches_reach_falsification_and_the_discovery_scout_queue"
+   ],
+   "test_command": "cargo test -p qip-kernel --test fusion; cargo test -p qip-deepbrain --lib a_rounds_mismatches",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "1e968baa"
+  },
+  {
+   "id": "R12-TICK-2086",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "qip_contracts::fused_digest::FusedDigest (read refuses another region and a stale digest) and qip_kernel::digest::build_for_cell (authorise_for first). Nothing was compiled or run after 2026-11-15 (owner's write-only instruction).",
+   "remains": "The fused_digest slot of PolicyPayload (changes signing string and every literal; versioned change); a call from per-cell publication; an edge-node reader; payload versioning.",
+   "tests": [
+    "backend/crates/libs/qip-contracts/tests/fused_digest.rs",
+    "backend/crates/runtime/qip-kernel/tests/fusion.rs::a_cells_fused_digest_is_built_only_where_the_licence_permits_and_is_not_read_stale"
+   ],
+   "test_command": "cargo test -p qip-contracts --test fused_digest; cargo test -p qip-kernel --test fusion",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "258e212a"
+  },
+  {
+   "id": "R12-TICK-2090",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "qip_kernel::venue_outage::apply_venue_status, an idempotent open/close writer for a reported venue status, with a unit test. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). Nothing calls it.",
+   "remains": "A VenueStatus or cell-halt feed reaching it; membership rebuilt from the event log at resume; a listing date in the catalogue; a licensed feed emitting corporate actions; a deep-brain test that a round's backtest refuses a delisted name (evaluate is private).",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/venue_outage.rs::tests::a_reported_down_opens_one_outage_and_an_up_closes_it"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib venue_outage",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "d709bb9c"
+  },
+  {
+   "id": "R12-TICK-3097",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "qip_twin::worlds: DriverKind (Policy, Weather, Default, Supply, OwnAction, Price), KindedDriver, SyntheticWorlds; feed_backed never returns a hypothesis-only kind. ADR 0608 (Proposed). Compiled and tested before the write-only instruction: qip-twin all ok, worlds 3 passed, clippy and fmt clean, 3 mutations fired and were restored.",
+   "remains": "Tick desk and CLI do not call it; participant, liquidity and market-structure dimensions are in the simulation engine, not in the new test.",
+   "tests": [
+    "backend/crates/services/qip-twin/tests/worlds.rs::one_generator_grows_worlds_differing_along_every_named_dimension",
+    "backend/crates/services/qip-twin/tests/worlds.rs::a_branch_of_a_kind_no_feed_produces_never_reaches_the_market_facing_accessor",
+    "backend/crates/services/qip-twin/tests/worlds.rs::a_declared_kind_that_grows_no_world_is_refused"
+   ],
+   "test_command": "cargo test -p qip-twin --test worlds",
+   "mutations": [
+    "worlds.rs kind_of returned None: 'premise: every kind grew worlds' failed",
+    "worlds.rs has_feed_producer true for all: 'assertion failed: !backed.iter().any(.. pol: ..)'",
+    "worlds.rs unreached-driver check disabled: got \"\""
+   ],
+   "commit": "c470c473"
+  },
+  {
+   "id": "R12-TICK-8110",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "qip_kernel::replay_shard (disjoint round-robin shard_indices, ComparisonTotals::merge) with the two-shards-reproduce-single test, and ADR 0609 part 3 settling that the entry point lives in qip-deepbrain. A patch file holds the protected variables.tf and the Cloud Run Job. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction).",
+   "remains": "The public seam over score_declined/score_filled; the qip-deepbrain shard entry point reading ArchiveReader; Terraform (variables.tf is protected; patch only, no plan or apply); funding figure is provisional.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/replay_shard.rs::tests::two_shards_over_disjoint_segments_reproduce_the_single_process_comparison"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib replay_shard",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "66e668ad"
+  }
+ ]
+}

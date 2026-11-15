@@ -710,6 +710,17 @@ pub fn run_with(
         if let Some(desk) = loops.tick.as_deref() {
             platform.set_outside_priors(desk.outside_priors().to_vec())?;
         }
+        // What the market did against the world model reaches one paper-only
+        // consumer per kind (R12-TICK-2084, ADR 0609).
+        if let Some(desk) = loops.tick.as_deref_mut() {
+            crate::tick_desk::dispatch_mismatches(
+                desk,
+                platform,
+                evolution
+                    .as_deref_mut()
+                    .and_then(|engine| engine.discovery_desk_mut()),
+            );
+        }
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
@@ -1171,6 +1182,68 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
     use qip_storage::MemoryKeyValueStore;
+
+    /// R12-TICK-2084: a round's routed mismatches reach their consumers — the
+    /// proposal the platform's falsification book, the investigation and the
+    /// challenge the discovery desk's scout queue — and are taken, not kept.
+    /// Mutation: not run (nothing was compiled).
+    #[test]
+    fn a_rounds_mismatches_reach_falsification_and_the_discovery_scout_queue() {
+        use qip_kernel::mismatch::{
+            EvidenceChallenge, HypothesisStatus, MismatchRouting, ProposedHypothesis,
+            ResearchQuestion,
+        };
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let mut desk = crate::tick_desk::TickDesk::new(
+            crate::tick_desk::TickDeskConfig::off(),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+        );
+        let mut discovery = crate::discovery::DiscoveryDesk::new(
+            crate::discovery::DiscoveryConfig::default(),
+            vec![],
+        );
+        desk.seed_mismatch_routing(MismatchRouting {
+            questions: vec![ResearchQuestion {
+                event: "evt-a".into(),
+                instrument: "AAA".into(),
+                reason: "no reaction".into(),
+                prior: 0.8,
+            }],
+            challenges: vec![EvidenceChallenge {
+                event: "evt-b".into(),
+                evidence_quality: 0.25,
+                reason: "weak".into(),
+                instruments: vec!["BBB".into()],
+            }],
+            proposals: vec![ProposedHypothesis {
+                event: "evt-c".into(),
+                instrument: "CCC".into(),
+                expected_direction: 1.0,
+                measured_bps: -12.0,
+                status: HypothesisStatus::Proposed,
+            }],
+        });
+        let done =
+            crate::tick_desk::dispatch_mismatches(&mut desk, &mut platform, Some(&mut discovery));
+        assert_eq!((done.proposed, done.scouted), (1, 2));
+        assert_eq!(platform.falsification().proposed().len(), 1);
+        let queue: Vec<_> = discovery.scout_queue().collect();
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].rank_bp, 8_000, "investigation ranks at its prior");
+        assert_eq!(
+            queue[1].rank_bp, 7_500,
+            "a challenge ranks at the quality it lacks"
+        );
+        let again =
+            crate::tick_desk::dispatch_mismatches(&mut desk, &mut platform, Some(&mut discovery));
+        assert_eq!(
+            (again.proposed, again.scouted),
+            (0, 0),
+            "a round was dispatched twice"
+        );
+    }
 
     /// R12-TICK-2085: the run loop's hand-off replaces the engine's priors
     /// with the desk's posteriors, and leaves them alone when there is no
