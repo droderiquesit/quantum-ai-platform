@@ -47,6 +47,7 @@ pub mod outbox;
 pub mod pass;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
+pub mod reflex;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.
