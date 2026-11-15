@@ -1752,8 +1752,17 @@ impl LedgerStore {
                 continue;
             }
             for posting in event.postings() {
-                if !matches!(&posting.account, Account::Trading { cell, .. } if *cell == statement.cell)
-                {
+                // A stated cash unit is the cell's cash wherever it sits:
+                // trading, or in settlement until the venue settles it
+                // (the venue's clearing cash moves at the fill).
+                let counts = match &posting.account {
+                    Account::Trading { cell, .. } => *cell == statement.cell,
+                    Account::InSettlement { cell, .. } => {
+                        *cell == statement.cell && statement.cash.contains_key(&posting.unit)
+                    }
+                    _ => false,
+                };
+                if !counts {
                     continue;
                 }
                 let entry = ledger.entry(posting.unit.clone()).or_insert(Decimal::ZERO);

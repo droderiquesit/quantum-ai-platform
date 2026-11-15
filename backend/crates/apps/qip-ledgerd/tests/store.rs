@@ -1663,6 +1663,7 @@ fn custody(holdings: &[(&str, &str)], simulated: bool) -> Decision {
             .map(|(unit, quantity)| ((*unit).to_string(), (*quantity).to_string()))
             .collect(),
         cash_units: vec![UNIT.to_string()],
+        cash: Vec::new(),
         simulated,
     }
 }
@@ -2002,4 +2003,100 @@ fn the_register_groups_a_cycles_legs_and_judges_each_cycle_by_what_filled() {
     assert_eq!(verdict("c4"), CycleVerdict::Open);
     let c2 = cycles.iter().find(|c| c.cycle_id == "c2").unwrap();
     assert_eq!(c2.orders, vec!["c2-a".to_string(), "c2-b".to_string()]);
+}
+
+// --- venue cash as a custody statement (ADR 0653) ---------------------------
+
+fn custody_with_cash(holdings: &[(&str, &str)], cash: &str) -> Decision {
+    match custody(holdings, true) {
+        Decision::CustodyStatement {
+            venue,
+            holdings,
+            cash_units,
+            simulated,
+            ..
+        } => Decision::CustodyStatement {
+            venue,
+            holdings,
+            cash_units,
+            cash: vec![(UNIT.to_string(), cash.to_string())],
+            simulated,
+        },
+        _ => unreachable!("custody builds a CustodyStatement"),
+    }
+}
+
+#[test]
+fn a_stated_cash_balance_is_compared_with_the_cells_cash_and_a_difference_is_a_break_by_direction()
+{
+    // The failure this prevents: R12-LEDGER-10185's cash half — positions
+    // were rebuilt from the venue's statement and cash was trusted, so a
+    // venue whose cash had drifted from the booked fills raised nothing.
+    // Mutation verified: skipping the `cash` keys in `custody::compare`
+    // leaves the drifted statement agreeing (breaks 0 where 1 is asserted);
+    // swapping the direction arms fails the direction assertions.
+    let (store, metrics, mut j, held, _dir) = holding_ten("custody-cash");
+    let cash = store.balance(&trading("alpha"), UNIT).expect("cash");
+    assert!(
+        !cash.is_zero(),
+        "premise: the fills moved cash, so agreeing is not two zeros"
+    );
+    let holding = held.to_string();
+    let agrees = j.outcome(custody_with_cash(&[(OBJECT, &holding)], &cash.to_string()));
+    assert_eq!(
+        store.apply(&at(2, &agrees)).expect("apply"),
+        Disposition::CustodyCompared { breaks: 0 }
+    );
+
+    let venue_has_more = cash.checked_add(Decimal::from_int(7)).expect("arithmetic");
+    let over = j.outcome(custody_with_cash(
+        &[(OBJECT, &holding)],
+        &venue_has_more.to_string(),
+    ));
+    assert_eq!(
+        store.apply(&at(3, &over)).expect("apply"),
+        Disposition::CustodyCompared { breaks: 1 }
+    );
+    assert_eq!(custody_breaks(&metrics, "venue_over_ledger"), 1);
+    assert_eq!(custody_breaks(&metrics, "ledger_over_venue"), 0);
+    let notes = custody_notes(&store);
+    assert!(notes[0].starts_with(&format!("{UNIT}: ")), "{notes:?}");
+
+    let venue_has_less = cash.checked_sub(Decimal::from_int(7)).expect("arithmetic");
+    let under = j.outcome(custody_with_cash(
+        &[(OBJECT, &holding)],
+        &venue_has_less.to_string(),
+    ));
+    assert_eq!(
+        store.apply(&at(4, &under)).expect("apply"),
+        Disposition::CustodyCompared { breaks: 1 }
+    );
+    assert_eq!(custody_breaks(&metrics, "ledger_over_venue"), 1);
+    // Never an adjustment: the cash the ledger books is what the fills said.
+    assert_eq!(store.balance(&trading("alpha"), UNIT).expect("cash"), cash);
+}
+
+#[test]
+fn cash_held_in_settlement_is_the_cells_cash_on_the_venues_statement() {
+    // The failure this prevents: a sale at a cycle venue holds its proceeds
+    // in `in_settlement:` while the venue's clearing cash has them from the
+    // fill, so comparing only `trading:` cash would break every T+n sale.
+    // Mutation verified: dropping the `InSettlement` arm in
+    // `compare_custody` reads the venue's +100 against a ledger zero and
+    // fails with one break.
+    let dir = temp_dir("custody-in-settlement");
+    let (store, _) = settling(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let sale = j.outcome(fill("a-0", 10, "10", BookSide::Bid, true));
+    store.apply(&at(0, &sale)).expect("apply");
+    assert_eq!(
+        store.balance(&trading("alpha"), UNIT).expect("cash"),
+        Decimal::ZERO,
+        "premise: the proceeds are not in trading cash"
+    );
+    let statement = j.outcome(custody_with_cash(&[(OBJECT, "-10")], "100"));
+    assert_eq!(
+        store.apply(&at(1, &statement)).expect("apply"),
+        Disposition::CustodyCompared { breaks: 0 }
+    );
 }

@@ -1645,6 +1645,14 @@ struct Deployed {
     pricing: Option<PricingPolicy>,
 }
 
+/// What a venue's last custody statement said: holdings, cash units, and the
+/// cash change per stated unit.
+type StatedCustody = (
+    BTreeMap<String, Decimal>,
+    BTreeSet<String>,
+    BTreeMap<String, Decimal>,
+);
+
 /// One edge cell.
 #[derive(Debug)]
 pub struct Cell {
@@ -1906,7 +1914,7 @@ pub struct Cell {
     /// 0494): its holdings and the cash units it left out. A statement equal
     /// to the last one is not journaled again. Bounded by the configured
     /// venue list, because a statement for any other venue is refused.
-    custody_stated: BTreeMap<VenueId, (BTreeMap<String, Decimal>, BTreeSet<String>)>,
+    custody_stated: BTreeMap<VenueId, StatedCustody>,
     /// When each venue's feed was last heard, on this cell's own clock.
     ///
     /// Written by [`Cell::on_bytes`] and [`Cell::feed_heartbeat`] and by
@@ -2588,6 +2596,29 @@ impl Cell {
         cash_units: BTreeSet<String>,
         now: Timestamp,
     ) -> Result<Option<u64>> {
+        self.record_custody_statement_with_cash(venue, holdings, cash_units, BTreeMap::new(), now)
+    }
+
+    /// [`Self::record_custody_statement`] that also states the venue's cash
+    /// change per cash unit (R12-LEDGER-10185, ADR 0653). A cash balance for a
+    /// unit not named in `cash_units` is refused: it would be compared and
+    /// excluded at once. A cash change that moved is a statement that moved,
+    /// so a cash-only change is journaled too.
+    pub fn record_custody_statement_with_cash(
+        &mut self,
+        venue: &VenueId,
+        holdings: BTreeMap<String, Decimal>,
+        cash_units: BTreeSet<String>,
+        cash: BTreeMap<String, Decimal>,
+        now: Timestamp,
+    ) -> Result<Option<u64>> {
+        if let Some(unit) = cash.keys().find(|unit| !cash_units.contains(*unit)) {
+            return Err(Error::invalid(format!(
+                "{unit} is stated as a cash balance of {}'s custody statement but is not one of \
+                 its cash units; name it as cash first",
+                venue.as_str()
+            )));
+        }
         if !self.config.venues.contains(venue) {
             return Err(Error::invalid(format!(
                 "{} is not a venue this cell trades at, so it holds nothing there to state; a \
@@ -2602,10 +2633,10 @@ impl Cell {
                 venue.as_str()
             )));
         }
-        let stated = (holdings, cash_units);
+        let stated = (holdings, cash_units, cash);
         let unmoved = match self.custody_stated.get(venue) {
             Some(last) => last == &stated,
-            None => stated.0.is_empty(),
+            None => stated.0.is_empty() && stated.2.values().all(|change| change.is_zero()),
         };
         if unmoved {
             return Ok(None);
@@ -2619,6 +2650,11 @@ impl Cell {
                     .map(|(unit, quantity)| (unit.clone(), quantity.to_string()))
                     .collect(),
                 cash_units: stated.1.iter().cloned().collect(),
+                cash: stated
+                    .2
+                    .iter()
+                    .map(|(unit, change)| (unit.clone(), change.to_string()))
+                    .collect(),
                 simulated: true,
             },
             now,
