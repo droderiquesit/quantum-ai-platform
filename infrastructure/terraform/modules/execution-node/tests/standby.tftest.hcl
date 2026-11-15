@@ -308,3 +308,55 @@ run "standby_fencing_rules_allow_primary_to_standby_communication" {
     error_message = "Fencing rule must allow port 9443 for fencing protocol"
   }
 }
+
+# ADR 0137 / R12-REFLEX-8069: a gs:// lease creates its bucket with
+# versioning off and grants the node identity the three object permissions on
+# the lease object only. Fails if the bucket, the role's permission list or
+# the object condition is removed or widened.
+run "a_gcs_lease_creates_its_bucket_and_grants_only_get_create_update_on_the_object" {
+  command = plan
+
+  variables {
+    standby_enabled    = true
+    fencing_lease_path = "gs://qip-dev-lease-primary/fencing/lease.json"
+  }
+
+  assert {
+    condition     = google_storage_bucket.lease[0].name == "qip-dev-lease-primary" && google_storage_bucket.lease[0].versioning[0].enabled == false
+    error_message = "The lease bucket is missing or versioned; the generation is the version."
+  }
+
+  assert {
+    condition     = toset(google_project_iam_custom_role.lease_holder[0].permissions) == toset(["storage.objects.get", "storage.objects.create", "storage.objects.update"])
+    error_message = "The lease role is not exactly get, create and update."
+  }
+
+  assert {
+    condition     = strcontains(google_storage_bucket_iam_member.lease[0].condition[0].expression, "objects/fencing/lease.json")
+    error_message = "The lease grant is not conditioned on the lease object."
+  }
+}
+
+run "a_file_lease_creates_no_bucket" {
+  command = plan
+
+  variables {
+    standby_enabled = true
+  }
+
+  assert {
+    condition     = length(google_storage_bucket.lease) == 0
+    error_message = "A file lease created a bucket."
+  }
+}
+
+run "a_lease_under_another_scheme_is_refused" {
+  command = plan
+
+  variables {
+    standby_enabled    = true
+    fencing_lease_path = "s3://bucket/lease.json"
+  }
+
+  expect_failures = [var.fencing_lease_path]
+}

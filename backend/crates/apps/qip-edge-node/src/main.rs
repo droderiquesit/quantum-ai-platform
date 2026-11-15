@@ -90,8 +90,9 @@ use qip_edge_node::rollback::{ROLLBACK_VARIABLE, RollbackRequest, RollbackWire};
 use qip_edge_node::scheduler::{DecisionLoop, HealthFacts, InstantClock, MarkerFacts, Outbox};
 use qip_edge_node::share::RegionShareStatus;
 use qip_edge_node::standby::{
-    FileLeaseStore, LEASE_VARIABLE, LeaseKeeper, LeaseThread, LeaseTiming, NAME_VARIABLE,
-    ROLE_VARIABLE, SimulatedSessions, StandbySettings,
+    CloudObject, FileLeaseStore, GcsLeaseStore, LEASE_VARIABLE, LeaseKeeper, LeaseLocation,
+    LeaseStore, LeaseThread, LeaseTiming, NAME_VARIABLE, ROLE_VARIABLE, SimulatedSessions,
+    StandbySettings,
 };
 use qip_edge_node::strategies::{
     FEATURE_PAIRS_VARIABLE, MARKETABLE, PLAN_VARIABLE, PRICING_VARIABLE, REST_AT_MID_PREFIX,
@@ -1081,23 +1082,55 @@ fn run() -> Result<()> {
             }
             let fence = Fence::new();
             cell.install_fence(fence.clone());
-            let store = FileLeaseStore::at(&settings.path)?;
+            let store: Arc<dyn LeaseStore> = match &settings.location {
+                LeaseLocation::File(path) => Arc::new(FileLeaseStore::at(path)?),
+                LeaseLocation::Gcs { bucket, object } => {
+                    let plain = |name: &str| std::env::var(name).ok();
+                    let access = qip_storage::GcpAccess::from_values(
+                        plain("QIP_GCP_ENDPOINT").as_deref(),
+                        plain("QIP_GCP_METADATA_SERVER").as_deref(),
+                        // The node's own identity from the metadata server; a
+                        // pasted token or token file would be a second credential.
+                        None,
+                        None,
+                        Arc::new(SystemClock),
+                    )?;
+                    let blobs = qip_storage::gcp::CloudStorageBlobStore::new(
+                        qip_storage::gcp::CloudStorageConfig::new(bucket.clone())
+                            .with_access(access),
+                    )?;
+                    Arc::new(GcsLeaseStore::new(Arc::new(CloudObject::new(
+                        blobs,
+                        object.clone(),
+                    ))))
+                }
+            };
             let keeper = LeaseKeeper::new(
                 &settings.name,
                 settings.role,
                 LeaseTiming::deployed()?,
-                Arc::new(store),
+                store,
                 fence,
                 config.venues.clone(),
                 Box::new(SimulatedSessions),
             )?;
             println!(
-                "qip-edge-node: fencing lease at {} as {} `{}`: ttl {:?}, margin {:?}; this cell                  places nothing until it holds the epoch. The file store is correct on one host                  only: a standby in another zone needs a store with a conditional write, which                  this tree does not have",
-                settings.path.display(),
+                "qip-edge-node: fencing lease at {} as {} `{}`: ttl {:?}, margin {:?}; this cell                  places nothing until it holds the epoch. {}",
+                settings.location,
                 settings.role.as_str(),
                 settings.name,
                 keeper.timing().ttl,
                 keeper.timing().margin,
+                match &settings.location {
+                    LeaseLocation::File(_) => {
+                        "The file store is correct on one host only; a standby in another \
+                         zone needs a gs:// lease"
+                    }
+                    LeaseLocation::Gcs { .. } => {
+                        "The lease is a Cloud Storage object written under a generation \
+                         precondition"
+                    }
+                },
             );
             Some(LeaseThread::spawn(keeper, Arc::clone(&clock))?)
         }
@@ -1481,6 +1514,28 @@ fn run() -> Result<()> {
     let mut control: Option<ControlWiring> = None;
     match config.fabric.take() {
         Some(mut fabric) => {
+        Some(mut fabric) => {
+            // R12-FABRIC-10016: the broker's address from its SRV record when a
+            // resolver and zone are configured; the configured endpoint is the
+            // last rung, so an unreachable resolver never stops the node.
+            if let Some(discovery) =
+                qip_edge_node::fabric_discovery::FabricDiscovery::read(&|name| {
+                    std::env::var(name).ok()
+                })?
+            {
+                let found = discovery.resolve(&fabric.url, Arc::clone(&clock))?;
+                qip_edge_node::fabric_discovery::record_source(metrics, found.source);
+                println!(
+                    "qip-edge-node: fabric endpoint {} from {}{}",
+                    found.url,
+                    found.source.as_label(),
+                    found
+                        .lookup_failure
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                );
+                fabric.url = found.url;
+            }
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said

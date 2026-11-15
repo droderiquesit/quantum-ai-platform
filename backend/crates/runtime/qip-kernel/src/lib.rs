@@ -41,6 +41,7 @@ pub mod breadth;
 pub mod bus_bridge;
 pub mod capacity_review;
 pub mod causal_review;
+pub mod cell_cycle_scores;
 pub mod central;
 pub mod chain_settlement;
 pub mod class_exposure;

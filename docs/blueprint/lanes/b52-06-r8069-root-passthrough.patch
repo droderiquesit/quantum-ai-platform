@@ -1,0 +1,34 @@
+Protected-path patch for R12-REFLEX-8069 / R12-REFLEX-9114 (wave b52 lane 06).
+Not applied: infrastructure/terraform/variables.tf is protected, and the
+owner's ruling says standby_enabled defaults to false. Apply by hand, then
+`terraform fmt -check` and `terraform validate`, which this lane could not run
+(no terraform binary in its container).
+
+--- a/infrastructure/terraform/variables.tf
++++ b/infrastructure/terraform/variables.tf
++variable "execution_standby_enabled" {
++  description = "Create a fenced warm standby beside each execution node, in standby_zone. A second billed node; false everywhere until the owner dispatches one (R12-REFLEX-8069)."
++  type        = bool
++  default     = false
++  nullable    = false
++}
++
++variable "execution_fencing_lease_path" {
++  description = "gs://<bucket>/<object>.json: the cross-zone lease (ADR 0137). The execution-node module creates the bucket. Empty for no standby."
++  type        = string
++  default     = ""
++  nullable    = false
++
++  validation {
++    condition     = var.execution_fencing_lease_path == "" || can(regex("^gs://", var.execution_fencing_lease_path))
++    error_message = "The root admits only a gs:// lease; the file form is one host."
++  }
++}
+
+--- a/infrastructure/terraform/main.tf
++++ b/infrastructure/terraform/main.tf
+@@ module "execution_node" {
+   project_id  = var.project_id
+   environment = var.environment
++  standby_enabled    = var.execution_standby_enabled
++  fencing_lease_path = var.execution_fencing_lease_path

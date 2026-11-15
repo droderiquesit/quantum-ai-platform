@@ -2092,3 +2092,83 @@ fn an_order_the_venue_rejects_is_journaled_as_a_typed_reject_naming_the_order_an
     assert!(!sent.contains(&rejects[0].0));
     Ok(())
 }
+
+#[test]
+fn a_book_left_crossed_records_one_microstructure_episode_and_a_book_that_only_passed_through_a_cross_records_none()
+-> Result<()> {
+    // The failure this prevents: ADR 0207 left `Microstructure` named and
+    // never recorded, so a region that saw a venue publish a corrupt book
+    // had the discard in its chain and nothing a centre could be told.
+    use qip_contracts::regional_episode::EpisodeKind;
+    let (mut cell, _gateway) = three_books()?;
+    assert!(
+        cell.episodes().is_empty(),
+        "the premise failed: an episode stands before any fault: {:?}",
+        cell.episodes()
+    );
+    // Crossed between two lines of one frame and uncrossed by the end of it:
+    // a venue moving up, not a corrupt book, and not an episode.
+    feed(
+        &mut cell,
+        XPAR,
+        "3\tobj-BETA\tB\t51.5\t100\n4\tobj-BETA\tA\t53\t400\n5\tobj-BETA\tA\t51\t0",
+        t(14),
+    )?;
+    assert!(
+        cell.episodes().is_empty(),
+        "a transient cross was recorded: {:?}",
+        cell.episodes()
+    );
+    // Left crossed at the end of a frame.
+    feed(&mut cell, XPAR, "6\tobj-BETA\tB\t54\t100", t(15))?;
+    let episodes = cell.episodes();
+    assert_eq!(episodes.len(), 1, "{episodes:?}");
+    assert_eq!(episodes[0].kind, EpisodeKind::Microstructure);
+    assert_eq!(episodes[0].cell, CELL);
+    assert_eq!(episodes[0].region, REGION);
+    assert_eq!(episodes[0].recorded_at, t(15));
+    assert!(
+        episodes[0].detail.starts_with("XPAR obj-BETA: ")
+            && episodes[0].detail.contains("the book crossed by 1"),
+        "{}",
+        episodes[0].detail
+    );
+    Ok(())
+}
+
+#[test]
+fn a_venue_entering_quarantine_records_one_venue_behaviour_episode_on_entry_and_none_while_it_holds()
+-> Result<()> {
+    // The failure this prevents: a venue that began rejecting its orders was
+    // in the chain as a refusal and in no episode, so a region's lesson
+    // about a venue never left the region (R12-REFLEX-6012).
+    use qip_contracts::regional_episode::EpisodeKind;
+    let mut cell = quarantining_cell(&[XLON, XPAR])?;
+    let mut gateway = Gateway {
+        down: vec![venue(XLON)],
+        ..Gateway::default()
+    };
+    for now in [10, 11, 12] {
+        assert!(cell.work(t(now), &mut gateway).is_err(), "premise");
+    }
+    assert!(
+        cell.episodes().is_empty(),
+        "rejections alone recorded an episode: {:?}",
+        cell.episodes()
+    );
+    cell.work(t(13), &mut gateway)?;
+    let episodes = cell.episodes();
+    assert_eq!(episodes.len(), 1, "{episodes:?}");
+    assert_eq!(episodes[0].kind, EpisodeKind::VenueBehaviour);
+    assert_eq!(episodes[0].cell, CELL);
+    assert!(
+        episodes[0].detail.starts_with("XLON left rotation: ")
+            && episodes[0].detail.contains("rejected 3 of 3 orders"),
+        "{}",
+        episodes[0].detail
+    );
+    // It holds: no repeat on the next pass.
+    cell.work(t(14), &mut gateway)?;
+    assert_eq!(cell.episodes().len(), 1, "{:?}", cell.episodes());
+    Ok(())
+}

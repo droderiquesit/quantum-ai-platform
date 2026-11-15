@@ -1437,6 +1437,9 @@ pub mod names {
     pub const EDGE_JOURNAL_SPOOL_BYTES: &str = "qip_edge_journal_spool_bytes";
     pub const EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES: &str = "qip_edge_journal_spool_unarchived_bytes";
     pub const EDGE_JOURNAL_PRESSURE: &str = "qip_edge_journal_pressure";
+    /// Which rung of the fabric bootstrap ladder supplied the endpoint, by
+    /// `source` (`srv`, `cached`, `configured`): `1` on the one in force.
+    pub const FABRIC_ADDRESS_SOURCE: &str = "qip_fabric_address_source";
 
     // Edge event fabric metrics (edge-node)
     pub const EDGE_EVENT_FABRIC_DRAIN: &str = "qip_edge_event_fabric_drain_total";

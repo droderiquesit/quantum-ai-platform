@@ -3821,6 +3821,17 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
         bought.is_positive() && (bought - sold).is_positive(),
         "the buy leg earned {bought} and the sell leg {sold} on a rising tape"
     );
+    // One score for the whole cycle, the legs' earnings summed (R12-MESH-5068).
+    // Mutation: `cell_cycle_scores` returning the per-leg count fails the
+    // length assertion.
+    let cycles = platform.cell_cycle_scores();
+    assert_eq!(
+        cycles.len(),
+        1,
+        "two legs of one refusal are one cycle: {cycles:?}"
+    );
+    assert_eq!(cycles[0].legs_scored, 2);
+    assert_eq!(cycles[0].would_have_earned, bought + sold);
     // And kept out of the desk's own declined sample, which sizes the desk.
     assert!(platform.declined_scores().is_empty());
     Ok(())
