@@ -147,10 +147,6 @@ fn realised_volatility(closes: &[f64]) -> f64 {
 pub struct Book {
     ledger: TrialLedger,
     last: Option<FalsificationPass>,
-    /// Relative-value hypotheses a world/market mismatch proposed
-    /// (R12-TICK-2084). Held as proposed: no falsifier has been evaluated
-    /// against them and nothing here sizes from one.
-    proposed: Vec<crate::mismatch::ProposedHypothesis>,
 }
 
 impl Default for Book {
@@ -164,33 +160,7 @@ impl Book {
         Self {
             ledger: TrialLedger::new(),
             last: None,
-            proposed: Vec::new(),
         }
-    }
-
-    /// Take a relative-value hypothesis a mismatch proposed. Idempotent on
-    /// the event and instrument, so a tick round that re-fuses the same event
-    /// does not count one idea twice, and bounded by
-    /// [`crate::mismatch::PROPOSED_CAPACITY`] with the oldest dropped. Returns
-    /// whether it was new.
-    pub fn propose(&mut self, hypothesis: crate::mismatch::ProposedHypothesis) -> bool {
-        if self
-            .proposed
-            .iter()
-            .any(|p| p.event == hypothesis.event && p.instrument == hypothesis.instrument)
-        {
-            return false;
-        }
-        if self.proposed.len() == crate::mismatch::PROPOSED_CAPACITY {
-            self.proposed.remove(0);
-        }
-        self.proposed.push(hypothesis);
-        true
-    }
-
-    /// The hypotheses proposed so far, oldest first.
-    pub fn proposed(&self) -> &[crate::mismatch::ProposedHypothesis] {
-        &self.proposed
     }
 
     /// Cumulative trials and recorded refutations, for an operator and for a

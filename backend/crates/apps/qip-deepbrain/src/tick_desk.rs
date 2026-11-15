@@ -574,76 +574,6 @@ pub struct TickDesk {
     /// decision 5). `None` until a digest has been noted: a desk nothing
     /// routes digests to reads its lake as it always did.
     tape: Option<qip_kernel::tape_attestation::TapeAttestation>,
-    /// Where the last round's mismatches were routed, until the node takes
-    /// them (R12-TICK-2084, ADR 0609).
-    mismatch_routing: qip_kernel::mismatch::MismatchRouting,
-}
-
-/// What [`dispatch_mismatches`] did.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MismatchDispatch {
-    /// Relative-value hypotheses that entered falsification as new.
-    pub proposed: usize,
-    /// Scout requests handed to discovery: investigations and challenges.
-    pub scouted: usize,
-}
-
-/// Hand a round's routed mismatches to their consumers: proposals to the
-/// platform's falsification book, investigations and evidence challenges to
-/// the discovery desk as scout requests. Paper-only by construction: none of
-/// the three records carries a quantity, price or side.
-///
-/// The scout rank is derived from the evidence, not chosen: an investigation
-/// ranks at the prior it contradicted, a challenge at the quality it lacks.
-pub fn dispatch_mismatches(
-    desk: &mut TickDesk,
-    platform: &mut qip_kernel::Platform,
-    discovery: Option<&mut crate::discovery::DiscoveryDesk>,
-) -> MismatchDispatch {
-    let routing = desk.take_mismatch_routing();
-    let mut out = MismatchDispatch {
-        proposed: platform.admit_proposed_hypotheses(routing.proposals),
-        scouted: 0,
-    };
-    // A figure outside [0, 1] is refused, not clamped: that request is
-    // left out rather than ranked on a number the fusion should not have made.
-    let bp = |x: f64| {
-        (0.0..=1.0)
-            .contains(&x)
-            .then(|| (x * 10_000.0).round() as u32)
-    };
-    let mut requests = Vec::new();
-    for q in routing.questions {
-        if let Some(rank_bp) = bp(q.prior) {
-            requests.push(crate::research::ScoutRequest {
-                request_id: format!("investigation:{}:{}", q.event, q.instrument),
-                question: q.reason,
-                rank_bp,
-                entities: vec![q.instrument],
-                // What these requests meant before a request named its
-                // acquisition (R12-DATA-3105): a new source query.
-                kind: qip_contracts::ambient::AcquisitionKind::NewSourceQuery,
-            });
-        }
-    }
-    for c in routing.challenges {
-        if let Some(rank_bp) = bp(1.0 - c.evidence_quality) {
-            requests.push(crate::research::ScoutRequest {
-                request_id: format!("challenge:{}", c.event),
-                question: format!("a better source for {}: {}", c.event, c.reason),
-                rank_bp,
-                entities: c.instruments,
-                // What these requests meant before a request named its
-                // acquisition (R12-DATA-3105): a new source query.
-                kind: qip_contracts::ambient::AcquisitionKind::NewSourceQuery,
-            });
-        }
-    }
-    if let Some(discovery) = discovery {
-        out.scouted = requests.len();
-        discovery.hand_off(&requests);
-    }
-    out
 }
 
 impl TickDesk {
@@ -663,7 +593,6 @@ impl TickDesk {
             book: BTreeMap::new(),
             plans: Vec::new(),
             tape: None,
-            mismatch_routing: qip_kernel::mismatch::MismatchRouting::default(),
         }
     }
 
@@ -689,17 +618,6 @@ impl TickDesk {
     /// The attestation the next round will fuse under, if a digest was noted.
     pub const fn tape_attestation(&self) -> Option<&qip_kernel::tape_attestation::TapeAttestation> {
         self.tape.as_ref()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn seed_mismatch_routing(&mut self, routing: qip_kernel::mismatch::MismatchRouting) {
-        self.mismatch_routing = routing;
-    }
-
-    /// Take the mismatches the last round routed, leaving none, so a round
-    /// that fused nothing new does not re-dispatch the previous one's.
-    pub fn take_mismatch_routing(&mut self) -> qip_kernel::mismatch::MismatchRouting {
-        std::mem::take(&mut self.mismatch_routing)
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -1131,7 +1049,6 @@ impl TickDesk {
             .flat_map(|event| event.reactions.iter().cloned())
             .collect();
         round.mismatches = fused.mismatches().len();
-        self.mismatch_routing = qip_kernel::mismatch::route(&fused);
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
         for region in &self.config.map_regions {
             let authorised = match &round.model_card {

@@ -65,10 +65,11 @@ figure refuses a book the desk considers well hedged, the no-netting reading is
 too restrictive and a netted measure needs its own ADR. If the stress library
 prices a gap world that `GapWorld` cannot express, the worst-world figure is
 understating gap and the input shape must change. If a caller treats `Unbounded`
-as acceptable rather than as a finding, the decision has failed its purpose and
-the limit arms should be built instead of waiting. If a basis or gap loss occurs
-in a book whose recorded verdict was `Within`, the formula or the world list was
-wrong.
+as acceptable rather than as a finding, the decision has failed its purpose:
+recording the exposure as unbounded was not enough, and the owner-stated bound
+the limit arms wait on is what was missing. If a gap loss exceeds the
+worst-world figure measured for that book, the world list was wrong; if basis
+losses routinely exceed the summed figure, the formula was.
 
 ## Findings on two other rows of this lane
 
