@@ -51,11 +51,6 @@ cell that activated a pack kept a metric, not a record.
 - Whoever drafts a pack that is to be traced must supply a full commit id
   and a manifest digest in the pack file. Not decided here, and still open:
   the training pipeline that supplies them to the pack draft.
-- A pack without provenance still verifies and releases (backward
-  compatible), but no activation record can be made from it.
-- Every pack draft that wants an activation record must now carry a full
-  commit id and a manifest digest, which the training pipeline does not yet
-  supply.
 - Not decided here, and still open: the cell-side journal that writes an
   `ActivationRecord` where `qip-edge-node` admits a manifest (today
   `PackageActivation` is a metric). Until it lands, the record type exists
@@ -76,12 +71,3 @@ cell that activated a pack kept a metric, not a record.
   the backward-compatibility claim in Decision 1.
 - A need to record a centre-side promotion as an activation, which Decision 3
   excludes because it has no epoch.
-  `PackageActivation` is a metric).
-
-## What would make this wrong
-
-- If a model can reach a cell by a path that never builds an
-  `ActivationRecord`, the five links are optional in practice. The journal
-  that makes the record mandatory at admission is the check to add.
-- If a commit id is ever abbreviated or case-folded upstream and re-expanded,
-  the signed link names a commit nobody built; validation refuses both.
