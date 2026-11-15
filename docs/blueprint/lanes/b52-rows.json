@@ -1,0 +1,794 @@
+{
+ "01": [
+  {
+   "id": "R12-TICK-10121",
+   "what_the_last_reader_said_is_missing": "tick_desk.rs has no portfolio-position input and nothing but tests calls FutureTree::portfolio_outcomes. Closing needs a platform-book seam from qip-kernel into the qip-deepbrain tick desk, a journaled distribution, and counterparty propagation. This is more than four files and a new seam through several crates."
+  },
+  {
+   "id": "R12-TICK-10184",
+   "what_the_last_reader_said_is_missing": "Unchanged: run() composes no ControlConsumer so PassMarker.control is empty on the mesh path; no subcommand test over a run()-written spool; no cell book digest in the marker; GCS needs enable_cloud_storage (declined)."
+  },
+  {
+   "id": "R12-TICK-1176",
+   "what_the_last_reader_said_is_missing": "TickDesk::round still replays no multi-leg plan. Nothing derives a MultiLegPlan from the journal. Closing this needs a journal-to-plan mapping and a TickDesk seam in qip-deepbrain, which is a design decision. The desk also stays off by default behind the entitlement grant."
+  },
+  {
+   "id": "R12-TICK-1177",
+   "what_the_last_reader_said_is_missing": "No learned tick embedding exists to align (R12-TICK-2064); fuse ignores qip_sequencing::align clock uncertainty; qip-deepbrain tick_desk is off in every committed deployment (needs gitops enablement, entitlement grants, lake source: owner decision)."
+  },
+  {
+   "id": "R12-TICK-2044",
+   "what_the_last_reader_said_is_missing": "Unchanged: SimulatedGateway::declare_status has no non-test caller; needs default session schedule (open, auction with imbalance, close, breaker) in qip-edge-node. Venue reject and ack records are not journaled as typed records (Cell::send, Decision has no ack variant). Needs several crates plus mutation verification."
+  }
+ ],
+ "02": [
+  {
+   "id": "R12-TICK-2052",
+   "what_the_last_reader_said_is_missing": "Unchanged: qip_edge_clock_uncertainty gauge unpublished (needs new metric name in qip-observability, a registry handle threaded into LakeSink, node wiring, a test), and PTP/GPS source plus reference measurement need a deployed node."
+  },
+  {
+   "id": "R12-TICK-2053",
+   "what_the_last_reader_said_is_missing": "SensedRecord still carries no Admission: no source hash or entitlement travels from the adapter seam, and absorb_records only checks its own two times at zero doubt. Remaining step is a SourceManifest-carried header at each adapter seam and Admitted<SensedRecord> into absorb_records. That touches every SensedRecord producer and the market.* topic payloads (topic version move)."
+  },
+  {
+   "id": "R12-TICK-2062",
+   "what_the_last_reader_said_is_missing": "Unchanged: cross-instrument features not registered on a shipped path (edge-node uses standard_suite only), discipline half-width not fed (Placed::from_disciplined uncalled), RollingCorrelation and CrossVenueSpread unaligned, arrival unread, reset and rebuild ingest with zero doubt, no cell wiring test."
+  },
+  {
+   "id": "R12-TICK-2063",
+   "what_the_last_reader_said_is_missing": "Unchanged. Nothing in qip-edge-node registers LeadLagCorrelation or CrossVenueSpread (or RollingCorrelation). Closing needs a venue-pair configuration seam in the composition root, plus a committed deployment that runs a node installing a strategy; or narrowing the row to the feature library."
+  },
+  {
+   "id": "R12-TICK-2064",
+   "what_the_last_reader_said_is_missing": "Unchanged: no market-state embedding trainer, versioned artefact or baseline evaluation exists. Needs a new trainer (qip-training module or crate), ModelRegistry/ModelCard wiring, a StateKind::Embedding producer, and a deployment enabling tick_desk."
+  }
+ ],
+ "03": [
+  {
+   "id": "R12-TICK-2070",
+   "what_the_last_reader_said_is_missing": "Owner ruling is ADR_THEN_IMPLEMENT: an ADR (not draftable here) must first claim its number. The channel from deepbrain's distillate through the two-person release to qip-api's trained_models slot and the policy issuer, then to cells, spans several crates. Not delivered."
+  },
+  {
+   "id": "R12-TICK-2074",
+   "what_the_last_reader_said_is_missing": "Measured millisecond decision latency lands inside the capacity probe's one-minute step, so it moves no fill on the default path. Closing needs the probe time scale decided: a step derived from measured latency with per-step volatility rescaled. That is a design change in qip-kernel/platform.rs, beyond a small draft."
+  },
+  {
+   "id": "R12-TICK-2077",
+   "what_the_last_reader_said_is_missing": "No missed-opportunity record exists to price. Needs a capture site in the kernel LEARN stage for Action::MissedOpportunity, then Platform::score_missed over an as-of view, graded in basis points per ADR 0148. Both touch the very large platform.rs and qip-twin capture; bar-level information sets remain."
+  },
+  {
+   "id": "R12-TICK-2080",
+   "what_the_last_reader_said_is_missing": "Queue and latency models still have no calibration input: needs an acknowledgement instant on SimulatedBroker fills (qip-brokers) and a queue term in the twin's CostModel, each calibrated from scored fills, plus a kernel convergence test. Cell fills still calibrate against the twin's mark."
+  },
+  {
+   "id": "R12-TICK-2083",
+   "what_the_last_reader_said_is_missing": "Belief updates from fuse() are still dropped: needs a Platform seam to absorb FusedState::beliefs into the belief store, TickDesk::round returning them, and node.rs applying them, plus the tick desk enabled by deployment config. Input-to-BeliefUpdate is already tested in tests/fusion.rs."
+  }
+ ],
+ "04": [
+  {
+   "id": "R12-TICK-2084",
+   "what_the_last_reader_said_is_missing": "Mismatches reach no consumer. Owner ruling needs ADR 0151 claimed first (docs/adr is protected), then one paper-only consumer per mismatch kind: falsification.rs intake, discovery_targets wiring, TickRound dispatch in node.rs. Tick desk also off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant). Spans several crates."
+  },
+  {
+   "id": "R12-TICK-2086",
+   "what_the_last_reader_said_is_missing": "FusedDigest and the fused_digest policy slot remain unbuilt. Needs the wire type in qip-contracts, per-cell build in qip-kernel after authorise_for, and an edge reader with a stale/region-refused test. Spans contracts, kernel and edge, plus payload versioning."
+  },
+  {
+   "id": "R12-TICK-2090",
+   "what_the_last_reader_said_is_missing": "Unchanged: no licensed feed emits these actions; record_outage has no production caller and VenueStatus or cell halts never reach the history; membership is not rebuilt from the event log at resume; the past reaches back only to the first bar seen; no deep-brain test shows a round's backtest refused a delisted name."
+  },
+  {
+   "id": "R12-TICK-3097",
+   "what_the_last_reader_said_is_missing": "Typed DriverKind (Policy, Weather, Default, Supply, OwnAction, Price) unbuilt in qip-twin; synthetic-only producers for policy, weather, default, supply need an ADR amendment first (owner ruling ADR_THEN_IMPLEMENT; docs/adr is off limits to drafts). No single generator test spans all named dimensions across qip-twin and the simulation engine."
+  },
+  {
+   "id": "R12-TICK-8110",
+   "what_the_last_reader_said_is_missing": "Unchanged. Architecture review must settle which crate reads qip-storage ArchiveReader into kernel scoring; then add a public seam over score_declined/score_filled and a shard entry point; then a funded Cloud Run Job in Terraform (after dev runs, enable_replay_pool, protected variables.tf). Plan/apply evidence still missing."
+  }
+ ],
+ "05": [
+  {
+   "id": "R12-TICK-9006",
+   "what_the_last_reader_said_is_missing": "No shipped binary calls run_replay_pass; a qip-cli path replaying a durable lake needs a new seam across qip-cli, the lake store and qip-edge-node, and apps may not depend on apps. The lake defaults to a memory store, so no retained history exists."
+  },
+  {
+   "id": "R12-TICK-9036",
+   "what_the_last_reader_said_is_missing": "Participant behaviour on the sharded replay path is still printed, not simulated. It needs a seam joining agents.rs participants to tick_replay.rs, plus CLI plumbing. No committed sharded job exists. Both remain, or an owner restatement."
+  },
+  {
+   "id": "R12-TICK-9038",
+   "what_the_last_reader_said_is_missing": "ADR 0182 d1 remains unbuilt: (1) the kernel stress stage's adversarial search (StressTester::adversarial_sequence) stays inside the library envelope and needs a scaled-historical-shock beyond-history move with its scale recorded; (2) no scenario-to-LessonCandidate step with the scenario digest as evidence; (3) no journaling of promoted lessons and restart rebuild; (4) no test that scenarios are never journaled. Spans"
+  },
+  {
+   "id": "R12-REFLEX-5038",
+   "what_the_last_reader_said_is_missing": "Unchanged. Funding rate value not read into short carry on pass report. VenueState::last_trade has no reader in qip-edge pass. External borrow/funding producer and deployed execution node still missing."
+  },
+  {
+   "id": "R12-REFLEX-5041",
+   "what_the_last_reader_said_is_missing": "PolicyPayload::opportunity_definitions has no producer and no reader. Centre producer and StrategyInstaller reader must be built together as a narrowing filter (ADR 0149 d7), spanning contracts, centre and edge-node. Not deployed."
+  }
+ ],
+ "06": [
+  {
+   "id": "R12-REFLEX-6012",
+   "what_the_last_reader_said_is_missing": "Microstructure and VenueBehaviour episode kinds are never recorded. A recorder needs new detection logic in the cell pass for drift, queue behaviour and venue anomalies. ADR 0207 declines that seam, so an ADR comes first. Delivery also needs QIP_MESH_CELLS bound on the API and a deployed execution node."
+  },
+  {
+   "id": "R12-REFLEX-8069",
+   "what_the_last_reader_said_is_missing": "GcsLeaseStore (generation-match write in qip-storage, ADR 0137), node scheme selection in main.rs, lease bucket and IAM in execution-node module with tftest, and root passthrough are unbuilt. The row closes only on a deployed second-zone pair, which needs an owner dispatch and a billed node."
+  },
+  {
+   "id": "R12-MESH-5059",
+   "what_the_last_reader_said_is_missing": "Owner ruling is ADR_THEN_IMPLEMENT: ADR must be claimed first (docs/adr is protected). Inventory prepositioning and capital grants for named regions are still unbuilt and span qip-contracts, kernel plane and edge. Whitelist derivation exists (cycle_whitelist_for); no change made."
+  },
+  {
+   "id": "R12-MESH-5068",
+   "what_the_last_reader_said_is_missing": "Unchanged. Open slices: (1) arbitrage_cycle_broken carries no legs, blocked on R12-MESH-7143 shipping the failed pass's report; (2) arbitrage_legs has no legs; (3) partial-fill decomposition stop carries none; (4) centre scores per leg, not one score per cycle with summed regret; mesh gating (QIP_MESH_CELLS/QIP_MESH_PEER) still blocks part 2."
+  },
+  {
+   "id": "R12-FABRIC-10016",
+   "what_the_last_reader_said_is_missing": "No composition root calls SrvResolver or Bootstrap. Wiring needs config for resolver and zone in a root, the AddressSource label on Telemetry, an unreachable-resolver startup test, and a fabric_087 reader-list update. This spans several crates and roots."
+  }
+ ],
+ "07": [
+  {
+   "id": "R12-FABRIC-10077",
+   "what_the_last_reader_said_is_missing": "No shipped cell consumes control.local. ControlConsumer is constructed only in qip-edge-node tests. Closing this needs node composition-root wiring (main.rs, broker config, deployment) plus an owner ruling on ADR 0128 decision 2. CellStateDelta incremental loss is also open."
+  },
+  {
+   "id": "R12-FABRIC-10161",
+   "what_the_last_reader_said_is_missing": "3-broker RF3 deployment, GCS archive, OTel, and deployment remain. Each needs multi-crate seams (qip-fabricd, qip-streaming, observability) or Terraform and deploy work. Not a single small draft."
+  },
+  {
+   "id": "R12-FABRIC-7034",
+   "what_the_last_reader_said_is_missing": "Unchanged. Age-based trimming for EventAnchored Rolling(90d) and FallbackSeries For(..) needs a segment time bound that retain_hot can read, which is a new seam across qip-streaming and qip-fabricd. Setting QIP_EVENT_FABRIC_HOT_BATCHES is deployment config under protected environments paths."
+  },
+  {
+   "id": "R12-FABRIC-7057",
+   "what_the_last_reader_said_is_missing": "Asynchronous fabric-mirror consumer (ADR 0119) not built; StreamPolicy still refuses mirroring (C8). Needs the consumer, policy change, a non-blocking-produce test with link cut, and a second region to deploy into."
+  },
+  {
+   "id": "R12-FABRIC-7060",
+   "what_the_last_reader_said_is_missing": "Unchanged. ModelManifest size bound and algo:64-hex digest check need a wire decision first (SHA-256 of canonical model form, byte-identical across centre, cell and InlineModel, pinned digests migrated). Announcement still has no producer/consumer binary and no object-storage package fetch path."
+  }
+ ],
+ "08": [
+  {
+   "id": "R12-FABRIC-7142",
+   "what_the_last_reader_said_is_missing": "Mirror consumer per ADR 0119 not built: needs async consumer, lifting the C8 mirroring refusal in StreamPolicy::new, an outcome/control mirror catalogue, and a second region to deploy into. Spans several crates."
+  },
+  {
+   "id": "R12-FABRIC-7211",
+   "what_the_last_reader_said_is_missing": "Asynchronous cross-region fabric-mirror consumer (ADR 0119) is unbuilt. It needs a new consumer, policy change (StreamPolicy refuses mirroring != None), fabricd wiring and a second region to deploy into. No fabricd test shows selective mirroring."
+  },
+  {
+   "id": "R12-FABRIC-8075",
+   "what_the_last_reader_said_is_missing": "Replicated metadata store for membership, partition maps, epochs, consumer leases and quotas (ADR 0111 Amendment 1: regional Spanner beside the lease), a minority-loss test, and partition-move tooling are unbuilt. Needs a new seam across fabricd, the managed-log port and the catalogue, plus a Spanner deployment."
+  },
+  {
+   "id": "R12-FABRIC-8078",
+   "what_the_last_reader_said_is_missing": "Mirror worker process in backend/crates/apps still absent: mTLS source client, producer into target region's stream, durable checkpoint, plan_copy caller. Mirroring::Selective/Full policy admission is R12-FABRIC-7038. Two-broker proof needs second region broker."
+  },
+  {
+   "id": "R12-FABRIC-8089",
+   "what_the_last_reader_said_is_missing": "Unchanged. Still needed: class-aware handshake and live caps in qip-transport Server, a quota key bound to the principal covering the message quota, a drained-before-503 refusal so producers see the refusal not a reset, and an mTLS overload test. Spans transport, fabricd and streaming."
+  }
+ ],
+ "09": [
+  {
+   "id": "R12-FABRIC-8098",
+   "what_the_last_reader_said_is_missing": "Unchanged: SRV query exists in qip-transport dns.rs, but no ClusterMap request/response arm exists in the wire contract, broker service.rs dispatch, or producer bootstrap, and no follow-the-leader test exists."
+  },
+  {
+   "id": "R12-FABRIC-8102",
+   "what_the_last_reader_said_is_missing": "Partition move tooling still absent: no code transfers a partition's sole-writer batch chain between brokers with a leader-epoch handoff, and no integration test adds a broker and proves zero lost records. Needs fabricd, storage and transport changes, and RF1 consensus is blocked on C2."
+  },
+  {
+   "id": "R12-CONTRACT-6113",
+   "what_the_last_reader_said_is_missing": "ComputePlan is still constructed only by MetaIntelligence::plan_for for QPU-granted bids. No app or kernel code constructs or decodes it. Closing the row needs a default-on production caller (deepbrain or kernel) and a test through the binary, which crosses several crates."
+  },
+  {
+   "id": "R12-CONTRACT-7064",
+   "what_the_last_reader_said_is_missing": "(1) LearningDesk::promote_candidate writes no unsigned draft pack for the CLI verbs to sign; (2) kernel lineage struct is still model_serving::ModelPack, not ModelSetVersion (rename touches every caller); (3) packs reach a brain only via QIP_MODEL_PACKS_PATH, which no committed environment sets. Each spans deepbrain, kernel and environments; signing needs per-person credentials reserved by ADR 0110/0121."
+  },
+  {
+   "id": "R12-CONTRACT-7066",
+   "what_the_last_reader_said_is_missing": "Signed brain-to-brain CapitalEnvelope still lacks required owner/mandate, collateral class, leverage and drawdown/liquidity fields refused on decode at the cell. Needs qip-contracts envelope change, signing, qip-capital issuer, cell decode and tests across several crates (capital allocation domain). Alternatively amend requirement to accept envelope-plus-ledger split. Receiving cell deployment also needed."
+  }
+ ],
+ "10": [
+  {
+   "id": "R12-CONTRACT-7069",
+   "what_the_last_reader_said_is_missing": "qip-ledgerd does not refuse a new fill stating no decision_sequence, because kernel desk fills (desk_ledger.rs) are sealed on a desk chain with no OrderSent entry. Needs the desk to journal its own decision entry and state its sequence, then the refusal at ledgerd's posting seam. Capital-operation events stay schema 1; owner per LedgerOperation kind and operation-shaped attribution are undecided. Owner ruling require"
+  },
+  {
+   "id": "R12-CONTRACT-7070",
+   "what_the_last_reader_said_is_missing": "Unchanged. A producer needs an ADR for Simulated<Decimal> to Counterfactual.estimated_outcome crossing, a defined world_state_digest stamped at decision time, and a kernel join from decisions to evaluate_alternatives scores by order id. Spans several crates and an ADR."
+  },
+  {
+   "id": "R12-CONTRACT-7072",
+   "what_the_last_reader_said_is_missing": "Consumer (ADR 0428 decision 5) remains: pack must be routed from reflex.feature_digested on the fabric to the tick desk, and fusion (qip-kernel fusion.rs, takes MarketTraces) must remove a flagged or unattested instrument's weight and never raise one, with a mutation-verified test. Pass 1 ships no pack."
+  },
+  {
+   "id": "R12-CONTRACT-7073",
+   "what_the_last_reader_said_is_missing": "Unchanged. Manifest still lacks universe and time window; adding them changes the StatedManifest wire form every reader decodes. ReplayManifest::new still builds without assumptions. No manifest carried between brains: needs a new topic past the schema lock and a consumer that does not exist."
+  },
+  {
+   "id": "R12-CONTRACT-7092",
+   "what_the_last_reader_said_is_missing": "Contract and CHECK already met in qip-contracts. Remaining: ADR 0119 fabric-mirror consumer that constructs and decodes MirrorCheckpoint in production, plus a second region to deploy into. Multi-crate seam and deployment."
+  }
+ ],
+ "11": [
+  {
+   "id": "R12-EVID-10106",
+   "what_the_last_reader_said_is_missing": "Unchanged. No code writes observations to the retention-locked evidence bucket. Needs a GCS writer seam across several crates plus an integration test, a Fabric publication path, a tfvar flip, and the owner's egress decision (or the ADR 0144 scout job deployed)."
+  },
+  {
+   "id": "R12-EVID-10107",
+   "what_the_last_reader_said_is_missing": "absorb_evidence (qip-world-model world.rs) still does not normalize claim subjects through the Resolver or apply a delta to the KnowledgeGraph. Needs a defined claim-to-entity mention encoding, graph delta semantics, Platform wiring, plus an ADR for graph persistence, a connector tfvar and an owner egress decision."
+  },
+  {
+   "id": "R12-EVID-1200",
+   "what_the_last_reader_said_is_missing": "Unchanged: Platform::observe public and claim None unchecked, across fast brain Live REST, deepbrain replay and qip-cli demo adapters; no global-scout stage (ADR 0144 unbuilt); no committed environment configures a connector."
+  },
+  {
+   "id": "R12-EVID-2030",
+   "what_the_last_reader_said_is_missing": "Observed world records still enter Platform::observe and detectors on one source's word. Closing needs the fabric belief weight carried through four seams (record-to-claim link, MarketEvent/CatalystLink/Anomaly::confidence, weighted observation_history, roots' observe calls) plus a test. The weight-versus-corroboration choice needs an ADR first."
+  },
+  {
+   "id": "R12-EVID-2032",
+   "what_the_last_reader_said_is_missing": "Unchanged. EvidenceFabric::rebuild has no non-test caller. Needs a Platform start-up restore reading journaled_evidence, wired in the composition roots (qip-api, fastbrain, deepbrain), plus a durable journal. The claim journal is fed only by the connector arm that no committed deployment enables."
+  }
+ ],
+ "12": [
+  {
+   "id": "R12-EVID-2033",
+   "what_the_last_reader_said_is_missing": "Belief (NOW variable, thesis, world-model fact) has no edge into ProvenanceGraph; ManifestRefs are in-process names, not evidence ids. Needs the record-to-evidence id seam (R12-EVID-1200) and evidence.admitted journal (R12-EVID-2032), then a belief-to-claim edge at the world-model-to-NOW seam and a production reader of sources_of."
+  },
+  {
+   "id": "R12-EVID-3081",
+   "what_the_last_reader_said_is_missing": "Unchanged: threading FetchDigest and source id from connector SensedRecords through the feature store into ManifestRefs crosses several crates, and the connector arm is off in every committed tfvars, so no external evidence exists on the default path for a manifest citation to resolve."
+  },
+  {
+   "id": "R12-EVID-8108",
+   "what_the_last_reader_said_is_missing": "Unchanged: (1) no default connector arm (tfvars, protected); (2) restart rebuild of source-alpha desk from source_alpha_rounds plus archive snapshot, needs desk restore seam across qip-deepbrain/kernel; (3) contradiction handling has no code or ruling."
+  },
+  {
+   "id": "R12-DATA-10081",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs a new fabric consumer driving BigQueryWarehouse with a lag-isolation test (new seam across qip-fabric and qip-mesh), a running fabricd, QIP_BIGQUERY_* wiring in catalogue.tf, a deploy, and either a Storage Write API dependency ADR or owner acceptance of insertAll."
+  },
+  {
+   "id": "R12-DATA-1036",
+   "what_the_last_reader_said_is_missing": "Embeddings, novelty, entities/relationships, summaries and episodes are still absent from KnowledgeDelta and its pack, and packs still go to a blob store rather than the event log. A restart test for claims, contests and resolutions already exists (evidence_intake.rs, a_contest_and_its_resolving_evidence_survive_a_restart_from_the_event_log). Closing the rest needs new record types across qip-evidence, qip-world-mode"
+  }
+ ],
+ "13": [
+  {
+   "id": "R12-DATA-1037",
+   "what_the_last_reader_said_is_missing": "ConnectorArm::refetch reports Revised but does not record it. Recording needs a revised DataReference, but ReFetchFinding and ReFetchOutcome::Fetched carry only the new hash, not byte length or the reference. Needs new fields in refetch.rs (breaking existing Fetched constructors in tests), a DataReference constructor, a connectors.rs call into record_reference, and a transport-backed test. Also open: not driven from "
+  },
+  {
+   "id": "R12-DATA-1039",
+   "what_the_last_reader_said_is_missing": "Unchanged: own-record retention conditioned on legal/policy obligations (lake.rs seal_internal_outcomes uses constant raw_retention_permitted false); per-venue rights instead of per licensing class (spans qip-storage, qip-market-ingestion, qip-deepbrain); a deployment setting QIP_DEEPBRAIN_TICK_LAKE_RETENTION."
+  },
+  {
+   "id": "R12-DATA-1041",
+   "what_the_last_reader_said_is_missing": "Write-time per-class content check still missing: needs a seam in qip-storage blob write plus each caller (deepbrain artifacts/connectors). Pack store on default path remains an owner/egress decision (QIP_DEEPBRAIN_KNOWLEDGE_PACKS)."
+  },
+  {
+   "id": "R12-DATA-1102",
+   "what_the_last_reader_said_is_missing": "Novelty score is not journaled. Needs a new event kind in qip-events, a kernel recorder, and a data-finder and deepbrain DiscoveryDesk wiring. The desk is off everywhere, so an owner tfvar flip (deepbrain_discover_every, source_candidates_file, cognition egress) is also required."
+  },
+  {
+   "id": "R12-DATA-1103",
+   "what_the_last_reader_said_is_missing": "Unchanged. Platform::assess_sources journals only SourceLifecycleChanged for standing registrations. First-pass verdicts need a new event body plus a Topic variant (qip-events topic.rs has four exhaustive match sites, plus backbone.rs retention test), pre-assessment registry check to detect first pass, journal call in assess_sources, and a kernel test. Default-path half still needs owner cadence decision."
+  }
+ ],
+ "14": [
+  {
+   "id": "R12-DATA-2025",
+   "what_the_last_reader_said_is_missing": "Score still uses own-stream next price change, not LEARN attribution of decisions that consumed the source. Needs a seam across qip-kernel, qip-deepbrain and qip-data-finder, a tfvar/catalogue addition for QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY, and a connector enabled by owner egress decision. Scores feed no routing or DataFinder score."
+  },
+  {
+   "id": "R12-DATA-3105",
+   "what_the_last_reader_said_is_missing": "InfoRequest has no kind field. Needs a qip-contracts schema change (architecture review or ADR), a kind enum, per-kind handlers (filing fetch and alternative provider have none and need vendor/connector work), research.rs dispatch, and the per-kind dispatch test. Spans several crates."
+  },
+  {
+   "id": "R12-DATA-8013",
+   "what_the_last_reader_said_is_missing": "Manifest v2 only attached by NarrativeAdapter::manifest_for (sole non-test caller qip-cli demo --live). Synthetic narrative (SourceManifest::generated, 4 sites) still v1; connector-plane manifest lacks hash, cursor, lineage, refetch. Needs v2 on every ingested-source path or one manifest type, wired into a shipped composition root."
+  },
+  {
+   "id": "R12-DATA-8018",
+   "what_the_last_reader_said_is_missing": "Replay-triggered re-fetch through DataReference is not built; copy paths (QIP_DEEPBRAIN_REPLAY_PATH, TAPE_PATH, TickLakeWriter capture) remain; needs a seam across data-finder, deepbrain and replay, plus config and owner decisions."
+  },
+  {
+   "id": "R12-DATA-8112",
+   "what_the_last_reader_said_is_missing": "ADR 0144 scout still unbuilt: the qip-deepbrain scout entry point, the deep brain bucket reader, and the Terraform job, schedule, bucket, identity and proxy routes. An acceptance test that the scout identity holds only its listed grants also remains. These span several crates plus Terraform."
+  }
+ ],
+ "15": [
+  {
+   "id": "R12-DATA-8120",
+   "what_the_last_reader_said_is_missing": "Unchanged: scout worker stage (ADR 0144 code, Terraform, owner apply), manifest field on KnowledgeDeltaFields (contract change breaks existing struct literals in section27_contracts.rs and evidence_intake.rs), graph/Bigtable write, and the end-to-end fixture test remain."
+  },
+  {
+   "id": "R12-WORLD-1178",
+   "what_the_last_reader_said_is_missing": "Geopolitical, supply-chain, physical and event members still absent from federation_stage.rs and REQUIRED_FAMILIES. The capital family lacks collateral, optionality and mobility. Each needs a data input the book does not hold, a member wired from the cycle, a named test, and an ADR claimed first."
+  },
+  {
+   "id": "R12-WORLD-1181",
+   "what_the_last_reader_said_is_missing": "Merge arm proven only on a hand-built arbitration; no real pass yet produces a Merge while two branches hold views. Contradictions are only recorded, nothing acts on them. No inspection map names the row's scope items. CONTRADICTION_MARGIN is unmeasured. Real-pass test does not assert an unopposed arbitration exists."
+  },
+  {
+   "id": "R12-WORLD-3036",
+   "what_the_last_reader_said_is_missing": "Open: (1) REASON and sizing do not read the health reading, it is not in CycleReport or the journal, and no order or proposal seam asks boundary_of; (2) Capability::Feed is not observed centrally, which needs a centre-side feed measurement; (3) data drift without Brier worsening is unmodelled; (4) the boundary is descriptive and asset-class only, with no weaknesses or blind spots modelled."
+  },
+  {
+   "id": "R12-WORLD-3048",
+   "what_the_last_reader_said_is_missing": "Collateral, optionality, capital mobility and liquidity models are declined by ADR 0194 decision 6. Adding them needs new federation members across several crates plus a superseding ADR (docs/adr is protected). Leverage and net-exposure figures remain unread. FederationInputs is not journaled."
+  }
+ ],
+ "16": [
+  {
+   "id": "R12-WORLD-3084",
+   "what_the_last_reader_said_is_missing": "Admission refusal (CHECK) is already tested and met. Remaining: ReflexIssuer has no caller outside tests; it is not fed from Cell::work nor hosted by qip-edge-node, so no pass issues a microsecond forecast. Centre re-scoring (ADR 0133) and the qip_lattice_brier{horizon=\"microseconds_ms\"} series are unbuilt."
+  },
+  {
+   "id": "R12-WORLD-3085",
+   "what_the_last_reader_said_is_missing": "Unchanged: no producer feeds LatticeStage::set_signals from platform.rs; flow member reads no imbalance on deployed paths. Needs ADR (owner ruling ADR_THEN_IMPLEMENT) then a seam from the paper feed's trades through platform.rs into lattice_stage.rs. Propagation speed, liquidity outputs and PromotionTarget gating also absent."
+  },
+  {
+   "id": "R12-WORLD-3088",
+   "what_the_last_reader_said_is_missing": "Admission refusal for wrong Quarters-years targets is already tested (forecast_lattice.rs a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission). Still missing: signals_from_world wired into platform.rs::understand_now, and capital-cycle, policy, technology and geopolitical scenario generation with twin-driven scenarios. Nothing downstream gates on PromotionTarget. Needs a kernel seam plus "
+  },
+  {
+   "id": "R12-WORLD-6015",
+   "what_the_last_reader_said_is_missing": "Unchanged. Still open: default feed matches no events (entity-id mismatch across news, fundamentals, bars); only own subject measured, from bar closes not ticks; no materiality threshold; reactions not journaled; creation sign-blind and overlapping horizons compound; agreement never raises confidence; evidence uncapped."
+  },
+  {
+   "id": "R12-WORLD-7197",
+   "what_the_last_reader_said_is_missing": "ReflexForecast contract (qip-contracts) and the node-side ReflexIssuer (qip-edge/src/reflex_forecast.rs) exist with tests, but no composition root (qip-edge-node) constructs or calls the issuer, so the microsecond row is still never issued on a production path. Wiring needs edge-node pass plus observation feed, several crates."
+  }
+ ],
+ "17": [
+  {
+   "id": "R12-WORLD-9035",
+   "what_the_last_reader_said_is_missing": "WorldBranch records are still projected on demand and never journaled, so not stored or replayable. Observation still scores cumulative moves against a fixed 1-day horizon. A zero-mass tree is kept dead silently, pruned branches are never evicted so splits stop at the bound, and no shipped-binary test shows the default feed grows a tree."
+  },
+  {
+   "id": "R12-WORLD-9037",
+   "what_the_last_reader_said_is_missing": "business_twin has no caller outside tests; platform twin has no macro links (graph holds no elasticities); no business dynamics (revenue, margin, inventory, lag), only static linear supply-share propagation; Supplies/Customer weight semantics inverted; confidence ignored. Each needs a new seam through graph, kernel stage and binaries."
+  },
+  {
+   "id": "R12-REASON-3003",
+   "what_the_last_reader_said_is_missing": "Strategy round results are not tied to the campaign on the log. Needs a new journaled record kind (topic, body, platform writer) or the campaign id on the factory registration. Then a test where the cached window differs from raw history, plus tests for the turn's gate-refusal and RefusedAtDoor arms."
+  },
+  {
+   "id": "R12-REASON-3012",
+   "what_the_last_reader_said_is_missing": "Unchanged: elections/public policy and Regulatory edges unread; no production path records a Geopolitical edge (kernel mechanism mapping needs a producer, a seam through kernel and world model); economy join unexercised by a test; sovereign/currency regimes left to the FX analyst."
+  },
+  {
+   "id": "R12-REASON-3026",
+   "what_the_last_reader_said_is_missing": "No symbolic agent in standard_agents. Needs a new trait seam in qip-investment-agents, a new agent, kernel implementation over reason_symbolically in platform.rs, and passing it into the organisation, plus coverage-drop test. Spans several crates."
+  }
+ ],
+ "18": [
+  {
+   "id": "R12-REASON-3063",
+   "what_the_last_reader_said_is_missing": "Unchanged. No production caller for ReflexPackage::evaluate or SignedReflexPackage::load. Needs a cell or kernel loader that verifies a signed package against model-pack trust entries and evaluates its rules on the pass (REASON-3115), plus an installed PackageSigner in the deep brain composition root (REASON-10099 / REASON-7203)."
+  },
+  {
+   "id": "R12-REASON-9032",
+   "what_the_last_reader_said_is_missing": "challenge_prediction still has no production caller. It needs the fabric topic the deep brain reads ChallengeRequests from (R12-AMBIENT-10108): a topic, a subscriber and a reply path across contracts, fabric and kernel or apps. That is a new seam, not a small draft."
+  },
+  {
+   "id": "R12-AMBIENT-3024",
+   "what_the_last_reader_said_is_missing": "No forecaster or production-model record keyed by regime. Tournament Brier scores and deep-brain drift reports are un-regimed. Closing needs a new regime-keyed model record seam across qip-agents, the tournament, deepbrain and the kernel, plus REASON acting on the resolution. Standard fixture panel is uncontested."
+  },
+  {
+   "id": "R12-AMBIENT-3104",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs a design or ADR defining competing worlds and payoffs. Then an EV computation, discrimination-scored observations, a licence gate, an executing observation, coverage of unsized and rejected decisions, and a default-config test. Spans kernel and deepbrain."
+  },
+  {
+   "id": "R12-AMBIENT-3110",
+   "what_the_last_reader_said_is_missing": "Unchanged: model, agent and solver bids still have no consumer. A grant must bring a LearningDesk round forward (learning.rs due, line 2212), agent budgets need the R12-AMBIENT-10094 seam, and solver bids need a pending-QUBO queue. Each spans deepbrain plus kernel or expansion; a grant that changes nothing would be a label."
+  }
+ ],
+ "19": [
+  {
+   "id": "R12-AMBIENT-7146",
+   "what_the_last_reader_said_is_missing": "Forecast/scenario ambient models and autonomous model/strategy lifecycle under authority envelopes are not shown. Closing needs new model types plus lifecycle seam across several crates."
+  },
+  {
+   "id": "R12-AMBIENT-9001",
+   "what_the_last_reader_said_is_missing": "Owner ruled ADR_THEN_IMPLEMENT: the ADR (docs/adr, protected) must be claimed first. Then needs a BigQuery REST evidence adapter in qip-storage, an agent read path in qip-agents, and a ResearchTask publish to the Fabric from qip-world-model. That spans several crates."
+  },
+  {
+   "id": "R12-AMBIENT-9029",
+   "what_the_last_reader_said_is_missing": "Unchanged. Verification bar met via ADR 0456. Still missing: Fabric task/result topics for specialist agents, a knowledge-API seam for research agents, multimodal reasoning. Each is a new seam across qip-agents, Fabric and the kernel, needing an ADR first."
+  },
+  {
+   "id": "R12-EXPAND-1021",
+   "what_the_last_reader_said_is_missing": "Brains and model families are not registered from gaps (specialists gap-only per ADR 0158 d8); a tool gap proposes a spec but registers no tool in the node's ToolRegistry. Registering one needs a governed-promotion seam (evaluation, implementation, registry lifecycle) across qip-agents and qip-deepbrain, not a small patch. No skeptic round ran."
+  },
+  {
+   "id": "R12-EXPAND-6023",
+   "what_the_last_reader_said_is_missing": "ResearchRegistry::record and record_version still write non-Open verdicts without experiment refs. ResearchMemory::promote counts cited episodes without resolving them to held episodes, since LEARN cites resolution ids, not analyst run ids. The sweep's ontology candidate cites a gap. No skeptic round has run."
+  }
+ ],
+ "20": [
+  {
+   "id": "R12-EXPAND-6025",
+   "what_the_last_reader_said_is_missing": "Only fill-bias gap kind reaches ExpansionDesk::conclude; other kinds need new campaign runners across qip-expansion and research.rs. Deployable capability needs the ADR 0110 PackageSigner installed in qip-deepbrain main.rs, which needs key material and a composition-root change."
+  },
+  {
+   "id": "R12-EXPAND-6034",
+   "what_the_last_reader_said_is_missing": "Unchanged. Waits on R12-CONTRACT-7064: ADR 0149 d2 renames kernel ModelPack to ModelSetVersion; d3 writes an unsigned qip_contracts::policy::ModelPack draft after each promote_model_from in LearningDesk::shadow_round, with rollback_parent, refusing absent expiry/universes/budget. Larger slow-lane models stay declined (R12-MODEL-7007)."
+  },
+  {
+   "id": "R12-EXPAND-6035",
+   "what_the_last_reader_said_is_missing": "Unchanged. Only the fill-bias campaign kind exists; no agent writes an experiment, builds a feature or proposes a strategy or model from a gap. Pack backtest is the campaign's own stages, not the evolution engine's strategy backtest. Pack reaches the journal only with an ambient journal configured."
+  },
+  {
+   "id": "R12-EXPAND-6038",
+   "what_the_last_reader_said_is_missing": "Episodes on CellReport and bounded central store exist (plane.rs store_episodes, MAX_EPISODES_PER_CELL). Still missing: any production path from stored episodes to learn_from_cells. CellOutcome is built only from realised sessions by live_outcomes; nothing reads CentralPlane::episodes. Needs a design for how episodes become CellOutcome fields, plus ReflexDelta record."
+  },
+  {
+   "id": "R12-EXPAND-6039",
+   "what_the_last_reader_said_is_missing": "Deltas are still read only from the producing process's own log. Cross-process or edge sharing needs a new transport seam through qip-contracts, edge, fastbrain, api and deepbrain. The producer is behind the null QIP_CONNECTOR_SOURCE. The owner must rule on the requirement text under ADR 0151 d4."
+  }
+ ],
+ "21": [
+  {
+   "id": "R12-EXPAND-6044",
+   "what_the_last_reader_said_is_missing": "No ConstraintPack. Reverse-direction contradiction (rule eligible, thesis failed) raises no delta. Validated patterns do not become rules, relations or invariants; pack is fixed by design (ADR 0125 d2). Needs a new contract, a new LEARN producer and a reviewed change to the symbolic stage. Deltas reach the deep brain only where it shares the Platform."
+  },
+  {
+   "id": "R12-EXPAND-6066",
+   "what_the_last_reader_said_is_missing": "Saga half open: SagaOutcomeRecord does not exist and multileg is not a qip-kernel dependency, so it needs kernel record, qip-expansion detector and deepbrain sweep call. Adverse selection stays unmeasured by ADR 0193 decision 3. If the plane runs in qip-api, breaks reach the deep brain only over the spine."
+  },
+  {
+   "id": "R12-EXPAND-6067",
+   "what_the_last_reader_said_is_missing": "Persistence still counts sweeps, not resolutions. The sweep_over wiring (federation_stage::replay into BeliefWatch::feed, belief_discrepancies count, belief_reviews_refused) is untested: it needs a Platform with a real federation journal of resolved reviews, a larger seam than one draft. Specialist or simulator test of a raised discrepancy is R12-EXPAND-6049."
+  },
+  {
+   "id": "R12-EXPAND-6070",
+   "what_the_last_reader_said_is_missing": "Unchanged. (1) Shadow is an offline comparison, not a model running beside production on live paper decisions; needs a kernel-through-deepbrain seam. (2) Tool promotion cites a self-attested evaluation reference, not a stored signed record; agents and features have no gate by ADR 0198. (3) Promotion signature is the plane's HMAC; the ADR 0110 HSM key is unused because artefact_signing is null in every environment (a "
+  },
+  {
+   "id": "R12-EXPAND-7147",
+   "what_the_last_reader_said_is_missing": "Umbrella row. Sandboxed tool/agent creation and active learning are unbuilt features; brain spawning is declined by ADR 0199. Closes only after rows 1021, 6030, 1173 close."
+  }
+ ],
+ "22": [
+  {
+   "id": "R12-MODEL-10096",
+   "what_the_last_reader_said_is_missing": "Remainder (2): a refuted model with no reactivatable predecessor stays in the promoted set, withheld but not retired; retiring needs a new log record replayed by both the promoted set and Model Pack lineage (several crates). Remainder (3): only the round's own subject is examined."
+  },
+  {
+   "id": "R12-MODEL-10167",
+   "what_the_last_reader_said_is_missing": "Graph store (Spanner Graph) needs a deployed database and a new seam; signed model package lifecycle needs signing, verification, and registry integration across crates. Neither fits a small draft."
+  },
+  {
+   "id": "R12-MODEL-10180",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs an ADR first (owner ruling ADR_THEN_IMPLEMENT; docs/adr is off-limits to drafts), then ModelPack source commit and data-manifest fields appended to signing_payload, a cell-side activation record with epoch, and a protected workflow patch under docs/blueprint/lanes/. Spans qip-contracts, qip-edge, qip-edge-node and qip-cli."
+  },
+  {
+   "id": "R12-MODEL-1198",
+   "what_the_last_reader_said_is_missing": "Unchanged. (1) Deepbrain venue vs foundry strategy venue mismatch refuses every admission. (2) No cell report carries a MicrostructureDelta from edge to Platform::ingest_cell_report; needs a seam through contracts, edge and kernel. (3) research_pass's admit_deltas call is untested; a test needs a full deepbrain node fixture. (4) World-model half not assessed."
+  },
+  {
+   "id": "R12-MODEL-4003",
+   "what_the_last_reader_said_is_missing": "No specialist model for any of the nine targets is trained, registered or consumed, and lane admission has no deploy-path caller. The owner ruling requires an ADR first, then per-class training, licence-gated sources and a warm-lane consumer across several crates."
+  }
+ ],
+ "23": [
+  {
+   "id": "R12-MODEL-4006",
+   "what_the_last_reader_said_is_missing": "Ensemble combining ridge and stump members is not built. Needs a regime-weighted blend type in qip-training, a conformal interval for the blend, wiring in qip-deepbrain learning.rs (choose_class), and a regime-switch test. Spans several crates."
+  },
+  {
+   "id": "R12-MODEL-4008",
+   "what_the_last_reader_said_is_missing": "Unchanged: no kernel producer of replay records (journal FillScore lacks cost error and impact unit; schema bump of sealed body); no composition-root refit on restart; latency, queue, opportunity decay, fill probability are not CostModel terms and are not calibrated."
+  },
+  {
+   "id": "R12-MODEL-4010",
+   "what_the_last_reader_said_is_missing": "Neuro-symbolic hybrid still needs a served production model's prediction at REASON; no shipped binary serves one (waits on R12-MODEL-9002/1083). Planning reasoner over constraint goals still absent; it is a new module plus REASON-stage wiring across several files."
+  },
+  {
+   "id": "R12-MODEL-4012",
+   "what_the_last_reader_said_is_missing": "No predicate-to-strategy-IR compiler exists. Needs a design decision: a mapping from qip-reasoning-engine Cond/Op/Value facts to the IR Type and feature catalogue, plus a bounds contract. It would add a seam between qip-reasoning-engine and qip-strategy, likely needing an ADR."
+  },
+  {
+   "id": "R12-MODEL-4021",
+   "what_the_last_reader_said_is_missing": "Gap 1 is addressed in the tree: PerturbationPolicy has max_single_feature_share 0.02 and a unit test refuses a single-split model. No promote-stage test refuses a real fitted one-dominant-split model. Still open: promote_model and promote_model_from run no suite (needs a proof type across kernel, training and deepbrain), and the attack is coordinate-wise only."
+  }
+ ],
+ "24": [
+  {
+   "id": "R12-MODEL-4022",
+   "what_the_last_reader_said_is_missing": "Unchanged. Registry promote/promote_artifact do not read the trial (gate move touches about eighty call sites). No production code records a trial round; tying rounds to event-log simulated fills is bar part 4. SelfFitted candidates pass on the shadow stage, not paper fills."
+  },
+  {
+   "id": "R12-MODEL-7022",
+   "what_the_last_reader_said_is_missing": "No cycle stage calls Platform::train_microstructure_model (only its own test does) and no composition root promotes a microstructure model. Training uses folded residuals, not fills. No deployment exists and no publish workflow has signed a microstructure pack. Wiring needs a stage seam in the kernel cycle plus root and workflow changes."
+  },
+  {
+   "id": "R12-MODEL-7210",
+   "what_the_last_reader_said_is_missing": "Unchanged: cell refusals with no leg (routing gates before venue/price, zero-size, deployment, region_reservation, post-netting refusals in place_net) are still not priced; arbitrage_cycle_broken ships no report. Each needs a new leg on the cell wire through qip-edge, contracts and kernel, plus routing-adjacent edits."
+  },
+  {
+   "id": "R12-QUANT-4029",
+   "what_the_last_reader_said_is_missing": "No kernel-cycle slow-provider test: platform.rs line 6596 hardwires SimulatedProvider, so a Platform test needs a new provider-injection seam. The boundary is still convention, not a type: QuantumProvider::solve_qubo is a public trait method, and ProviderSolver trusts the provider's capabilities().simulated flag."
+  },
+  {
+   "id": "R12-QUANT-4042",
+   "what_the_last_reader_said_is_missing": "Guard on every path to Approved exists and is tested. Still open: no production producer yields a finding citing a quantum evidence id (QUANTUM_EVIDENCE_PREFIX is only consumed in engine.rs and world-model), so the typing and guard fire only in tests (ADR 0150 A2). Needs a producer seam across quantum, kernel and agents."
+  }
+ ],
+ "25": [
+  {
+   "id": "R12-CAPITAL-10122",
+   "what_the_last_reader_said_is_missing": "No capital society exists: nothing arbitrates among capital policies as members. Survival and confidence governors read disagreement without carrying distributions via ForecastState, a consumer declined by ADR 0159 F (R12-CAPITAL-10097), which this row depends on. Needs a new member set and arbitration rule touching capital allocation, so it needs a reviewed change."
+  },
+  {
+   "id": "R12-CAPITAL-1020",
+   "what_the_last_reader_said_is_missing": "Market Factory (market creation) does not exist, and the commerce plane is a library with no composition-root wiring. Each needs a new typed contract and seam across several crates plus a composition root. No draft attempted."
+  },
+  {
+   "id": "R12-CAPITAL-3020",
+   "what_the_last_reader_said_is_missing": "Unchanged. Capital grants, placement and compounding are not reported by any agent, and the desk's RiskView carries the assembly seed for survival_gross_ceiling until the first construction. Reporting grants, placement and compounding needs capital-domain data fed through several crates; ADR 0147 d8 rules out a separate specialist."
+  },
+  {
+   "id": "R12-CAPITAL-5067",
+   "what_the_last_reader_said_is_missing": "Unchanged: qip-edge-node scheduler.rs needs one reader of port.status() that keeps rebalance_new (health body and telemetry each drain it today), and the P2 task record needs a Decision variant in qip-contracts, qip-events schemas.lock.json and consumers.lock.json entries, and a fabric catalogue row."
+  },
+  {
+   "id": "R12-CAPITAL-7204",
+   "what_the_last_reader_said_is_missing": "Hedge Brain (qip-kernel/src/hedge.rs) still in runtime; moving it to qip-survival needs the scenario library out of qip-simulation-engine first (reaches qip-strategy/qip-evolution). Independence rests on a source scan."
+  }
+ ],
+ "26": [
+  {
+   "id": "R12-CAPITAL-9051",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs a cycle-time allocation pass (R12-CAPITAL-9039), a ShadowPortfolioUniverse built and journaled from that plan, and scoring from the twin's fills into outcome packs. score_shadow clamps regret_bp and converts money via f64, against the refuse-not-clamp rule. This crosses the kernel cycle, qip-capital and the journal."
+  },
+  {
+   "id": "R12-LEDGER-10114",
+   "what_the_last_reader_said_is_missing": "Unchanged: no cycle id on P1 records, no missed/failed-cycle replay, no node-broker-ledgerd test of a two-region cycle with a hedge."
+  },
+  {
+   "id": "R12-LEDGER-10185",
+   "what_the_last_reader_said_is_missing": "Unchanged: venue cash balance as a custody statement and its comparison with trading:/in_settlement: cash; carrier from custody_break to centre halt signer (R12-LEDGER-8139); CustodyMovement postings; authoritative deployed store (Spanner absent)."
+  },
+  {
+   "id": "R12-LEDGER-5004",
+   "what_the_last_reader_said_is_missing": "Ledger is not yet the authority over kernel desk book and cell positions. Needs ADR (owner ruling ADR_THEN_IMPLEMENT) then a production read/reconcile path across qip-ledgerd, qip-kernel and qip-edge, gated on applied desk-chain position. Desk shipping is also undeployed."
+  },
+  {
+   "id": "R12-LEDGER-5011",
+   "what_the_last_reader_said_is_missing": "Unchanged: edge-node simulated gateway must emit Decision::Settled for cycle-venue fills and a cycle venue must be configurable there; qip-ledgerd needs a QIP_LEDGER_ setting passed to with_settlement_cycle_venues; end-to-end T+2 test. ADR 0440 decision 7 requires producer and setting land together."
+  }
+ ],
+ "27": [
+  {
+   "id": "R12-LEDGER-5018",
+   "what_the_last_reader_said_is_missing": "Producer unbuilt: PhysicalInventory operation must be journalled whole at receipt and sale seams in qip-kernel commerce_research.rs and queued via Platform::desk_operations. Changes SIMULATE replay; records carry no warehouse or unit id. Owner handed to lane L1b. Books nothing in committed deployments (plane needs QIP_DEEPBRAIN_BREADTH_PLAN, protected tfvars)."
+  },
+  {
+   "id": "R12-LEDGER-8139",
+   "what_the_last_reader_said_is_missing": "Production wiring remains: qip-edge-node must publish CustodyStatement on P1, qip-ledgerd's consumer must call reconcile_custody, and a carrier must take a Broken answer to qip-api's halt signer and broadcast_halt. Cash custody is not compared. Spans three binaries plus transport."
+  },
+  {
+   "id": "R12-ASSET-3018",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs kernel feed (BookView and RiskView as Upstreams), a desk facility the kernel writes commitments and capital calls into, then the private-markets agent in standard_agents. Several crates."
+  },
+  {
+   "id": "R12-ASSET-4067",
+   "what_the_last_reader_said_is_missing": "Persistence and the joined record exist. Still open: no default-path surface serves position_holding. qip-api /portfolio serves counts only, so per-position serving needs the read-model or capability-gate route decided first, then a route through api, kernel and tests."
+  },
+  {
+   "id": "R12-ASSET-4072",
+   "what_the_last_reader_said_is_missing": "Unchanged: needs a kernel exit seam for private holdings refusing exit inside a lockup (ExitPlan::new), wiring PrivateStage and plan_secondary_exit into a production caller, and an evidenced secondary-discount source (owner/data-source decision)."
+  }
+ ],
+ "28": [
+  {
+   "id": "R12-RISK-4094",
+   "what_the_last_reader_said_is_missing": "Discovery path is deterministic. An AI model rung through qip-cost-router (Determinism::Required kept on the gate) and a test that its advice cannot veto or admit an order remain unbuilt."
+  },
+  {
+   "id": "R12-RISK-4099",
+   "what_the_last_reader_said_is_missing": "Unchanged. ModelRiskRegister::admit has no production caller; choosing the decision seam that asks it needs an ADR. The six per-exposure learning-round findings (drift, calibration, regime mismatch, uncertainty, feature failure, adversarial input) with reason classes and tests are a separate multi-crate slice."
+  },
+  {
+   "id": "R12-RISK-4101",
+   "what_the_last_reader_said_is_missing": "Unchanged: centre producer of acceptable_builds (qip-kernel/qip-api policy path, needs owner-chosen build set and ADR) and the execution-node startup writer of QIP_BUILD_IDENTITY_FILE (startup.sh.tftpl, sha256 of qip-edge-node, deployment change). Credential expiry unbuilt; own-clock skew unseen."
+  },
+  {
+   "id": "R12-EXEC-1067",
+   "what_the_last_reader_said_is_missing": "Unchanged: BookOwnership policy slot, cell refusal gate, stale-slot reduce-only rule, withdrawal on loss, and centre overlap check (ADR 0136) are all unbuilt."
+  },
+  {
+   "id": "R12-EVENT-3015",
+   "what_the_last_reader_said_is_missing": "No EventPredictionAnalyst; no desk facility (Upstream) carrying event markets. Needs kernel writes in DISCOVER/SIMULATE, a Desk field, the agent, and Organisation::standard wiring across qip-kernel and qip-investment-agents."
+  }
+ ],
+ "29": [
+  {
+   "id": "R12-COMMERCE-5096",
+   "what_the_last_reader_said_is_missing": "Movement journaling and requeue already landed. Remaining: the commerce plane's own Ledger (commerce_research.rs:536, Ledger::default()) is not resumed from the log, so re-issued unit ids can collide with journalled operation ids; and the plane is off by default until the dev mount patch lands."
+  },
+  {
+   "id": "R12-COVERAGE-5104",
+   "what_the_last_reader_said_is_missing": "Owner ruling needs an ADR claimed first (docs/adr is protected), then a prediction-class trading path: bounded one-unit fully-funded payoff, simulated-exchange pricing, operator-declared dated outcome settlement. Spans several crates (qip-prediction, kernel, gateway). Only registry registration exists."
+  },
+  {
+   "id": "R12-COVERAGE-7163",
+   "what_the_last_reader_said_is_missing": "Composite closes only when constituents R12-COVERAGE-5099..5106 are COMPLETE (trading-path integration per class) and a suite proves the composite. Constituents are PARTIAL, so this row cannot be drafted independently."
+  },
+  {
+   "id": "R12-COVERAGE-7170",
+   "what_the_last_reader_said_is_missing": "Unchanged. Five constituents (R12-EXPAND-6055 source, 6056 ontology, 6057 memory, 6061 research, 6062 capability) are still PARTIAL, so the row's acceptance clause is unmet. extend_ontology has no production caller, and four of ten capability verbs are reachable. Each needs its own slice."
+  },
+  {
+   "id": "R12-COVERAGE-7175",
+   "what_the_last_reader_said_is_missing": "Composite acceptance suite exists. Still PARTIAL only because constituent R12-EXPAND-6049 (executors for data discovery, connector creation, specialist instantiation, simulation construction) is PARTIAL. Row closes when that row does."
+  }
+ ],
+ "30": [
+  {
+   "id": "R12-COVERAGE-7181",
+   "what_the_last_reader_said_is_missing": "Unchanged. No constraint-goal planning search exists, ReasoningOutcome carries no trace, and no decision path refuses a conclusion lacking a complete trace (sizing reserved for an ADR). Composite row; each obligation needs its own slice plus an acceptance suite."
+  },
+  {
+   "id": "R12-COVERAGE-7186",
+   "what_the_last_reader_said_is_missing": "No qip-acceptance suite proves the composite over the qip agency path: goal to levers, action and no-action plans, simulation against every declared model, execution only through an authorised tool. Needs a new acceptance file driving qip-cli agency::run against qip-agency; too large to draft uncompiled."
+  },
+  {
+   "id": "R12-RES-10127",
+   "what_the_last_reader_said_is_missing": "Unchanged. No ledger-lag threshold reaches the cell: it needs a new halt source in qip-edge, a node-side feed from ledgerd, and transfer gating in capital/execution paths (risk domain). The cells it would reach need execution_nodes_enabled, which is a protected tfvars setting."
+  },
+  {
+   "id": "R12-RES-10153",
+   "what_the_last_reader_said_is_missing": "Broker never sheds P2: qip-fabricd's TelemetryRecorder::shed has no production caller, and QoS classes share no queue, so priority is shown only as per-producer quota. Closing needs a shed seam through qip-streaming broker/admission and qip-fabricd. Also unreached locally: P1 lag-limit refusal; single host, debug builds, nothing deployed."
+  },
+  {
+   "id": "R12-RES-10154",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs node composition root seeding its simulated venue from a committed tape, a fixture publisher started before the cell with ordering field, a fixture grant, and an updated scripts/game-day ledgerd-loss scenario. Spans qip-edge-node, qip-cli and protected scripts/**."
+  }
+ ],
+ "31": [
+  {
+   "id": "R12-RES-7095",
+   "what_the_last_reader_said_is_missing": "Unchanged. Pre-positioned directional bands (ADR 0154 DirectionalBand) are not built. The name appears only in the ADR and the traceability matrix, with no Rust type. Building it needs a new contract type plus a seam through qip-edge, qip-peer-link and the node's pass, touching order sizing. The multi-cell refusal is also not on a default path, since no committed environment configures peers."
+  },
+  {
+   "id": "R12-RES-7097",
+   "what_the_last_reader_said_is_missing": "Unchanged. (1) qip-deepbrain runs assess_sources only when QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH is set, and no committed environment sets it; the registry cannot reconstruct a candidate and egress route per source. (3) Episodic memory entries and held Hypotheses are not re-scored; Hypothesis validate() rejects a drifted confidence, so a revision path is needed first."
+  },
+  {
+   "id": "R12-RES-7099",
+   "what_the_last_reader_said_is_missing": "No node constructs CustodyWatch or arms with_custody_statements. The simulated venue emits no custody statement (LEDGER-10185 not landed), and the reading is not carried in the replay pass marker. Closing needs a venue statement record, node wiring and a marker change across several crates."
+  },
+  {
+   "id": "R12-RES-7102",
+   "what_the_last_reader_said_is_missing": "Unchanged: no outbox window lift on a later snapshot, kernel and world-model feature stores lack quarantine, the training gate runs only via the env-gated tick desk, no execution node deployed."
+  },
+  {
+   "id": "R12-RES-7103",
+   "what_the_last_reader_said_is_missing": "Unchanged: qip-sequencing CaptureStream (used in qip-edge-node event_fabric/drain.rs) does not take the cell's widened clock uncertainty; replay promotion outside the deep brain tick desk is not gated by ClockPrecision; the tick desk runs only when QIP_DEEPBRAIN_TICK_EVERY is set, which no environment does."
+  }
+ ],
+ "32": [
+  {
+   "id": "R12-RES-7106",
+   "what_the_last_reader_said_is_missing": "Unchanged: Feasibility::Unresolved, the narrowed contested reading, SymbolicDerivation SCHEMA_VERSION 2 replay gate and fixtures live in an unapplied patch. Four of seven named tests remain parked or unattempted, and an ADR amending 0238 may be needed. Owner ruling requires ADR then implementation."
+  },
+  {
+   "id": "R12-RES-7107",
+   "what_the_last_reader_said_is_missing": "Unchanged. (1) deepbrain ResearchLoop router still lacks clustering_duplicates; enabling it needs the desk told of a Clustered re-raise, touching research.rs and two failing suites. (2) Producer quarantine absent: needs a new Disposition or policy seam in ambient.rs reading ModelReputation, plus callers. (3) No serving deployment committed."
+  },
+  {
+   "id": "R12-RES-7114",
+   "what_the_last_reader_said_is_missing": "Fabric mirror itself is unbuilt: policy.rs refuses any mirroring policy (C8). Still needed: mirror component, lag series with bound, stale marking past bound, replay from checkpoint or archive, two-broker game day. Deployment also waits on a second region (ADR 0035)."
+  },
+  {
+   "id": "R12-RES-8039",
+   "what_the_last_reader_said_is_missing": "Unchanged. ADR 0119's in-tree asynchronous fabric-mirror consumer is not built, and no second region exists to deploy it into. A game-day check needs both."
+  },
+  {
+   "id": "R12-OBS-10059",
+   "what_the_last_reader_said_is_missing": "Unchanged. No Cloud Trace exporter exists in the tree (grep for cloudtrace/batchWrite finds nothing). Building one needs an ADR claimed first (docs/adr is off limits), a Cloud Trace v2 client with auth and timeouts across qip-observability, qip-telemetry-drain and the apps, plus a deployment and an observed trace."
+  }
+ ],
+ "33": [
+  {
+   "id": "R12-OBS-1172",
+   "what_the_last_reader_said_is_missing": "Deployment verification still has no composition-root caller. Platform::release_decision is reached only from qip-kernel/tests/self_observation.rs. Closing it needs a qip-api route, a portal endpoint mirror and OpenAPI, and a deploy.yml step (protected file), all with tests. That is more than four files and touches protected paths."
+  },
+  {
+   "id": "R12-OBS-9164",
+   "what_the_last_reader_said_is_missing": "Agent-tool-failure and quantum/classical-delta objectives need new recorded series (none exists in metrics.rs), recording sites in agent and kernel crates, SLO constructors, critical_paths bindings, and a calibration check counter. Adding them to critical_path_slos breaks count-pinned tests, so they need their own list and caller."
+  },
+  {
+   "id": "R12-FINOPS-10028",
+   "what_the_last_reader_said_is_missing": "Fabric broker machines are not defined in Terraform; only ledgerd has a standalone google_compute_instance. Closing needs a broker module with specific reservations plus extending the gcp_placement scan to standalone instances, across Terraform and tests. No node deployed, no commitments."
+  },
+  {
+   "id": "R12-FINOPS-10134",
+   "what_the_last_reader_said_is_missing": "plane and workload labels still missing. Needs a plane vocabulary chosen (resource-hierarchy tokens vs catalogue.tf), merge(local.labels, {plane, workload}) at 28 module calls, a labels variable on modules lacking one, gitops manifests, foundation projects, build-pool.tf (protected), plus an acceptance scan test."
+  },
+  {
+   "id": "R12-FINOPS-10139",
+   "what_the_last_reader_said_is_missing": "Unchanged: router does not rank rungs by cost per correct call; ModelBenefit is neither journaled nor exported as a metric; spend joins on rung not model version; no composition root constructs a training provider with QueueQuotas."
+  }
+ ],
+ "34": [
+  {
+   "id": "R12-FINOPS-10141",
+   "what_the_last_reader_said_is_missing": "Unchanged: no scheduled billing-export read (no data transfer config or budget Pub/Sub topic), no composition root calls detect or journal, no SpendThresholds configured, no Fabric task queue. Needs Terraform, a root and a queue seam."
+  },
+  {
+   "id": "R12-ARCH-1008",
+   "what_the_last_reader_said_is_missing": "Market creation and settlement coordination in the warm tier are not built, and nothing is deployed. Both need a new seam through several crates plus deployment, so no small draft closes them."
+  },
+  {
+   "id": "R12-ARCH-1191",
+   "what_the_last_reader_said_is_missing": "Lane 2 maps and execution quality reach no cell: the policy payload has no slot. Needs a new field through the contracts, kernel publisher and edge consumer. Also a Lane 2 intervention threshold and the protected observability.md sentence remain."
+  },
+  {
+   "id": "R12-ARCH-7139",
+   "what_the_last_reader_said_is_missing": "Tick Lake, world+market fusion, and symbolic/temporal reasoning services remain. Each is a new service or seam across several crates; no single small part closes the exit check."
+  },
+  {
+   "id": "R12-GOV-6120",
+   "what_the_last_reader_said_is_missing": "Unchanged: issuer states no AuthorityBounds (CapitalRequest, EnvelopeTerms, CentralPlane::issue_narrowed); edge-node assemble lacks catalogue-derived instrument-to-class map and with_authority_bounds_required; admit_leg unchecked against block. Three ordered slices in three crates; arming before issuer is the refuse-everything failure."
+  }
+ ],
+ "35": [
+  {
+   "id": "R12-GOV-6125",
+   "what_the_last_reader_said_is_missing": "AuthorityLevel is still an unsigned value. Missing: an attested-approval type bound to an enrolled WebAuthn key (ADR 0121), a verifier (ADR 0120), an unconstructible attestation token, and a production caller of check_authority for capital-class intents. This spans several crates (M-size)."
+  },
+  {
+   "id": "R12-SEC-8100",
+   "what_the_last_reader_said_is_missing": "Unchanged. Still missing: CAS leaf issuance to workloads (Terraform and startup templates, CAS null everywhere), SAN-to-service-account authorisation replacing the bearer token on every fabric route, and ADR 0110 ASYMMETRIC_SIGN policy/halt/envelope keys in Terraform. These are deployment work plus a seam through qip-transport, fabricd, ledgerd and edge-node."
+  },
+  {
+   "id": "R12-SEC-9065",
+   "what_the_last_reader_said_is_missing": "Unchanged: (1) no production caller of complete_over_untrusted, since no production model path reads fetched content (hosted model declined, owner decision 6); (2) RobotsFetch::Served.body persists in ProbeEvidence's serialised catalogue shape and needs a retained form; (3) RawEvent.body needs per-connector validators (~25 reads, 8 ingestion files)."
+  },
+  {
+   "id": "R12-GCP-8105",
+   "what_the_last_reader_said_is_missing": "Unchanged. Capital state is still written by separate in-process writers (TrackedCapital, UserLedger, Wallet, AccountLedger). qip-ledgerd is not in catalogue.tf. The single-writer inspection test would be false today. It waits on LEDGER-8007 and store consolidation."
+  },
+  {
+   "id": "R12-GCP-8106",
+   "what_the_last_reader_said_is_missing": "Unchanged. Needs qip-deepbrain main.rs composition extracted into a library function (start-up order refactor of a composition root), then a test driving a held book through SIMULATE asserting stress report and central policy envelope."
+  }
+ ],
+ "36": [
+  {
+   "id": "R12-CICD-10150",
+   "what_the_last_reader_said_is_missing": "Unchanged. Still needed: configuration artefact class and signing key, a deploy.yml signing step (protected path, for a person), and start-up verification in qip-api, qip-fastbrain and qip-deepbrain refusing an unsigned environment."
+  }
+ ],
+ "37": [
+  {
+   "id": "R12-RISK-4122",
+   "what_the_last_reader_said_is_missing": "DECIDE names only the worst world. Decided 2026-11-14 (decision 38): the survival governor records a reserve line for EVERY world the book fails at the platform tolerance, not only the worst, so the cycle's recorded DECIDE detail can name model-failure; the withheld amount stays the worst world's (no reserve is added twice). Then a cycle-level test that asserts the recorded detail names model-failure. tests/stress.rs already has two cycle tests to extend."
+  },
+  {
+   "id": "R12-RISK-4121",
+   "what_the_last_reader_said_is_missing": "Same governor change; counterparty failure cannot fail at 0.20 on a long paper book (the risk gate refuses gross above equity), so prove the surviving branch on the cycle record and say so. Do not lower a tolerance or add a test-only hook."
+  }
+ ],
+ "38": [
+  {
+   "id": "R12-RISK-5044",
+   "what_the_last_reader_said_is_missing": "An edge-after-cost gate on the cell. Decided 2026-11-14 (decision 38), provisional and restrictive: 25 basis points, refused when an order's expected edge after sweep cost and slippage is below it. An earlier draft armed it at every composition root and retuned fixtures; do it without weakening any existing test, with the limit able to fire (a test that drives a cell to the refusal), and the qip-cli demo cell armed too."
+  }
+ ]
+}
