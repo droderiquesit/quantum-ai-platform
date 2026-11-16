@@ -6,7 +6,7 @@ Sixty-seven held no commits outside `main` and were deleted after that was
 verified. These eight hold commits that never landed; each is recorded with the
 SHA that restores it: `git push origin <sha>:refs/heads/<name>`.
 
-## Merged into main after a full green `ci` run (11)
+## Merged into main after a full green `ci` run (12)
 
 Report lanes, each answering why its rows cannot be closed from code: b53-2
 (#278 `43b5e41`), b53-3 (#274 `f8fcc50`), b53-8 (#276 `ab5705e`), b53-13
