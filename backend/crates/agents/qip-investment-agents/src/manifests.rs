@@ -54,6 +54,7 @@ pub mod ids {
     pub const PRIVATE_MARKETS: &str = "private-markets-brain";
     pub const COMPANY_FUNDAMENTAL: &str = "company-fundamental-brain";
     pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration-brain";
+    pub const SYMBOLIC_REASONING: &str = "symbolic-reasoning-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
     pub const REGIME_BREAK: &str = "regime-break-probe";
     pub const MANIPULATION: &str = "manipulation-probe";
@@ -250,6 +251,32 @@ pub fn world_model_arbitration_brain(reviewed_at: Timestamp) -> AgentManifest {
         "until the kernel has run a federation pass, or while a pass arbitrated nothing, it \
          reports no data"
             .into(),
+    ])
+}
+
+/// R12-REASON-3026: reads the kernel's latest symbolic derivation and reports
+/// what the ontology, temporal, causal, rule, probabilistic and constraint
+/// reasoners concluded. Its first competency is the scope string the deep
+/// brain's registry requires (`symbolic-reasoning`).
+pub fn symbolic_reasoning_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::SYMBOLIC_REASONING,
+        "Symbolic Reasoning Brain",
+        "reports what the ontology, temporal, causal, rule, probabilistic and constraint reasoners concluded about the latest hypothesis, as explicit derivations and machine-checked constraints, naming any reasoner that refused",
+        owners::RESEARCH,
+        reviewed_at,
+        &[],
+    )
+    .with_competencies(vec![
+        "symbolic-reasoning".into(),
+        "constraint-checking".into(),
+        "derivation-reporting".into(),
+    ])
+    .with_limitations(vec![
+        "reads the kernel's journaled derivation; it runs no reasoner and decides nothing \
+         the rule pack did not already decide"
+            .into(),
+        "until the kernel has derived a hypothesis it reports no data".into(),
     ])
 }
 
@@ -858,6 +885,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         private_markets_brain(reviewed_at),
         company_fundamental_brain(reviewed_at),
         world_model_arbitration_brain(reviewed_at),
+        symbolic_reasoning_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),
         regime_break_probe(reviewed_at),
         manipulation_probe(reviewed_at),

@@ -36,6 +36,7 @@ pub mod reasoning;
 pub mod review;
 pub mod simulation;
 pub mod support;
+pub mod symbolic_brain;
 pub mod vocabulary;
 pub mod world_model_brain;
 

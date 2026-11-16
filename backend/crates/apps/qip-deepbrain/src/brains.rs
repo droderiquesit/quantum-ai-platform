@@ -55,13 +55,23 @@ pub const WORLD_MODEL_ARBITRATION_BRAIN: &str = "organisation/world-model-arbitr
 /// The scope the arbitration brain covers, as a competency domain.
 pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration";
 
+/// The registry id of the organisation's Symbolic Reasoning Brain
+/// (R12-REASON-3026): derived by [`organisation_spec`] from the roster
+/// manifest `qip_investment_agents::manifests::symbolic_reasoning_brain`,
+/// whose first competency is [`SYMBOLIC_REASONING`].
+pub const SYMBOLIC_REASONING_BRAIN: &str = "organisation/symbolic-reasoning-brain";
+
+/// The scope the symbolic brain covers, as a competency domain.
+pub const SYMBOLIC_REASONING: &str = "symbolic-reasoning";
+
 /// Scopes this node refuses to start without. Each names a brain that runs
 /// on the default path, so a registry missing one is a node whose record
 /// of what it can answer leaves out something it actually does.
-pub const REQUIRED_SCOPES: [&str; 3] = [
+pub const REQUIRED_SCOPES: [&str; 4] = [
     ATTENTION_ROUTING,
     INTERVENTION_PLANNING,
     WORLD_MODEL_ARBITRATION,
+    SYMBOLIC_REASONING,
 ];
 
 /// The id a successor names its parent by: `<brain id>-v<version>`, the form

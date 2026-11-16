@@ -154,7 +154,7 @@ use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
     ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
     ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
-    ModelsView, PoolReading, PrivateMarketsView, RiskView, TradeSide,
+    ModelsView, PoolReading, PrivateMarketsView, RiskView, SymbolicView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -1250,6 +1250,9 @@ pub struct Platform {
     /// UNDERSTAND from the review it journals, so REASON's panel reads the
     /// pass that ran this cycle.
     arbitration_view: Upstream<ArbitrationView>,
+    /// The slot the desk's Symbolic Reasoning Brain reads (R12-REASON-3026),
+    /// written by `reason_symbolically` from the derivation it journals.
+    symbolic_view: Upstream<SymbolicView>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -6586,6 +6589,8 @@ impl Platform {
         let arbitration_view = Upstream::new(ArbitrationView::default());
         desk.arbitration =
             arbitration_view.gate(desk.arbitration.required(), desk.arbitration.label());
+        let symbolic_view = Upstream::new(SymbolicView::default());
+        desk.symbolic = symbolic_view.gate(desk.symbolic.required(), desk.symbolic.label());
         desk.memory = research_memory.gate(desk.memory.required(), desk.memory.label());
         let desk = Arc::new(desk);
 
@@ -7088,6 +7093,7 @@ impl Platform {
             private_markets_view,
             company_view,
             arbitration_view,
+            symbolic_view,
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12740,6 +12746,12 @@ impl Platform {
             view.calibrations = calibrations;
             view.uncovered = uncovered;
         });
+    }
+
+    /// The symbolic derivation the desk's Symbolic Reasoning Brain reads, as
+    /// REASON last wrote it.
+    pub fn desk_symbolic_view(&self) -> Reading<'_, SymbolicView> {
+        self.symbolic_view.read()
     }
 
     /// The federation review the desk's World Model Arbitration Brain reads,
@@ -19040,6 +19052,12 @@ impl Platform {
                 now,
             )
         };
+        // Written before the derivation is journaled and moved: the slot is
+        // the record the replay reads, restated for the panel, not a second
+        // account of the pass. Replaced wholesale, so a hypothesis that has
+        // been superseded stops being reported on the next one.
+        let briefing = derivation.desk_view();
+        self.symbolic_view.update(|view| *view = briefing);
         let detail = derivation.detail();
         let veto = derivation.veto();
         let veto_rules = derivation.veto_rules();

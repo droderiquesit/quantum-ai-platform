@@ -164,6 +164,50 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
     );
 }
 
+/// R12-REASON-3026: the registry the node starts on refuses to be used without
+/// the Symbolic Reasoning Brain. The entry is derived from a manifest on the
+/// running roster, so it exists only because the production organisation
+/// constructs the specialist; removing it leaves `symbolic-reasoning`
+/// uncovered and `require_coverage` refuses naming the scope.
+///
+/// Mutation: in `qip_investment_agents::manifests::symbolic_reasoning_brain`,
+/// replace the `"symbolic-reasoning"` competency with another string --
+/// `standard` then refuses to build, naming the missing scope.
+#[test]
+fn removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage() {
+    use qip_deepbrain::brains::{REQUIRED_SCOPES, SYMBOLIC_REASONING, SYMBOLIC_REASONING_BRAIN};
+    let platform = platform();
+    let registry = standard(platform.organisation().roster()).unwrap();
+    let spec = registry
+        .get(SYMBOLIC_REASONING_BRAIN)
+        .expect("the symbolic brain is in the production registry");
+    assert!(
+        platform
+            .organisation()
+            .roster()
+            .iter()
+            .any(|manifest| format!("organisation/{}", manifest.id) == spec.id),
+        "the symbolic entry is derived from a manifest on the running roster"
+    );
+    assert!(registry.scopes().contains(SYMBOLIC_REASONING));
+    assert!(REQUIRED_SCOPES.contains(&SYMBOLIC_REASONING));
+    assert!(registry.require_coverage().is_ok(), "premise: covered");
+
+    let without = registry.without(SYMBOLIC_REASONING_BRAIN);
+    assert!(
+        !without.scopes().contains(SYMBOLIC_REASONING),
+        "another brain still claims symbolic reasoning"
+    );
+    let refused = without
+        .require_coverage()
+        .expect_err("a registry without the symbolic brain is refused");
+    assert!(
+        refused.message().contains(SYMBOLIC_REASONING),
+        "{}",
+        refused.message()
+    );
+}
+
 /// R12-AGENCY-3028, ADR 0146 decision 3: the registry the node starts on
 /// refuses to be used without the Causal Agency Brain. Removing it leaves
 /// `intervention-planning` uncovered, and `require_coverage` -- which

@@ -2318,3 +2318,84 @@ fn a_non_empty_proof_trace_journaled_by_the_cycle_is_accepted_on_replay_and_refu
     );
     Ok(())
 }
+
+/// R12-REASON-3026. REASON's symbolic stage briefs the desk from the very
+/// derivation it journals, and the Symbolic Reasoning Brain run over the
+/// platform's own desk restates it: the slot names the replayed derivation's
+/// cycle, hypothesis and subject, the brain's figures equal the derivation's
+/// own, and its scope is covered by the finding.
+///
+/// The failure this guards: a specialist that reads a slot the kernel never
+/// writes reports "no data" forever, so "the Symbolic Reasoning Brain emits
+/// findings for its scope" would be a fixture's claim and not the platform's.
+///
+/// Mutation: drop the `self.symbolic_view.update(..)` call in
+/// `Platform::reason_symbolically` -- the slot stays unobserved and the first
+/// assertion fails.
+#[test]
+fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain_reports_it()
+-> Result<()> {
+    use qip_agents::runtime::{Agent, AgentHost};
+    use qip_investment_agents::coverage::{Scope, covered_by};
+    use qip_investment_agents::symbolic_brain::SymbolicReasoningAnalyst;
+    use qip_investment_agents::{ids, manifests};
+
+    let (platform, derivation) = journaled_derivation()?;
+    {
+        let view = platform.desk_symbolic_view();
+        assert!(view.observed, "REASON did not brief the desk");
+        assert_eq!(view.cycle, derivation.cycle);
+        assert_eq!(view.hypothesis_id, derivation.hypothesis_id);
+        assert_eq!(view.subject, derivation.subject);
+        assert_eq!(*view, derivation.desk_view());
+    }
+
+    let agent = SymbolicReasoningAnalyst::new(
+        manifests::symbolic_reasoning_brain(start()),
+        platform.desk().clone(),
+    );
+    assert_eq!(agent.manifest().id, ids::SYMBOLIC_REASONING);
+    let brief = qip_agents::finding::AgentBrief::new(
+        "what did the symbolic reasoners conclude",
+        start(),
+        Duration::from_days(1),
+    );
+    let record = AgentHost::new(1).run(
+        &agent,
+        &brief,
+        start(),
+        qip_core::lineage::Lineage::root(
+            qip_core::lineage::CorrelationId::from_string("sym"),
+            "test",
+        ),
+        qip_core::ids::AgentRunId::from_string("run-sym"),
+    );
+    let finding = record.finding.expect("the specialist answered");
+    let fact = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value)
+    };
+    let refused_links = derivation
+        .temporal
+        .links
+        .iter()
+        .filter(|link| !matches!(link.admitted, symbolic_stage::Step::Derived(())))
+        .count();
+    assert_eq!(
+        fact("timeline_links_refused"),
+        Some(refused_links as f64),
+        "{}",
+        finding.claim
+    );
+    assert_eq!(
+        fact("assumptions_violated"),
+        Some(derivation.violated_assumptions.len() as f64)
+    );
+    assert!(fact("reasoners_derived").is_some(), "{}", finding.claim);
+    assert!(finding.claim.contains(&derivation.hypothesis_id));
+    assert!(covered_by(std::slice::from_ref(&finding)).contains(&Scope::SymbolicReasoning));
+    Ok(())
+}

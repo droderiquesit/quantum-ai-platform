@@ -297,6 +297,55 @@ pub struct CompanyView {
     pub capital_structures: Vec<qip_financial::company::CapitalStructure>,
 }
 
+/// The latest hypothesis's symbolic derivation, as the kernel's REASON stage
+/// journaled it (R12-REASON-3026): what each of the six reasoners — ontology,
+/// temporal, causal, rule, probabilistic and constraint — concluded.
+///
+/// Plain data on purpose. `qip-investment-agents` may not ship against
+/// `qip-reasoning-engine` (the architecture anchor keeps that edge dev-only),
+/// so the kernel, which owns both, copies the derivation's conclusions into
+/// this slot and the Symbolic Reasoning Brain restates them. `observed` is
+/// false until a derivation has been written, which the brain reports as no
+/// data rather than as a hypothesis every reasoner passed. An `Option` is
+/// `None` where that reasoner refused, never a default that reads as a result.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SymbolicView {
+    pub observed: bool,
+    /// The cycle and hypothesis the derivation was computed for.
+    pub cycle: u64,
+    pub hypothesis_id: String,
+    pub subject: String,
+    /// Rule reasoning: whether the pack found the thesis eligible, and
+    /// whether re-evaluating its verdict agreed. `None` if the pack refused.
+    pub rules_eligible: Option<bool>,
+    pub rules_verified: bool,
+    pub agrees_with_review: bool,
+    /// Temporal reasoning: how many causal links the timeline was asked to
+    /// hold, and how many it refused.
+    pub timeline_links: usize,
+    pub timeline_links_refused: usize,
+    /// Probabilistic reasoning: `P(claim holds)` and its normalised entropy.
+    pub claim_probability: Option<f64>,
+    pub claim_uncertainty: Option<f64>,
+    /// Constraint reasoning: `Some(ids)` is the minimal conflict blocking
+    /// action (empty when the constraints are satisfiable); `None` if the
+    /// solver refused.
+    pub blocking_constraints: Option<Vec<String>>,
+    /// Causal reasoning: the abduced explanations of the surprise and how
+    /// many instruments an intervention on the subject reaches. `None` where
+    /// the graph refused (no surprise to explain).
+    pub causal_explanations: Option<usize>,
+    pub causal_reach: Option<usize>,
+    /// Ontology reasoning: the class the subject was typed as, and how many
+    /// facts the knowledge graph closed to. `None` where typing refused.
+    pub subject_type: Option<String>,
+    pub facts_inferred: Option<usize>,
+    /// What the derivation found does not hold, as the record states it.
+    pub violated_assumptions: Vec<String>,
+    /// Whether the parts contradict each other (ADR 0212).
+    pub infeasible: bool,
+}
+
 /// The World Model Federation's latest review as the UNDERSTAND stage
 /// journaled it (R12-WORLD-3025): every arbitration with its disagreement
 /// attached, and each live member's calibration as the federation scores it.
@@ -382,6 +431,11 @@ pub struct Desk {
     /// the kernel re-points this gate at the slot it feeds every REASON, and
     /// a test hands one in through [`Desk::with_private_markets`].
     pub private_markets: Gated<PrivateMarketsView>,
+    /// The latest hypothesis's symbolic derivation (R12-REASON-3026). Empty
+    /// from [`Desk::new`]; the kernel re-points this gate at the slot its
+    /// REASON stage writes, and a test hands one in through
+    /// [`Desk::with_symbolic`].
+    pub symbolic: Gated<SymbolicView>,
 }
 
 impl Desk {
@@ -441,6 +495,13 @@ impl Desk {
                 Capability::ReadWorldModel,
                 "world-model-federation",
             ),
+            // The derivation reads the world model's causal graph and
+            // restates what the reasoners concluded: a world-model read.
+            symbolic: Gated::new(
+                SymbolicView::default(),
+                Capability::ReadWorldModel,
+                "symbolic-derivation",
+            ),
             // Commitments and illiquid marks are the book's own: a
             // portfolio read.
             private_markets: Gated::new(
@@ -466,6 +527,13 @@ impl Desk {
     /// capability and label [`Desk::new`] chose for it.
     pub fn with_company(mut self, company: CompanyView) -> Self {
         self.company = Gated::new(company, self.company.required(), self.company.label());
+        self
+    }
+
+    /// The desk with `symbolic` behind the symbolic-derivation gate, under
+    /// the capability and label [`Desk::new`] chose for it.
+    pub fn with_symbolic(mut self, symbolic: SymbolicView) -> Self {
+        self.symbolic = Gated::new(symbolic, self.symbolic.required(), self.symbolic.label());
         self
     }
 

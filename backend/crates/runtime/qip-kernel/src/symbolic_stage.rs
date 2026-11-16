@@ -439,6 +439,66 @@ pub struct KnowledgeDerivation {
     pub inference: Step<Inference>,
 }
 
+impl SymbolicDerivation {
+    /// The derivation's conclusions as the plain data the desk's Symbolic
+    /// Reasoning Brain reads (R12-REASON-3026). `qip-investment-agents` cannot
+    /// name this crate's reasoners, so the kernel, which owns both, restates
+    /// what each concluded; a reasoner that refused is `None`, never a value.
+    pub fn desk_view(&self) -> qip_investment_agents::desk::SymbolicView {
+        let rules_eligible = self
+            .rules
+            .verdict
+            .derived()
+            .map(|verdict| verdict.facts.get("eligible") == Some(&Value::Bool(true)));
+        let probability = self
+            .posterior
+            .derived()
+            .and_then(|posterior| posterior.get("true").copied());
+        let blocking_constraints = self.acting.derived().map(|answer| match answer {
+            Answer::Satisfied(_) => Vec::new(),
+            Answer::Unsatisfiable { conflict } => conflict.clone(),
+        });
+        qip_investment_agents::desk::SymbolicView {
+            observed: true,
+            cycle: self.cycle,
+            hypothesis_id: self.hypothesis_id.clone(),
+            subject: self.subject.clone(),
+            rules_eligible,
+            rules_verified: self.rules.verified,
+            agrees_with_review: self.rules.agrees_with_review,
+            timeline_links: self.temporal.links.len(),
+            timeline_links_refused: self
+                .temporal
+                .links
+                .iter()
+                .filter(|link| !matches!(link.admitted, Step::Derived(())))
+                .count(),
+            claim_probability: probability,
+            claim_uncertainty: self.uncertainty,
+            blocking_constraints,
+            causal_explanations: self
+                .abduction
+                .derived()
+                .map(|abduction| abduction.candidates.len()),
+            causal_reach: self
+                .intervention
+                .derived()
+                .map(|intervention| intervention.affected.len()),
+            subject_type: self
+                .subject_type
+                .as_ref()
+                .and_then(|typing| typing.typed.derived().cloned()),
+            facts_inferred: self
+                .knowledge
+                .as_ref()
+                .and_then(|knowledge| knowledge.inference.derived())
+                .map(|inference| inference.facts.len()),
+            violated_assumptions: self.violated_assumptions.clone(),
+            infeasible: self.infeasibility().is_some(),
+        }
+    }
+}
+
 impl KnowledgeDerivation {
     /// Whether the graph entails that the hypothesis concerns a contract
     /// whose lifecycle ends before the claim can resolve: the hypothesis

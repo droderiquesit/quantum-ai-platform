@@ -743,6 +743,10 @@ pub fn standard_agents(
         )),
         Arc::new(crate::world_model_brain::WorldModelArbitrationAnalyst::new(
             manifests::world_model_arbitration_brain(reviewed_at),
+            desk.clone(),
+        )),
+        Arc::new(crate::symbolic_brain::SymbolicReasoningAnalyst::new(
+            manifests::symbolic_reasoning_brain(reviewed_at),
             desk,
         )),
     ]
