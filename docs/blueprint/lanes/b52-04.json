@@ -1,30 +1,39 @@
 {
  "lane": "04",
- "note": "ADR numbers: only 0608 and 0609 are used; the digest and replay-shard decisions are parts 2 and 3 of 0609. Rows were written without compiling after the owner's 2026-11-15 instruction, except 3097.",
+ "note": "2026-11-16 rework. Only 0608 and 0609 are used as ADR numbers. Compiled and run since the rework: cargo fmt --all --check; cargo clippy -p qip-world-model -p qip-kernel -p qip-deepbrain -p qip-twin -p qip-contracts --all-targets -- -D warnings (Finished, no warnings); the named unit tests below. NOT RUN: the full crate suites and the acceptance suites (documentation, architecture, api_boundary, event_fabric_schema_lock, manifest_wiring), because the disk filled during linking (ld Bus error) and clearing build output was refused by the guard. A topic body was added under Topic::HypothesisCreated, so event_fabric_schema_lock must be run.",
  "rows": [
   {
    "id": "R12-TICK-2084",
    "outcome": "SLICE",
    "claims_requirement_met": false,
-   "built_unverified": true,
-   "what": "qip_kernel::mismatch routes each fused mismatch to one paper-only record (research question, evidence challenge, proposed hypothesis); a falsification Book intake, Platform::admit_proposed_hypotheses and tick_desk::dispatch_mismatches wired beside the outside-prior hand-off. ADR 0609 (Proposed). Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). An earlier version of this same code passed its tests (fusion 10 passed; deepbrain test passed; five mutations fired) before the container was lost; this commit is a rewrite from that text.",
-   "remains": "Tick desk off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant); proposals not evaluated by Book::review; EvidenceChallenge::lowered not applied to a live evidence weight; research questions ride the scout queue, not a separate research intake.",
+   "built_unverified": false,
+   "what": "qip_kernel::mismatch routes each fused mismatch to one paper-only record. Investigations and challenges are research-loop acquisition candidates charged to the acquisition budget by launch_ranked (ResearchLoop::admit_mismatch_candidates). Relative-value proposals go to falsification::Book::propose, charged to one family's trial budget (TrialLedger::charge_proposal), journaled on every admission, eviction and budget refusal (MismatchProposalJournal, Topic::HypothesisCreated), rebuilt by mismatch::replay; PROPOSED_CAPACITY=32 is provisional and its evictions and refusals are counted. ADR 0609 rewritten to match.",
+   "remains": "Tick desk off by default; proposals not evaluated by Book::review; EvidenceChallenge::lowered not applied to a live weight; nothing alerts on proposals_refused_on_budget; the fusion.rs kernel test and the acceptance suites were not re-run after the rework.",
    "tests": [
-    "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_world_market_mismatch_reaches_its_one_paper_only_consumer",
-    "backend/crates/apps/qip-deepbrain/src/node.rs::tests::a_rounds_mismatches_reach_falsification_and_the_discovery_scout_queue"
+    "backend/crates/runtime/qip-kernel/src/mismatch.rs::tests::a_proposal_is_charged_to_its_family_journaled_and_rebuilt_from_the_log",
+    "backend/crates/runtime/qip-kernel/src/mismatch.rs::tests::the_cap_and_the_budget_count_and_journal_what_they_drop",
+    "backend/crates/services/qip-world-model/tests/falsification.rs::a_proposal_is_charged_to_its_familys_trial_budget_and_refused_at_the_budget",
+    "backend/crates/apps/qip-deepbrain/src/research.rs::tests::a_mismatch_scout_job_is_charged_to_the_acquisition_budget",
+    "backend/crates/apps/qip-deepbrain/src/node.rs::tests::a_rounds_mismatches_reach_falsification_and_the_research_loops_candidates",
+    "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_world_market_mismatch_reaches_its_one_paper_only_consumer"
    ],
-   "test_command": "cargo test -p qip-kernel --test fusion; cargo test -p qip-deepbrain --lib a_rounds_mismatches",
+   "test_command": "cargo test -p qip-kernel --lib mismatch; cargo test -p qip-world-model --test falsification a_proposal_is_charged; cargo test -p qip-deepbrain --lib -- a_rounds_mismatches a_mismatch_scout",
    "mutations": [
-    "mutation: not run"
+    "TrialLedger::charge_proposal increment removed: 'the proposal was not charged' left 0 right 1",
+    "Book::propose charge replaced by a constant: 'the proposal was not charged' left 0 right 1",
+    "journaling loop emptied: replay assertion left 0",
+    "budget refusal returning Duplicate: left 0 right 6",
+    "eviction counter removed: left 0 right 32",
+    "admit_mismatch_candidates no longer pushing the candidate: 'a candidate was offered twice' left 0 right 1"
    ],
-   "commit": "1e968baa"
+   "commit": "1e968baa, 418cc620"
   },
   {
    "id": "R12-TICK-2086",
    "outcome": "SLICE",
    "claims_requirement_met": false,
    "built_unverified": true,
-   "what": "qip_contracts::fused_digest::FusedDigest (read refuses another region and a stale digest) and qip_kernel::digest::build_for_cell (authorise_for first). Nothing was compiled or run after 2026-11-15 (owner's write-only instruction).",
+   "what": "qip_contracts::fused_digest::FusedDigest (read refuses another region and a stale digest) and qip_kernel::digest::build_for_cell (authorise_for first). Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). Since the write-only instruction this row has been compiled by cargo clippy (no warnings after two fixes) but its tests were not run.",
    "remains": "The fused_digest slot of PolicyPayload (changes signing string and every literal; versioned change); a call from per-cell publication; an edge-node reader; payload versioning.",
    "tests": [
     "backend/crates/libs/qip-contracts/tests/fused_digest.rs",
@@ -41,7 +50,7 @@
    "outcome": "SLICE",
    "claims_requirement_met": false,
    "built_unverified": true,
-   "what": "qip_kernel::venue_outage::apply_venue_status, an idempotent open/close writer for a reported venue status, with a unit test. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). Nothing calls it.",
+   "what": "qip_kernel::venue_outage::apply_venue_status, an idempotent open/close writer for a reported venue status, with a unit test. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). Nothing calls it. Since the write-only instruction this row has been compiled by cargo clippy (no warnings after two fixes) but its tests were not run.",
    "remains": "A VenueStatus or cell-halt feed reaching it; membership rebuilt from the event log at resume; a listing date in the catalogue; a licensed feed emitting corporate actions; a deep-brain test that a round's backtest refuses a delisted name (evaluate is private).",
    "tests": [
     "backend/crates/runtime/qip-kernel/src/venue_outage.rs::tests::a_reported_down_opens_one_outage_and_an_up_closes_it"
@@ -77,7 +86,7 @@
    "outcome": "NEEDS_PERSON",
    "claims_requirement_met": false,
    "built_unverified": true,
-   "what": "qip_kernel::replay_shard (disjoint round-robin shard_indices, ComparisonTotals::merge) with the two-shards-reproduce-single test, and ADR 0609 part 3 settling that the entry point lives in qip-deepbrain. A patch file holds the protected variables.tf and the Cloud Run Job. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction).",
+   "what": "qip_kernel::replay_shard (disjoint round-robin shard_indices, ComparisonTotals::merge) with the two-shards-reproduce-single test, and ADR 0609 part 3 settling that the entry point lives in qip-deepbrain. A patch file holds the protected variables.tf and the Cloud Run Job. Nothing was compiled or run after 2026-11-15 (owner's write-only instruction). Since the write-only instruction this row has been compiled by cargo clippy (no warnings after two fixes) but its tests were not run.",
    "remains": "The public seam over score_declined/score_filled; the qip-deepbrain shard entry point reading ArchiveReader; Terraform (variables.tf is protected; patch only, no plan or apply); funding figure is provisional.",
    "tests": [
     "backend/crates/runtime/qip-kernel/src/replay_shard.rs::tests::two_shards_over_disjoint_segments_reproduce_the_single_process_comparison"
