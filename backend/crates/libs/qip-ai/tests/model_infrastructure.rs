@@ -1434,7 +1434,7 @@ fn an_artifact_is_refused_while_any_one_of_its_four_promotion_tests_is_missing_f
 
     // No tests at all.
     refused(card.clone(), "it has no promotion tests on record");
-    assert_eq!(PROMOTION_TESTS.len(), 4, "premise: there are four tests");
+    assert_eq!(PROMOTION_TESTS.len(), 5, "premise: there are five tests");
     for name in PROMOTION_TESTS {
         // One test missing.
         let mut missing = tested_on(card.clone(), &artifact);
