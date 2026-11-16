@@ -1105,10 +1105,55 @@ fn an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bo
             .asset_class_registry()
             .is_registered(AssetClass::Prediction)
     );
+    use qip_execution_engine::order::Side;
+    let refuse = |platform: &mut Platform, side, quantity, price, needle: &str| {
+        let outcome = platform.order_for(
+            ObjectId::from_string("obj-EVT"),
+            side,
+            quantity,
+            price,
+            "prop-event",
+            vec!["hyp-event".to_string()],
+            start(),
+        );
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.message().contains(needle)),
+            "expected a refusal naming {needle:?}, got {outcome:?}"
+        );
+    };
+    // No order exists for each of these.
+    refuse(
+        &mut platform,
+        Side::Sell,
+        dec!("1"),
+        dec!("0.4"),
+        "would be a short",
+    );
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("2"),
+        dec!("0.4"),
+        "bounded to one unit",
+    );
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("1"),
+        dec!("1.5"),
+        "outside [0, 1]",
+    );
+    assert!(
+        platform.orders().orders().next().is_none(),
+        "a refused order existed"
+    );
+
     let order = platform.order_for(
         ObjectId::from_string("obj-EVT"),
-        qip_execution_engine::order::Side::Buy,
-        dec!("10"),
+        Side::Buy,
+        dec!("1"),
         dec!("0.4"),
         "prop-event",
         vec!["hyp-event".to_string()],
@@ -1121,6 +1166,22 @@ fn an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bo
         "the event contract did not fill on paper"
     );
     assert!(fills.iter().all(|fill| fill.simulated));
+    // One unit is now held: a second is past the bound, and selling more
+    // than is held is a short.
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("1"),
+        dec!("0.4"),
+        "bounded to one unit",
+    );
+    refuse(
+        &mut platform,
+        Side::Sell,
+        dec!("2"),
+        dec!("0.4"),
+        "would be a short",
+    );
 
     // Withdraw the class: assembly refuses the instrument naming it.
     let config = PlatformConfig::default();

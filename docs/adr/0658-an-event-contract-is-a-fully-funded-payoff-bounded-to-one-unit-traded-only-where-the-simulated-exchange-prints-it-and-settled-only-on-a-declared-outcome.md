@@ -1,6 +1,6 @@
 # ADR 0658: An event contract is a fully-funded payoff bounded to one unit, traded only where the simulated exchange prints it and settled only on a declared outcome
 
-- **Status**: Proposed 2026-11-15, lane 29 of wave b52, carrying the owner
+- **Status**: Proposed (the funding and one-unit refusals are built in `qip-kernel`'s `event_contract_gate`; `InstrumentType::is_derivative` and `has_maturity` name `EventContract` explicitly) 2026-11-15, lane 29 of wave b52, carrying the owner
   ruling of 2026-10-31 (ADR_THEN_IMPLEMENT) for R12-COVERAGE-5104. Touches no
   paper-trading layer, adds no dependency and no figure.
 - **Date**: 2026-11-15
@@ -30,7 +30,7 @@ a prediction-market venue stays unlicensed.
 5. It is fully funded: the position's maximum loss is the premium paid, so no
    margin or leverage applies to it.
 
-## Consequences
+## What it costs
 
 Decisions 1 and 2 are built in this slice. Decisions 3 to 5 are not: the
 settlement path (operator-declared outcome, payoff booking) and the
@@ -39,3 +39,10 @@ fully-funded sizing check remain, and the row stays PARTIAL until they land.
 ## Evidence
 
 `qip-kernel/tests/asset_classes.rs::an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit`.
+
+## What would make this wrong
+
+If the desk needs positions larger than one unit, or short event exposure, the
+bound and the no-short rule are the wrong shape and need a new ADR with its own
+margin model. If an operator cannot declare outcomes promptly, contracts held
+past their date have no settlement path until decision 4 is built.

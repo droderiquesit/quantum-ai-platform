@@ -1020,6 +1020,9 @@ pub struct Platform {
     /// assembly like `asset_classes`; the release loop asks it which
     /// permission an order needs.
     derivative_types: BTreeMap<String, InstrumentType>,
+    /// Event contracts in the universe (ADR 0658), for the funding and
+    /// one-unit refusals in `event_contract_gate`.
+    pub(crate) event_contract_ids: std::collections::BTreeSet<String>,
     /// The smallest tradable unit of every instrument — lot size times
     /// contract multiplier — taken from the universe at assembly like
     /// `asset_classes`. What the symbolic rule pack prices one lot with
@@ -6241,6 +6244,7 @@ impl Platform {
                 Some((object.object_id.as_str().to_string(), expiry))
             })
             .collect();
+        let event_contract_ids = crate::event_contract_gate::event_contract_ids(&universe);
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -6912,6 +6916,7 @@ impl Platform {
             inherited_through,
             asset_classes,
             derivative_types,
+            event_contract_ids,
             lot_units,
             contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
@@ -25396,6 +25401,14 @@ impl Platform {
         // built through `order_from` meets the same refusal `order_for` gives
         // before an order exists.
         self.financing_gate(order.object_id.as_str(), order.side, order.quantity, now)?;
+        // ADR 0658: every submission, so an order built through `order_from`
+        // meets the event-contract refusals `order_for` gives.
+        self.event_contract_gate(
+            order.object_id.as_str(),
+            order.side,
+            order.quantity,
+            order.arrival_price,
+        )?;
         // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
         // not traded into. Before the pre-trade routing on purpose: the
         // desk's own books disagree with the custodian's about this asset,
@@ -26830,6 +26843,19 @@ impl Platform {
 
     /// Refuse, before an order object exists, a derivative this desk holds no
     /// permission for. Not a derivative, or not in the universe: no claim.
+    /// Units of `object_id` the desk is long; zero when none is held.
+    pub(crate) fn held_quantity(&self, object_id: &str) -> Decimal {
+        self.capital
+            .positions
+            .get(object_id)
+            .map_or(Decimal::ZERO, |lot| lot.quantity)
+    }
+
+    /// Cash the book holds after every fill's notional and costs.
+    pub(crate) fn free_cash(&self) -> Decimal {
+        self.capital.cash
+    }
+
     fn derivative_gate(&self, object_id: &str) -> qip_core::error::Result<()> {
         let Some(instrument_type) = self.derivative_types.get(object_id) else {
             return Ok(());
@@ -26859,6 +26885,7 @@ impl Platform {
         now: Timestamp,
     ) -> qip_core::error::Result<Order> {
         self.derivative_gate(object_id.as_str())?;
+        self.event_contract_gate(object_id.as_str(), side, quantity, price)?;
         self.financing_gate(object_id.as_str(), side, quantity, now)?;
         Ok(self.order_from(
             object_id,
