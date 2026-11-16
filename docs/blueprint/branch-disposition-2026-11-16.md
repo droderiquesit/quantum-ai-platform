@@ -1,12 +1,12 @@
 # Branch disposition, 2026-11-16
 
-Every branch of `ccr-116bbb27-osu8n8` resolved on the owner's instruction of
-2026-11-16. Ninety-one generated branches are gone except the eight below.
-Sixty-seven held no commits outside `main` and were deleted after that was
-verified. These eight hold commits that never landed; each is recorded with the
-SHA that restores it: `git push origin <sha>:refs/heads/<name>`.
+Every generated branch of `ccr-116bbb27-osu8n8` is resolved on the owner's
+instruction of 2026-11-16. Those that held no commit `main` did not already
+have were deleted after that was verified. The six that hold work which never
+landed are recorded below with the SHA that restores each:
+`git push origin <sha>:refs/heads/<name>`.
 
-## Merged into main after a full green `ci` run (12)
+## Merged into main after a full green `ci` run (14)
 
 Report lanes, each answering why its rows cannot be closed from code: b53-2
 (#278 `43b5e41`), b53-3 (#274 `f8fcc50`), b53-8 (#276 `ab5705e`), b53-13
@@ -21,35 +21,31 @@ and the security jobs had passed on the merged tree:
 | b53-5 | #269 | `20d2ff2` | A `MicrostructureDelta` residual cannot lose a field (+159) |
 | b53-9 | #273 | `e94f938` | The adversarial suite as a registry-enforced promotion test (+216) |
 | b53-6 | #270 | `4fb4daa` | Back-door estimator; `SIMULATE` journals its draws (+585) |
-| b53-10 | #271 | `60390b9` | A lesson is promoted only from episodes the memory holds (+177, plus the acceptance correction in `90861c1`) |
+| b53-10 | #271 | `60390b9` | A lesson is promoted only from episodes the memory holds (+177) |
+| b53-16 | #268 | `4e54c9f` | The book's basis and gap exposure are reported every cycle (+610) |
+| b53-7 | #272 | `a2cd2e7` | The Symbolic Reasoning Brain reports into the organisation (+1,299) |
 
 Each branch was deleted after its merge commit landed.
 
-b53-10 needed one acceptance change before it could land:
-`uncertainty_records.rs` promoted a lesson citing `run-1`..`run-6` into an
-empty memory, which the lane's own new rule refuses. The test now records the
-six episodes first, which is the premise the rule creates, not a weakening of
-what it asserts. Verified by reading the refusal path, then by the job.
+## The acceptance partition, and how each of the three failures was found
 
-## Open, not merged: the acceptance partition fails (2)
+The three lanes above (b53-10, b53-16, b53-7) each failed exactly one
+acceptance test while every other job passed. none of the three was a defect
+in the code the lane adds: each was an existing acceptance test whose premise
+the lane's new behaviour invalidates, in the same shape all three times.
 
-Both pass every other job in `ci` and fail only
-`test (acceptance, -p qip-acceptance)`, which exits 100 (nextest: tests
-failed). The failing test names could not be recovered: job logs need a
-signed-in session, the check-run annotations carry only the exit code, and the
-runner's log download truncates at the job header. Left open rather than merged
-on a guess.
+Finding out *which* test was the hard part, and worth recording. The job page
+says "Sign in to view logs" to an anonymous reader, the check-run annotations
+carry only `Process completed with exit code 100`, and the per-job log download
+truncates at the job header. What worked was the run-wide log archive
+(`GITHUB_DOWNLOAD_WORKFLOW_RUN_LOGS`): a ZIP holding every job's full log,
+where the summary block names the failing test.
 
-| Lane | PR | Size | Head when last tested |
-|---|---|---|---|
-| b53-16 | #268 | +610, book-level basis and gap exposure | `2a48fe40` |
-| b53-7 | #272 | +1,299, the Symbolic Reasoning Brain | `bd74078d` |
-
-Neither branch removes a line of kernel source (b53-16 is purely additive), so
-the failure is a premise an existing acceptance test makes, of the kind found in
-b53-10 — not a regression in the code path the lane adds. The next step is the
-`FAIL` lines from the job log, or `cargo nextest run -p qip-acceptance` on a
-checkout of the branch.
+| Lane | The failing test | Why, and what changed |
+|---|---|---|
+| b53-10 | `uncertainty_records::contradicting_evidence_on_the_semantic_and_self_models_is_recorded_beside_the_belief` | The lane makes `ResearchMemory::promote` refuse a lesson citing episodes the memory does not hold. The test promoted `run-1`..`run-6` into an empty memory. `90861c1`: the test records the six episodes first — the premise the new rule creates, not a weaker assertion |
+| b53-16 | `hedge_independence::the_hedge_modules_reach_only_the_named_kernel_modules` | The lane has `hedge.rs` construct `cycle::ExposureFinding`, so it names `crate::cycle`, which the Hedge Brain was not declared to reach. `5841e44`: `CYCLE_PATHS` pins that one path by name instead of opening the module, because `cycle.rs` composes every stage's report |
+| b53-7 | `model_gateway_boundary::the_organisation_is_convened_only_after_the_cost_router_places_the_decision` | The lane splits the convention into `dispatch_panel` and `dispatch_late` around the derivation, so the literal `self.organisation.dispatch(` count fell to zero. `240ecb9`: the scan counts the prefix and holds every call to the same three rules — inside `reason_about_the_queue`, after `self.cost_router.select` |
 
 ## Refuted by a reader, not merged (4) — branches retained
 
