@@ -287,10 +287,59 @@ impl FinancingRegister {
                         ),
                     );
                 }
-                // An event contract is fully funded (ADR 0658): it carries no
-                // financing leg, so it has nothing to register here.
-                (InstrumentType::EventContract, _) => {}
-                _ => {}
+                // Every other pairing carries no financing leg. Named by type
+                // with no wildcard, so a new instrument type fails to compile
+                // here until its financing treatment is decided (ADR 0658). An
+                // event contract is fully funded: nothing to register.
+                (other, _) => match other {
+                    InstrumentType::CommonStock
+                    | InstrumentType::PreferredStock
+                    | InstrumentType::DepositaryReceipt
+                    | InstrumentType::ExchangeTradedFund
+                    | InstrumentType::Index
+                    | InstrumentType::GovernmentBond
+                    | InstrumentType::CorporateBond
+                    | InstrumentType::MunicipalBond
+                    | InstrumentType::InflationLinkedBond
+                    | InstrumentType::ConvertibleBond
+                    | InstrumentType::Loan
+                    | InstrumentType::PrivateCredit
+                    | InstrumentType::StructuredCredit
+                    | InstrumentType::MortgageBackedSecurity
+                    | InstrumentType::AssetBackedSecurity
+                    | InstrumentType::CreditDefaultSwap
+                    | InstrumentType::InterestRateSwap
+                    | InstrumentType::OvernightIndexSwap
+                    | InstrumentType::ForwardRateAgreement
+                    | InstrumentType::YieldCurvePoint
+                    | InstrumentType::Repo
+                    | InstrumentType::FxSpot
+                    | InstrumentType::FxForward
+                    | InstrumentType::FxSwap
+                    | InstrumentType::CommoditySpot
+                    | InstrumentType::CommodityFuture
+                    | InstrumentType::CommoditySwap
+                    | InstrumentType::Future
+                    | InstrumentType::PerpetualFuture
+                    | InstrumentType::Forward
+                    | InstrumentType::Option
+                    | InstrumentType::VarianceSwap
+                    | InstrumentType::VolatilityIndexFuture
+                    | InstrumentType::Cryptocurrency
+                    | InstrumentType::TokenizedSecurity
+                    | InstrumentType::MutualFund
+                    | InstrumentType::HedgeFund
+                    | InstrumentType::PrivateEquityFund
+                    | InstrumentType::VentureCapitalFund
+                    | InstrumentType::InfrastructureFund
+                    | InstrumentType::Secondary
+                    | InstrumentType::RealEstate
+                    | InstrumentType::Cash
+                    | InstrumentType::MoneyMarketInstrument
+                    | InstrumentType::StructuredNote
+                    | InstrumentType::SyntheticBasket
+                    | InstrumentType::EventContract => {}
+                },
             }
         }
         register
