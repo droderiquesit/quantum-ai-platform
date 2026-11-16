@@ -45,7 +45,8 @@ use qip_contracts::message::MarketMessage;
 use qip_contracts::venue::VenueId;
 use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
-use qip_edge::cell::{Cell, ConfirmedFill, WorkReport};
+use qip_edge::cell::{Cell, CellConfig, ConfirmedFill, WorkReport};
+use qip_edge::custody::CustodyStatement;
 use qip_observability::golden::{GoldenSignals, Outcome};
 use qip_observability::metrics::Metrics;
 use qip_observability::sampling::LineSampler;
@@ -336,6 +337,20 @@ impl PassMeter {
     }
 }
 
+/// Arm the cell's custody watch at the period the simulated venue states at
+/// (ADR 0242, R12-RES-7099).
+///
+/// The simulated venue states its custody once per pass, so the period a
+/// statement is judged against is [`crate::outbox::PASS_INTERVAL`], a figure
+/// the node already runs on rather than one chosen here. The cell then sizes
+/// custody's row from the newest statement and never widens it. One function
+/// so the binary and its test arm the same period.
+pub fn arm_custody_watch(config: CellConfig) -> Result<CellConfig> {
+    let millis = i64::try_from(crate::outbox::PASS_INTERVAL.as_millis())
+        .map_err(|_| Error::invalid("the pass interval does not fit a custody statement period"))?;
+    config.with_custody_watch(Duration::from_millis(millis))
+}
+
 /// Feed, decide, act, and reconcile — once.
 ///
 /// Takes the simulated gateway and the simulated feed by their own types:
@@ -415,6 +430,17 @@ fn decide_act_reconcile(
     // From here every call the cell makes to the venue is mapped, so a
     // replacement's venue id reaches the cell as the id the cell sent.
     let mut gateway = RequotingPlacer::new(gateway, requoter);
+    // ADR 0242: the venue states its custody every pass it answers, and the
+    // cell reads custody's freshness from the newest statement. Recorded
+    // before the halt check and before `work`, so the pass that sizes reads
+    // the statement made on this pass; a venue that stopped answering leaves
+    // the last one to age instead of being papered over here.
+    if cell.keeps_custody_watch() {
+        cell.observe_custody_statement(&CustodyStatement {
+            venue: VenueId::new(gateway.simulated().venue()),
+            as_of: now,
+        })?;
+    }
     // The venue's answers about orders already out, before the halt check:
     // a halted node sends nothing and still has to book what filled, or the
     // reconciler below compares the venue's account with a record that

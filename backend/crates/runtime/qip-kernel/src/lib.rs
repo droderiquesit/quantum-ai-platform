@@ -41,6 +41,7 @@ pub mod breadth;
 pub mod bus_bridge;
 pub mod capacity_review;
 pub mod causal_review;
+pub mod cell_cycle_scores;
 pub mod central;
 pub mod chain_settlement;
 pub mod class_exposure;
@@ -50,6 +51,7 @@ pub mod compute_routing;
 /// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
 /// paths keep compiling.
 pub use qip_survival::confidence;
+pub mod challenge_desk;
 pub mod config;
 pub mod cost_anomaly_job;
 pub mod cost_anomaly_tasks;
@@ -83,11 +85,13 @@ pub mod model_serving;
 pub mod model_tournament;
 pub mod model_trust;
 pub mod now_stage;
+pub mod path_counterfactual;
 pub mod platform;
 pub mod position_life;
 pub mod position_register;
 pub mod pre_positioning;
 pub mod precedent_declines;
+pub mod private_markets_feed;
 pub mod quantum_routing;
 pub mod quote_loop;
 pub mod reconciliation_breaks;
@@ -120,6 +124,7 @@ pub mod tail;
 pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
+pub mod training_export;
 pub mod treasury;
 pub mod valuation;
 pub mod venue_admission;

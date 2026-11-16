@@ -56,7 +56,7 @@
 
 use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
-    AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
+    AcquisitionCriteria, AcquisitionKind, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
     Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
@@ -1114,6 +1114,9 @@ pub struct ResearchRound {
     /// desk (R12-AMBIENT-9033): a launch that only recorded its cost reached
     /// no scout, so the platform paid for evidence nothing went to find.
     pub scouted: Vec<ScoutRequest>,
+    /// Where each launched request was routed by its kind (R12-DATA-3105).
+    /// Filled by the node when it hands the scout jobs on.
+    pub dispatched: Vec<crate::acquisition_dispatch::Dispatched>,
     /// The registries the sweep consulted and what each held
     /// (R12-EXPAND-1115): a sweep record that cannot say which sources,
     /// types, tools and brains it ran against cannot be replayed against the
@@ -1388,6 +1391,10 @@ pub struct ScoutRequest {
     pub rank_bp: u32,
     /// The entities the gap named — what a discovery query is built for.
     pub entities: Vec<String>,
+    /// What the request asks for (R12-DATA-3105); a record written without
+    /// one is a new source query.
+    #[serde(default)]
+    pub kind: qip_contracts::ambient::AcquisitionKind,
 }
 
 /// A simulation constructed for a started research item whose acquisition
@@ -4034,6 +4041,12 @@ impl ResearchLoop {
             let Some(mut request) = by_id.remove(id) else {
                 continue;
             };
+            // The kind follows from how the candidate was priced: a re-sweep
+            // of the own stream is a further measurement, everything else a
+            // new source query.
+            if sources.get(id).copied() == Some("resweep") {
+                request = request.with_kind(AcquisitionKind::AdditionalMeasurement);
+            }
             let cost = request.criteria().acquisition_cost_bp;
             if cost <= remaining {
                 remaining -= cost;
@@ -4052,6 +4065,7 @@ impl ResearchLoop {
                     question: request.decision_id().to_string(),
                     rank_bp,
                     entities: named,
+                    kind: request.kind(),
                 });
                 let source = sources.get(id).copied().unwrap_or("acquisition");
                 metrics.count(
@@ -4138,6 +4152,7 @@ impl ResearchLoop {
             question: question.to_string(),
             rank_bp: request.criteria().net_value_bp(),
             entities: self.launched_entities.get(&id).cloned().unwrap_or_default(),
+            kind: request.kind(),
         });
         metrics.count(names::INFO_REQUESTS, labels([("outcome", "reacquired")]));
         Ok(())
@@ -5512,6 +5527,42 @@ mod tests {
         assert_eq!(status("info-b"), Some(AcquisitionStatus::InProgress));
         assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
         assert_eq!((round.info_launched, round.info_outranked), (1, 1));
+    }
+
+    /// R12-DATA-3105: a candidate priced as a re-sweep launches as an
+    /// additional measurement and its scout job says so; an acquisition
+    /// launches as a new source query. Mutation: delete the `with_kind` in
+    /// `launch_ranked` — the first assertion fails.
+    #[test]
+    fn a_resweep_candidate_launches_as_an_additional_measurement() {
+        let at = Timestamp::from_secs(1_800_000_000);
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let request = |id: &str| {
+            InfoRequest::new(
+                id,
+                format!("question {id}"),
+                AcquisitionCriteria::new(9_000, 9_000, 10_000, 100).expect("criteria"),
+                at.saturating_add(Duration::from_hours(1)),
+                at,
+            )
+            .expect("request")
+        };
+        research.candidates.push((request("info-r"), "resweep"));
+        research.candidates.push((request("info-a"), "acquisition"));
+        let mut round = ResearchRound::default();
+        research
+            .launch_ranked(&Metrics::new("test"), &mut round)
+            .expect("launches");
+        let kind = |id: &str| {
+            round
+                .scouted
+                .iter()
+                .find(|s| s.request_id == id)
+                .map(|s| s.kind)
+        };
+        assert_eq!(kind("info-r"), Some(AcquisitionKind::AdditionalMeasurement));
+        assert_eq!(kind("info-a"), Some(AcquisitionKind::NewSourceQuery));
     }
 
     /// Urgency is the deadline (R12-AMBIENT-3106): two requests equal in

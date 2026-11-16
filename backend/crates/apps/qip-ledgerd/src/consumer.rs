@@ -58,6 +58,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use qip_contracts::policy::HaltCommand;
 use qip_contracts::reflex::{ChainSpan, OutcomeRecord};
 use qip_core::error::{Error, Result};
 use qip_core::{Clock, Duration, sha256_hex};
@@ -355,8 +356,33 @@ impl std::fmt::Debug for WorkerConfig {
     }
 }
 
+/// Where a custody break's whole-cell halt goes (R12-LEDGER-8139). The
+/// ledger finds the break and builds the deterministic, unsigned
+/// [`HaltCommand`]; signing and broadcasting are the centre's, so this is
+/// the seam a carrier to `qip-api`'s halt signer implements. A refusal
+/// leaves the halt in the store's outbox and it is offered again on the
+/// next step: a halt is never dropped because the carrier was down.
+pub trait HaltSink: Send + Sync {
+    fn carry(&self, halt: &HaltCommand) -> Result<()>;
+}
+
+/// Offer every outboxed custody halt to `sink` in key order and clear each one
+/// the sink took; returns how many were carried. Stops at the first refusal
+/// and leaves that halt and the rest queued, so none is dropped and order is
+/// kept.
+pub fn carry_pending_halts(store: &LedgerStore, sink: &dyn HaltSink) -> Result<usize> {
+    let mut carried = 0;
+    for (key, halt) in store.pending_custody_halts()? {
+        sink.carry(&halt)?;
+        store.custody_halt_carried(&key)?;
+        carried += 1;
+    }
+    Ok(carried)
+}
+
 /// Reads one partition and applies it. See the module documentation.
 pub struct PartitionWorker {
+    halt_sink: Option<Arc<dyn HaltSink>>,
     consumer: Consumer,
     store: Arc<LedgerStore>,
     telemetry: LedgerTelemetry,
@@ -417,6 +443,7 @@ impl PartitionWorker {
         })?;
         let position = store.resume_offset(&label)?;
         let worker = Self {
+            halt_sink: None,
             consumer,
             store,
             telemetry,
@@ -434,6 +461,26 @@ impl PartitionWorker {
         };
         worker.report(None);
         Ok(worker)
+    }
+
+    /// Hand custody halts to `sink` as they are found. Without one the
+    /// halts stay in the store's outbox, where `pending_custody_halts`
+    /// reads them.
+    #[must_use]
+    pub fn with_halt_sink(mut self, sink: Arc<dyn HaltSink>) -> Self {
+        self.halt_sink = Some(sink);
+        self
+    }
+
+    /// Offer every outboxed halt to the sink; a refusal is reported and the
+    /// halt stays queued.
+    fn carry_halts(&mut self) {
+        let Some(sink) = self.halt_sink.clone() else {
+            return;
+        };
+        if let Err(error) = carry_pending_halts(&self.store, sink.as_ref()) {
+            self.report(Some(format!("custody halt not carried: {error}")));
+        }
     }
 
     /// The next delivery offset this worker will apply.
@@ -561,6 +608,7 @@ impl PartitionWorker {
     /// One step: join if needed, fetch one batch from the current position,
     /// apply what it holds. Never moves past a record it did not apply.
     pub fn step(&mut self) -> Step {
+        self.carry_halts();
         if !self.joined {
             if let Err(error) = self.consumer.join() {
                 return self.fail(&error);
@@ -670,6 +718,7 @@ impl PartitionWorker {
         self.store.record_mismatch_age();
         self.telemetry.evaluate_objectives();
         self.failures = 0;
+        self.carry_halts();
         Step::Applied { records: applied }
     }
 

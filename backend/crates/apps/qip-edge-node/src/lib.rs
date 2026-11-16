@@ -32,6 +32,7 @@ pub mod dark;
 pub mod edge_quotes;
 pub mod event_fabric;
 /// The simulated venue's quote feed, and the one value it may be configured as.
+pub mod fabric_discovery;
 pub mod feed;
 pub mod gateway;
 /// The second halt wire: a flag on the node's own filesystem, polled.
@@ -39,6 +40,8 @@ pub mod halt;
 /// The health and scrape surface, on a thread of its own.
 pub mod health;
 pub mod market_state;
+/// A measured borrow rate laid over the stated one (ADR 0681).
+pub mod measured_borrow;
 pub mod mesh;
 pub mod mirror;
 /// The outbox's configuration: spool, budgets, cadence, fabric endpoint.
@@ -47,6 +50,8 @@ pub mod outbox;
 pub mod pass;
 /// Each venue's own message limits, as the deployment states them.
 pub mod quote_limits;
+/// The node's one reader of the peer link's rebalancing tasks.
+pub mod rebalance_kept;
 pub mod replay;
 /// Cancel-and-replace of a stale resting order, beneath the cell's placer
 /// seam — the caller `qip_routing::reprice` was written for.

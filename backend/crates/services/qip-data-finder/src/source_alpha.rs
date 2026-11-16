@@ -205,6 +205,28 @@ impl SourceAlphaHistory {
         Ok(score)
     }
 
+    /// Put a score computed earlier back into the history, for a restart that
+    /// reads its rounds off the event log (R12-EVID-8108). Refuses a source
+    /// with no name and a figure that is not finite, rather than keeping a
+    /// score no computation could have produced. Bounded like [`Self::score`].
+    pub fn restore(&mut self, source: &str, score: SourceAlpha) -> Result<()> {
+        if source.trim().is_empty() {
+            return Err(Error::invalid("a score is recorded against a named source"));
+        }
+        if !(score.incremental_gain.is_finite() && score.realised_contribution.is_finite()) {
+            return Err(Error::invalid(format!(
+                "a recorded score for `{source}` holds a figure that is not finite; the log \
+                 does not hold a score this desk could have computed"
+            )));
+        }
+        let series = self.by_source.entry(source.to_string()).or_default();
+        if series.len() >= HISTORY_BOUND {
+            series.pop_front();
+        }
+        series.push_back(score);
+        Ok(())
+    }
+
     /// A source's scores, oldest first.
     pub fn history(&self, source: &str) -> impl Iterator<Item = &SourceAlpha> {
         self.by_source.get(source).into_iter().flatten()

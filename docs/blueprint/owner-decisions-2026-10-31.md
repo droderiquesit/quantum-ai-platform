@@ -2524,6 +2524,109 @@ that narrows a security scanner, whatever the owner has delegated.
     change and two independent readers have failed to refute it. No lane may
     write a live-order path, edit a protected path, or add a dependency.
 
+40. **Whatever waited on a person is delegated to the orchestrator
+    (2026-11-15).** The owner, at about 15:36Z: "I give you full authority to
+    do whatever you wait for a person [for]."
+
+    *What was waiting.* Three kinds of thing. A guard suite that refuses new
+    code until somebody reviews it: a fabric mirror path whose send path is
+    not pinned, a variable a binary reads that no deployment sets, an
+    order-sending call no row classifies, a function absent from a reviewed
+    table. A design ruling or a figure nobody had given, which the lanes
+    reported as NEEDS_PERSON or NEEDS_FIGURE (28 rows on the day). And a
+    patch to a path a lane may not edit, left under `docs/blueprint/lanes/`
+    for a person to apply (38 files, of which 15 were already applied, 16 no
+    longer apply and 7 still do).
+
+    *How the authority is used.* It is the reviewer's authority, not a
+    licence to make a check pass. Where a guard says "pin its send path here
+    before it ships" or "add a row naming its gate and a behavioural test",
+    that is done as the guard prescribes: by a reader that did not write the
+    code, with the assertion or the test the guard asks for, and then a
+    second reader who tries to refute it. A guard's count or table is never
+    edited merely so that new code passes, and no assertion is removed. A
+    ruling is written here or in a decision record under a fresh number. A
+    figure is chosen in the restrictive direction and marked provisional. A
+    waiting patch is applied only if it still applies and a reader confirms
+    it narrows no scanner and no guard.
+
+    *What it does not lift.* The four exceptions at the top of this file,
+    because they are the repository's rules and not the owner's preference: no
+    live-order path and no real money movement; no weakening of a test, a
+    guard, a paper-trading layer or an existing limit value; no dependency
+    without a record; no billed infrastructure without its cost named.
+    Decision 39 stands: billing is paused, so nothing is deployed. The
+    session's permission layer stands: an edit it refuses (anything under
+    `.claude/**`, the change-window file) is not worked around, and is
+    reported instead. And three things are not the owner's to give through
+    this session at all: a real credential, a signed market-data licence, and
+    the account's usage limit.
+
+    *First uses.* Two renames made on 2026-11-15 before this decision are
+    ratified by it: `TickDesk::set_book` to `set_portfolio_weights` and the
+    edge node's `RebalanceKept::absorb` to `keep`. Each name collided with a
+    name a guard scans for, neither method does what the guard guards
+    against, and neither guard was touched. Lane 26's rewrite of ADR 0652 in
+    place, after 0652 had landed on main, is not accepted in that form: the
+    record on main stays as it is and the lane's second decision becomes
+    ADR 0694.
+
+    *The second batch of lanes, read under this decision.* A governance
+    reader that wrote none of the code read each new record and the commits
+    behind it, and what it found was checked against the tree before anything
+    was done about it.
+
+    - Reviewed and admitted. Lane 06 added its own SRV reader to the list
+      `event_fabric_scaling.rs` pins and four `QIP_FABRIC_SRV_*` variables to
+      `manifest_wiring.rs`'s table of variables no deployment sets. Both are
+      admitted as reviewed: the discovery is optional and with the variables
+      absent the node uses its configured endpoint exactly as before. One
+      defect stays open for the lane: a malformed zone falls back to the
+      configured endpoint instead of being refused. Lane 41 widened one guard
+      to hold a fifth root and added a new suite, `otlp_coverage.rs`, with
+      three named exemptions; admitted, and the two exemptions that rest on no
+      record must be given one or removed. Lane 41's objective catalogue
+      changed one expected count in its own crate's test, keeping the equality
+      exact; admitted. Lane 27 added one word to the documentation suite's
+      table of cardinals; admitted.
+    - Amendments accepted. Record 0612 has a cell record two regional episode
+      kinds at judgements it already makes, which narrows ADR 0207 decision 3
+      ("no new recording seam"); accepted as an amendment of that decision.
+      Records 0628, 0629 and 0648, which their lanes had marked accepted, are
+      confirmed; 0629's cap of sixteen extents is provisional and its silent
+      cut beyond the cap is a defect to fix, not a decision.
+    - Not admitted, and out of the batch until reworked. Lane 04: its mismatch
+      routing produced scout jobs and hypotheses that two existing budgets
+      never saw. Lane 26: its order-refusing gate has no caller, and it
+      rewrote landed record 0652 in place. Lane 29: its event contract trades
+      on paper while the risk and margin matches do not name it, against the
+      condition of its own ruling. Lane 43: its capital change makes the
+      horizon liquidity gate breach less often. Lane 45's record 0691: a
+      refusal that is off by default and that no binary switches on. Each is a
+      control weakened, bypassed or unable to fire, which this decision does
+      not lift.
+    - Refused by the pipeline on `f58090de`, and out of the batch. Lane 40's
+      second setting of the lattice's signals replaced the one main already
+      makes with the order flow, so the flow member read nothing (three
+      `lattice_signals_wired` tests). Lane 10's tape attestation has no
+      caller, so its narrowing cannot fire. Lane 06's fencing lease store
+      adds a bucket with no customer-managed key, of a class the register
+      does not record, read through an endpoint the egress guard says the
+      node does not read (three suites). Lane 41's Monte Carlo episodes reach
+      the log and not the stress report (an existing test found 13 against
+      9); its record 0682 keeps only the telemetry-drain decision, whose code
+      stays. Lane 25's rebalance-keeper test now names the keeper's renamed
+      intake, the same assertion, mutation-verified.
+    - Kept with a named defect. Records 0637 and 0681 describe functions with
+      no production caller (`submit_challenge`, `with_measured_borrow`), and
+      0680's path queue saturates an overflowing horizon instead of refusing
+      it. None is a limit; each stays unbuilt in the register until it has a
+      caller.
+
+    No register row is regraded by this decision. A decision removes a wait;
+    a row closes only when what it names is built, the pipeline has passed
+    with it, and two independent readers have failed to refute it.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly

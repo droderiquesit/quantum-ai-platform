@@ -422,6 +422,19 @@ pub struct ReactionOutcome {
     /// Held edges the episode agreed with, left as they were.
     pub agreed: usize,
     pub contradicted: Vec<ReactionContradiction>,
+    /// Held edges this episode did not weigh again because an earlier horizon
+    /// of the same event already did. One event is one piece of evidence
+    /// about an edge, however many horizons it is read over: the 1-, 5- and
+    /// 20-bar reactions to one announcement are overlapping readings of one
+    /// move, and each halving confidence would turn one contradiction into
+    /// an eighth of the edge.
+    pub already_weighed: usize,
+    /// Instruments where no edge was held and none was established because
+    /// the market moved against what the mechanism says the event does. An
+    /// edge that claims "this event pushes the instrument the same way"
+    /// resting on a reaction the other way would be a claim the evidence
+    /// contradicts at birth.
+    pub declined: usize,
 }
 
 /// Apply one reaction episode to the causal graph (R12-WORLD-6015), per
@@ -463,6 +476,16 @@ pub fn apply_reaction(
             .map(|(i, e)| (i, e.mechanism, e.confidence))
             .collect();
         if held.is_empty() {
+            let expected = event_direction.signum()
+                * if mechanism.preserves_sign() {
+                    1.0
+                } else {
+                    -1.0
+                };
+            if expected * observed < 0.0 {
+                outcome.declined += 1;
+                continue;
+            }
             let strength = magnitude_bps.abs() / 10_000.0;
             let edge = CausalEdge::new(
                 &reaction.event_name,
@@ -478,7 +501,23 @@ pub fn apply_reaction(
             outcome.created += 1;
             continue;
         }
+        // The event this episode is a reading of: `episode_id` ends `@<horizon>`
+        // where the caller names horizons. Another horizon of the same event
+        // already cited on the edge means the edge has weighed this event.
+        let event_key = reaction
+            .episode_id
+            .rsplit_once('@')
+            .map(|(event, _)| format!("reaction:{event}@"));
         for (index, held_mechanism, _) in held {
+            if let Some(key) = &event_key
+                && graph
+                    .edges()
+                    .get(index)
+                    .is_some_and(|e| e.evidence.iter().any(|id| id.starts_with(key.as_str())))
+            {
+                outcome.already_weighed += 1;
+                continue;
+            }
             let expected = event_direction.signum()
                 * if held_mechanism.preserves_sign() {
                     1.0

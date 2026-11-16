@@ -107,11 +107,15 @@ pub enum Scope {
     /// branch, merge, abstain or request more data, with the disagreement
     /// kept (R12-WORLD-3025).
     WorldModelArbitration,
+    /// Illiquid and private holdings: unfunded commitments, the capital
+    /// calls standing against them and the dated marks on illiquid assets
+    /// (R12-ASSET-3018).
+    PrivateMarkets,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 23] = [
+    pub const ALL: [Scope; 24] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -135,6 +139,7 @@ impl Scope {
         Scope::RegimeReliability,
         Scope::DisagreementResolution,
         Scope::WorldModelArbitration,
+        Scope::PrivateMarkets,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -162,6 +167,7 @@ impl Scope {
             Self::RegimeReliability => "regime_reliability",
             Self::DisagreementResolution => "disagreement_resolution",
             Self::WorldModelArbitration => "world_model_arbitration",
+            Self::PrivateMarkets => "private_markets",
         }
     }
 
@@ -216,6 +222,13 @@ impl Scope {
             Self::RegimeReliability => &["regime_reliability_cells"],
             Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
+            Self::PrivateMarkets => &[
+                "private_commitments",
+                "private_unfunded_commitment",
+                "capital_calls_open",
+                "capital_calls_overdue",
+                "illiquid_marks_stale",
+            ],
         }
     }
 
