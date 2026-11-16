@@ -1,0 +1,69 @@
+{
+  "lane": "b53-2",
+  "rows": [
+    {
+      "id": "R12-EXPAND-6061",
+      "outcome": "NEEDS_PERSON",
+      "clauses": [
+        {"clause": "registry records hypotheses, experiments, null results, open questions, benchmark suites, unresolved contradictions", "code": "backend/crates/libs/qip-agents/src/research.rs::ResearchRegistry", "caller": "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop (via ExpansionDesk)", "test": "backend/crates/libs/qip-agents/tests/expansion_registries.rs::an_entry_missing_a_declared_field_is_refused"},
+        {"clause": "so failures are not rediscovered (survives a restart)", "code": "none: registry is in memory only", "caller": "none", "test": "none"}
+      ],
+      "test_command": "cargo test --no-fail-fast -p qip-agents --test expansion_registries; cargo test --no-fail-fast -p qip-expansion --test executor",
+      "result_lines": [
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-agents expansion_registries)",
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-expansion executor)"
+      ],
+      "mutations": [],
+      "remains": "Nulls and contradictions are lost on restart, so a failure can be rediscovered. Journalling needs a restore path for ResearchLoop state that the deep brain does not have for any of its research state: a persistence design for the whole loop, not a registry change. A second capability class at conclude needs its ADR 0192 benchmark row, which only a person can name. No code written: a slice here would be a journal with no restore path.",
+      "commit": ""
+    },
+    {
+      "id": "R12-EXPAND-6062",
+      "outcome": "NEEDS_PERSON",
+      "clauses": [
+        {"clause": "registry records what the platform can sense, reason about, simulate, operate with a confidence/eligibility boundary", "code": "backend/crates/libs/qip-agents/src/registries.rs::CapabilityRegistry::promote", "caller": "backend/crates/apps/qip-deepbrain/src/research.rs carry_out conclude arm", "test": "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::a_promoted_fill_bias_correction_is_recorded_in_the_capability_registry_with_paper_and_shadow_eligibility"},
+        {"clause": "trade, settle, hedge, transfer, purchase, create verbs", "code": "none", "caller": "none", "test": "none"}
+      ],
+      "test_command": "cargo test --no-fail-fast -p qip-deepbrain --test expansion_rows; cargo test --no-fail-fast -p qip-agents --test expansion_registries",
+      "result_lines": [
+        "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-deepbrain expansion_rows)",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-agents expansion_registries)"
+      ],
+      "mutations": [],
+      "remains": "ADR 0158 decision 15 declines to assert Trade, Purchase or Transfer on a paper platform, so six of the ten verbs are unreachable by construction. Populating them would assert capabilities the platform must not have; the owner decides whether the requirement text changes. Nothing decides from what the registry holds. No code written.",
+      "commit": ""
+    },
+    {
+      "id": "R12-EXPAND-6065",
+      "outcome": "NOT_CLOSABLE",
+      "clauses": [
+        {"clause": "asset class, venue, geography weak coverage queues work naming its origin", "code": "backend/crates/services/qip-expansion (coverage detector)", "caller": "backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over", "test": "backend/crates/apps/qip-deepbrain/tests/research.rs::an_asset_class_with_no_history_becomes_a_queued_research_item_through_the_attention_router"},
+        {"clause": "causal drivers", "code": "backend/crates/services/qip-expansion causal_driver_universe", "caller": "ResearchLoop::sweep_over; no shipped writer creates an edge whose effect lacks history", "test": "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_causal_driver_whose_effects_have_no_history_becomes_one_coverage_gap_naming_its_dimension"},
+        {"clause": "languages", "code": "none", "caller": "none", "test": "none"}
+      ],
+      "test_command": "cargo test --no-fail-fast -p qip-deepbrain --test evidence_gaps",
+      "result_lines": [
+        "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-deepbrain evidence_gaps)"
+      ],
+      "mutations": [],
+      "remains": "Language: no source record states the language of what it admits (ADR 0345 decision 5); inventing one is an invented input. Causal drivers: the tree holds no edge source beyond price-history precedence, so the dimension cannot fire on a shipped binary. The edge cap is a figure nobody has given (NEEDS_FIGURE). No code written.",
+      "commit": ""
+    },
+    {
+      "id": "R12-EXPAND-6071",
+      "outcome": "NEEDS_PERSON",
+      "clauses": [
+        {"clause": "widening authority without the stronger evidence is refused", "code": "backend/crates/services/qip-agency/src/autonomy.rs::ActionPolicy::widen_to", "caller": "backend/crates/apps/qip-cli/src/agency.rs Session::widen", "test": "backend/crates/services/qip-agency/tests/agency.rs::each_authority_level_refuses_the_lesser_evidence_and_names_the_record_that_refuses_it"},
+        {"clause": "rollback requirement scales with authority and is trustworthy", "code": "autonomy.rs::Drill::shortfall (restored is operator-declared)", "caller": "ActionPolicy::widen_to", "test": "none that can fail on a false claim: a drill is self-declared"}
+      ],
+      "test_command": "cargo test --no-fail-fast -p qip-agency",
+      "result_lines": [
+        "test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-agency tests/agency.rs)",
+        "test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (qip-agency lib)"
+      ],
+      "mutations": [],
+      "remains": "Drill.restored is a boolean the operator writes and Drill.record is never resolved against a journal: a drill entry kind needs a decision on who may write one and what makes it more than the operator's own say-so. BroadInternal reads one clean_days, not one per class (ADR 0141 table row says each class). Levels above NarrowReversible are ungranted by ADR 0141 and need a further ADR. The 2026-11-14 monotonicity test is still not mutation-verified. No code written: building the per-class slice alone would leave the row open.",
+      "commit": ""
+    }
+  ]
+}

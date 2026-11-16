@@ -1,0 +1,167 @@
+{
+ "lane": "b53-13",
+ "rows": [
+  {
+   "id": "R12-MODEL-10096",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "a failed verification demotes a model (check)",
+     "code": "backend/crates/runtime/qip-kernel/src/model_serving.rs::Platform::reverify_model, Platform::rollback_model",
+     "caller": "backend/crates/apps/qip-deepbrain/src/learning.rs::LearningDesk::reverify_subject",
+     "test": "backend/crates/apps/qip-deepbrain/src/learning.rs::tests::a_production_model_refuted_after_its_subject_crosses_is_rolled_back_and_its_predecessor_judged_in_the_same_round (not re-run in this lane)"
+    },
+    {
+     "clause": "retire a refuted model that has no reactivatable predecessor",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built, by decision. Retiring a refuted model with no predecessor needs a log record the promoted set (apply_promotion/resume_model_promotions) and the Model Pack lineage (ModelPack::succeed/packs_of) both replay. ModelPromotion is a signed, schema-locked body (event_fabric_schema_lock, schemas.lock.json): a retire flag changes its shape and needs a lock edit, a new topic needs the same, and overloading displaced==[own reference] as 'retire' changes what replayed records mean without a decision record. That is a person's call (an ADR, then the lock edit). Clause (3), examining subjects other than the round's own, is also open.",
+   "commit": ""
+  },
+  {
+   "id": "R12-MODEL-7198",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "thousands of specialist/temporary models compete from a composition root",
+     "code": "backend/crates/runtime/qip-kernel/src/model_tournament.rs::TournamentStage",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs (tournament field)",
+     "test": "none drives a full Platform cycle to a spawn"
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. Production spawns at most one temporary per subject, so 'thousands' needs a per-entity forecaster seam: how many forecasters per cycle, at what compute cost against COMPUTE_BUDGET and the 4,096 cap, is a design and figure decision I would be inventing. The register already names the same missing seam as R12-MODEL-3089.",
+   "commit": ""
+  },
+  {
+   "id": "R12-RISK-4099",
+   "outcome": "NEEDS_FIGURE",
+   "clauses": [
+    {
+     "clause": "drift: measurement plus limit",
+     "code": "backend/crates/libs/qip-ai/src/registry.rs::ModelCard::decision_eligibility",
+     "caller": "learning round ineligible list (qip-deepbrain learning.rs)",
+     "test": "existing, not re-run"
+    },
+    {
+     "clause": "regime mismatch / feature failure / adversarial input",
+     "code": "backend/crates/libs/qip-ai/src/registry.rs::ModelCard::decision_eligibility_in",
+     "caller": "qip-deepbrain learning.rs ineligible_in_regime",
+     "test": "backend/crates/libs/qip-ai/tests/regime_scope.rs (not re-run)"
+    },
+    {
+     "clause": "uncertainty: a measurement and a limit or recorded finding",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "calibration: a measurement and a limit or recorded finding",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. ModelCard carries no uncertainty measurement and no calibration-error measurement or ceiling (only a pass/fail PROMOTION_TESTS calibration result), so the limit at which either becomes a finding is a figure I would have to invent (NEEDS_FIGURE). Separately the decision-time caller of ModelRiskRegister::admit needs the ADR the register names (which decision seam asks it).",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2080",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "fill and impact models calibrated from scored fills (check)",
+     "code": "backend/crates/services/qip-twin/src/calibration.rs::FillCalibration::observe_cost",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::score_filled",
+     "test": "backend/crates/runtime/qip-kernel/tests/learning.rs::after_fills_with_systematic_cost_error_the_twins_spread_and_impact_converge_on_the_venues_true_values (ADR 0450; not re-run)"
+    },
+    {
+     "clause": "queue model calibrated",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "latency model calibrated",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. Needs an acknowledgement instant on SimulatedBroker fills (qip-brokers, risk-and-execution domain) and a queue term in the twin's CostModel with its own calibration and cost-ceiling refusal; both change the paper execution model's structure and the queue term's prior is a modelling figure. Person to decide shape (ADR) first.",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-9036",
+   "outcome": "CLAIMS_COMPLETE",
+   "clauses": [
+    {
+     "clause": "queue-position-dependent fills in a replayed order; removing queue modelling changes fills and fails the test",
+     "code": "backend/crates/services/qip-simulation-engine/src/tick_replay.rs::ReplaySession (Working.queue_ahead)",
+     "caller": "backend/crates/apps/qip-cli/src/simulate.rs::run_with_participants via main.rs 'simulate'",
+     "test": "backend/crates/services/qip-simulation-engine/tests/tick_replay.rs::a_resting_limit_order_waits_behind_the_size_already_queued_at_its_price"
+    },
+    {
+     "clause": "participant behaviour simulated",
+     "code": "backend/crates/services/qip-simulation-engine/src/participants.rs::participant_orders",
+     "caller": "backend/crates/apps/qip-cli/src/simulate.rs::run_with_participants",
+     "test": "backend/crates/apps/qip-cli/tests/simulate.rs::the_committed_sharded_job_simulates_participants_and_its_shards_union_to_the_whole"
+    },
+    {
+     "clause": "run as sharded replay/simulation jobs",
+     "code": "backend/crates/apps/qip-cli/src/simulate.rs (--shard k/n, SHA-256 instrument bucket); data/simulation/sharded-replay/run-shards.sh",
+     "caller": "backend/crates/apps/qip-cli/src/main.rs 'simulate'",
+     "test": "backend/crates/apps/qip-cli/tests/simulate.rs::the_union_of_n_sharded_replay_runs_equals_the_unsharded_run, the_qip_binary_simulates_the_committed_job_and_refuses_a_missing_spec"
+    }
+   ],
+   "test_command": "cd backend && cargo test --no-fail-fast -p qip-simulation-engine --test tick_replay; cargo test --no-fail-fast -p qip-cli --test simulate",
+   "result_lines": [
+    "tick_replay: test result: ok. 13 passed; 0 failed; 0 ignored",
+    "qip-cli simulate: test result: ok. 5 passed; 0 failed; 0 ignored"
+   ],
+   "mutations": [
+    "tick_replay.rs: queue ahead on arrival forced to zero (map_or(..., |_level| Decimal::ZERO)); failed 'ten lots were resting at 99 when the bid joined' (left Some(0), right Some(10)); restored from copy, cmp OK, 13 passed",
+    "qip-cli simulate.rs:254: part.orders.extend(added) replaced by `let _ = added;`; failed 'premise: the participants executed on the replayed books' (and the binary job test); restored from copy, cmp OK, 5 passed"
+   ],
+   "remains": "Code was already on the branch (6409f74a, lane before this one); this lane re-ran and mutation-verified it and made no code change. Not in any clause but worth knowing: no deployed batch runner executes the job, and participants do not feed back into the recorded tape. If the owner reads 'run as sharded jobs' as requiring a deployed runner, that clause is deployment-gated (ADR 0709) and the outcome becomes PARTIAL. Other gates (clippy, fmt, acceptance suites) were not run in this lane because no source changed.",
+   "commit": "6409f74a2c824cc995896100507137806cca37cf"
+  },
+  {
+   "id": "R12-WORLD-3036",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "grading a resolved thesis moves the self-model and REASON scales evidence by it (check)",
+     "code": "backend/crates/services/qip-learning-engine/src/self_model.rs::SelfModel::origin_factors",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs set_origin_factors",
+     "test": "existing, not re-run"
+    },
+    {
+     "clause": "operational health and capability boundaries are read by a decision seam; stale feeds seen; data drift beyond Brier; weaknesses and blind spots",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. The open items change trading behaviour or the central degradation envelope: enforcing boundary_of at an order or proposal seam, observing Capability::Feed (moves central_sizing_multiplier for every construction and needs a centre-side feed measurement the kernel does not hold), and data drift without Brier worsening (needs a statistic and tolerance). Each is a decision for a person before code.",
+   "commit": ""
+  }
+ ]
+}

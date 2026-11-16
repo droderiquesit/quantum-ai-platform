@@ -1,0 +1,18 @@
+{
+  "lane": "b53-19",
+  "rows": [
+    {
+      "id": "R12-CONTRACT-7069",
+      "outcome": "NEEDS_PERSON",
+      "clauses": [
+        {"clause": "immutable economic event, debit/credit impacts, settlement state", "code": "backend/crates/libs/qip-contracts/src/ledger.rs::LedgerEvent", "caller": "backend/crates/libs/qip-portfolio/src/ledger.rs::post", "test": "backend/crates/libs/qip-contracts/tests/ledger_event.rs::a_schema_two_fill_event_missing_any_required_field_is_refused_and_round_trips_whole (existing, not re-run this lane)"},
+        {"clause": "ownership and full attribution chain on every LedgerEvent, not only schema-2 fills", "code": "NOT BUILT: capital-operation events (LedgerOperationFields::to_event) stay schema 1; LedgerOperationFields::owner returns None for 11 of 15 kinds", "caller": "none", "test": "none"}
+      ],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Nothing was built or run this lane. Three open items, each needing a person: (1) ADR 0454 states it does not decide an owner for every LedgerOperation kind or an operation-shaped attribution; the 2026-10-31 ruling says 'treasury where no party' but the skeptic text governs and no accepted ADR carries it, so coding it ahead of acceptance would implement an unaccepted decision. (2) The kernel desk chain (qip-kernel desk_ledger.rs) has no OrderSent entry; refusing a decision-less fill at qip-ledgerd's posting seam stops the desk's book until the desk journals its own decision entry, which ADR 0454 leaves to a follow-on ADR (chain-record change). (3) The row is deployable=false regardless; ledgerd is not deployed. Suggested next step: a Proposed ADR (0752) fixing an owner per OperationKind and the operation-shaped attribution (operation_id, origin), and a second (0753) for the desk decision record, then implement.",
+      "commit": ""
+    }
+  ]
+}
