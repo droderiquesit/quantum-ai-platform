@@ -482,6 +482,120 @@ fn correlations(
     (Some(mean), pairs)
 }
 
+/// The book's basis and gap exposure as two journaled findings
+/// (R12-RISK-4095, ADR 0690).
+///
+/// **Basis.** The platform keeps no register of hedge pairs, so a held hedge
+/// leg is read from what it does hold: a position in a declared hedge
+/// candidate whose sign is opposite to the book's net notional, which is what
+/// carrying an instrument *against* the book means. `positions` are signed
+/// notionals; `RiskState::position_notionals` is gross, so the caller signs
+/// each marked notional by its lot's side. Each leg is priced as
+/// `hedge_search` prices a planned hedge — notional x basis volatility x
+/// sqrt([`HOLDING_DAYS`]) x quantile — through
+/// [`qip_risk::market_exposure::book_basis_exposure`], so the held figure and
+/// the planned one share one expression. A long-only book holds no leg and
+/// measures zero, which is a measurement.
+///
+/// **Gap.** The worst of the stress library's tail worlds, as a loss in the
+/// book currency: the world's loss fraction of equity times equity. With no
+/// stress report or no tail world there is no figure, and the finding says
+/// `unmeasured` rather than zero.
+///
+/// **No bound.** No owner has stated one, so both findings are `unbounded`
+/// and decide nothing. This is a recorded finding, not a limit: a limit with
+/// no figure an owner chose is the `MaxExpectedShortfall` defect, and a bound
+/// invented here would be an invented figure.
+pub fn market_exposure_findings(
+    declarations: &[HedgeCandidateDeclaration],
+    positions: &BTreeMap<String, Decimal>,
+    stress: Option<&StressReport>,
+    equity: f64,
+) -> Vec<crate::cycle::ExposureFinding> {
+    use qip_risk::market_exposure::{
+        BasisPosition, Exposure, GapWorld, Verdict, assess, book_basis_exposure, book_gap_exposure,
+    };
+    let finding = |exposure: Exposure, measured: Result<(f64, String)>| match measured
+        .and_then(|(figure, detail)| assess(exposure, figure, None, detail))
+    {
+        Ok(found) => crate::cycle::ExposureFinding {
+            exposure: found.exposure.as_str().to_string(),
+            figure: Some(found.figure),
+            bound: found.bound,
+            verdict: match found.verdict {
+                Verdict::Within => "within",
+                Verdict::Breach => "breach",
+                Verdict::Unbounded => "unbounded",
+            }
+            .to_string(),
+            detail: found.detail,
+        },
+        Err(error) => crate::cycle::ExposureFinding {
+            exposure: exposure.as_str().to_string(),
+            figure: None,
+            bound: None,
+            verdict: "unmeasured".to_string(),
+            detail: error.message().to_string(),
+        },
+    };
+
+    let net = positions
+        .values()
+        .fold(Decimal::ZERO, |sum, notional| sum + *notional);
+    let legs: Vec<BasisPosition> = declarations
+        .iter()
+        .filter_map(|declaration| {
+            let held = positions.get(declaration.instrument.as_str())?;
+            let against = (net.is_positive() && held.is_negative())
+                || (net.is_negative() && held.is_positive());
+            against.then(|| BasisPosition {
+                label: declaration.instrument.as_str().to_string(),
+                notional: held.abs().to_f64(),
+                basis_volatility: declaration.basis_volatility,
+            })
+        })
+        .collect();
+    let basis = finding(
+        Exposure::Basis,
+        book_basis_exposure(&legs, HOLDING_DAYS).map(|figure| {
+            (
+                figure,
+                format!(
+                    "{} hedge leg(s) held against a net {} book, priced over {HOLDING_DAYS} days",
+                    legs.len(),
+                    net
+                ),
+            )
+        }),
+    );
+
+    let worlds: Vec<GapWorld> = stress
+        .map(|report| {
+            report
+                .tail_worlds
+                .iter()
+                .map(|world| GapWorld {
+                    name: world.scenario.clone(),
+                    loss_fraction: world.loss_fraction,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let gap = finding(
+        Exposure::Gap,
+        book_gap_exposure(&worlds, equity).map(|(figure, name)| {
+            (
+                figure,
+                format!(
+                    "worst tail world `{name}` of {} on {equity} equity",
+                    worlds.len()
+                ),
+            )
+        }),
+    );
+    vec![basis, gap]
+}
+
 /// Every world in `stress` with the book's loss in it, as the search reads
 /// them: the library, the adversarial sequence, every causal stress and the
 /// tail worlds.
