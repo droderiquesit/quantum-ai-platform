@@ -2605,6 +2605,18 @@ that narrows a security scanner, whatever the owner has delegated.
       refusal that is off by default and that no binary switches on. Each is a
       control weakened, bypassed or unable to fire, which this decision does
       not lift.
+    - Refused by the pipeline on `f58090de`, and out of the batch. Lane 40's
+      second setting of the lattice's signals replaced the one main already
+      makes with the order flow, so the flow member read nothing (three
+      `lattice_signals_wired` tests). Lane 10's tape attestation has no
+      caller, so its narrowing cannot fire. Lane 06's fencing lease store
+      adds a bucket with no customer-managed key, of a class the register
+      does not record, read through an endpoint the egress guard says the
+      node does not read (three suites). Lane 41's Monte Carlo episodes reach
+      the log and not the stress report (an existing test found 13 against
+      9); its record 0682 keeps only the telemetry-drain decision, whose code
+      stays. Lane 25's rebalance-keeper test now names the keeper's renamed
+      intake, the same assertion, mutation-verified.
     - Kept with a named defect. Records 0637 and 0681 describe functions with
       no production caller (`submit_challenge`, `with_measured_borrow`), and
       0680's path queue saturates an overflowing horizon instead of refusing
