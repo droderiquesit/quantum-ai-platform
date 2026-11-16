@@ -2,9 +2,8 @@
 
 Every generated branch of `ccr-116bbb27-osu8n8` is resolved on the owner's
 instruction of 2026-11-16. Those that held no commit `main` did not already
-have were deleted after that was verified. The six that hold work which never
-landed are recorded below with the SHA that restores each:
-`git push origin <sha>:refs/heads/<name>`.
+have were deleted after that was verified. The six that were kept are recorded
+below with why, and with the tip SHA of each.
 
 ## Merged into main after a full green `ci` run (14)
 
@@ -47,6 +46,26 @@ where the summary block names the failing test.
 | b53-16 | `hedge_independence::the_hedge_modules_reach_only_the_named_kernel_modules` | The lane has `hedge.rs` construct `cycle::ExposureFinding`, so it names `crate::cycle`, which the Hedge Brain was not declared to reach. `5841e44`: `CYCLE_PATHS` pins that one path by name instead of opening the module, because `cycle.rs` composes every stage's report |
 | b53-7 | `model_gateway_boundary::the_organisation_is_convened_only_after_the_cost_router_places_the_decision` | The lane splits the convention into `dispatch_panel` and `dispatch_late` around the derivation, so the literal `self.organisation.dispatch(` count fell to zero. `240ecb9`: the scan counts the prefix and holds every call to the same three rules — inside `reason_about_the_queue`, after `self.cost_router.select` |
 
+## Judged after the fact: both of the last two rebase onto main as an empty change (2)
+
+These were recorded as needing a rebase before they could be judged. A
+three-way merge of `main` with each does conflict — which is what "needs a
+rebase" meant — but reading the conflicts settles them without one:
+
+| Lane | What the merge actually shows |
+|---|---|
+| t50-43 | `qip-kernel/tests/position_record.rs` is **byte-identical** on the branch and on `main`: the divestment a wallet halt refuses is already tested there, and the rule is already in the kernel. The only remaining changes are an older revision of `docs/blueprint/assessment/R12-M1.json` (rows `main` has since rewritten) and an ADR row reserving 0512 for R12-EXPAND-6067, belief-discrepancy persistence — a decision this branch does not implement |
+| t50-45 | `main`'s `qip-training/src/ensemble.rs` is this branch's file plus a `predict` method, and `conformal.rs` is byte-identical: the teacher-class blending landed and then grew. `learning.rs`, `training.rs` and `lib.rs` differ only where `main` is newer, down to six cosmetic lines. Its ADR row reserves 0516 for R12-EXPAND-6033, a counterfactual score is not a synthetic episode — again not what the branch implements |
+
+Neither carries a line `main` lacks, and re-adding either ADR row would
+re-reserve a number `main` keeps free on purpose (the ten in the deleted empty
+claims above). The rebase is empty; there is nothing to merge. Both branches
+are kept as the record of that and can be deleted whenever the owner wants the
+last two refs gone:
+
+t50-43 `ab5f4568a4902c41ccf45ba34ed4bea36092dd5c` ·
+t50-45 `a60890bbddbb4d7f95e94ecce27c8d22befaddec`
+
 ## main requires a green run, from 2026-11-16
 
 Classic branch protection on `main`: the twenty-four `ci` jobs a pull request
@@ -83,7 +102,7 @@ simply never satisfied, `isRequired` reads false for it, and the merge stays
 blocked with every check displaying green — which is what happened on
 2026-11-16 until the three were copied from a rendered check list instead of
 from `ci.yml`. The four partition names in the protection rule are therefore
-the two short ones verbatim and these three truncated ones.
+the short one verbatim and these three truncated ones.
 
 The rest of the list is pinned to job names in `.github/workflows/ci.yml`: a job
 renamed there must be renamed here in the same change, or merges wait on a
@@ -98,18 +117,12 @@ check that will never report.
 | b53-11 | R12-REASON-3003 and R12-QUANT-4042 refuted | `02876ce95a89e6c3acfde6e0c7553f55c48f2a4c` |
 | b53-12 | R12-CAPITAL-5067 refuted | `c60b5d956bf6adc0f7377dd728354bb96cc03ccf` |
 
-## Needs a rebase before it can be judged (2) — branches retained
-
-| Lane | Content | Conflict | Tip SHA |
-|---|---|---|---|
-| t50-43 | Divestment under a wallet halt (+111) | `docs/adr/README.md` | `ab5f4568a4902c41ccf45ba34ed4bea36092dd5c` |
-| t50-45 | Teacher-class blending by regime (MODEL-4006, +712) | `qip-training/src/ensemble.rs`, its tests, the index | `a60890bbddbb4d7f95e94ecce27c8d22befaddec` |
-
 ## Deleted as empty number claims (4)
 
 Each held one to three lines in `docs/adr/README.md` reserving an ADR number
 whose body was never written. All ten claimed numbers (0512, 0514, 0516, 0544,
-0545, 0546, 0547, 0550, 0551, 0552) are still free.
+0545, 0546, 0547, 0550, 0551, 0552) are still free — which is also why the two
+lanes above do not get their rows back.
 
 b53-44 `45cacc905f11a5235f1c98d7c9472d52587880a5` ·
 t51-02 `a6aae6ad5f703dd272e73b46933059f6b36b3644` ·
