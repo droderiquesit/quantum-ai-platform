@@ -44,7 +44,7 @@
     "event_contract_gate.rs cash sum zeroed: same failing assertion",
     "hedge.rs is_linear EventContract => true: a_linear_book_... FAILED"
    ],
-   "commit": "ecf1c506, 430fd255, round-3 commit (see git log)"
+   "commit": "ecf1c506, 430fd255, 116ead9c"
   },
   {
    "id": "R12-COVERAGE-7163",
