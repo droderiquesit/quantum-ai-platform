@@ -2347,7 +2347,62 @@ fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain
         assert_eq!(view.cycle, derivation.cycle);
         assert_eq!(view.hypothesis_id, derivation.hypothesis_id);
         assert_eq!(view.subject, derivation.subject);
-        assert_eq!(*view, derivation.desk_view());
+        // Expected values computed here from the derivation's own fields, not
+        // by calling the mapping under test: a mapping that read the wrong
+        // part would otherwise equal itself.
+        let eligible = match &derivation.rules.verdict {
+            symbolic_stage::Step::Derived(v) => Some(
+                v.facts.get("eligible") == Some(&qip_reasoning_engine::rules::Value::Bool(true)),
+            ),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.rules_eligible, eligible);
+        assert_eq!(view.rules_verified, derivation.rules.verified);
+        assert_eq!(view.agrees_with_review, derivation.rules.agrees_with_review);
+        assert_eq!(view.timeline_links, derivation.temporal.links.len());
+        let probability = match &derivation.posterior {
+            symbolic_stage::Step::Derived(p) => p.get("true").copied(),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.claim_probability, probability);
+        assert_eq!(view.claim_uncertainty, derivation.uncertainty);
+        let blocking = match &derivation.acting {
+            symbolic_stage::Step::Derived(qip_reasoning_engine::constraint::Answer::Satisfied(
+                _,
+            )) => Some(Vec::new()),
+            symbolic_stage::Step::Derived(
+                qip_reasoning_engine::constraint::Answer::Unsatisfiable { conflict },
+            ) => Some(conflict.clone()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.blocking_constraints, blocking);
+        let explanations = match &derivation.abduction {
+            symbolic_stage::Step::Derived(a) => Some(a.candidates.len()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.causal_explanations, explanations);
+        let reach = match &derivation.intervention {
+            symbolic_stage::Step::Derived(i) => Some(i.affected.len()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.causal_reach, reach);
+        let typed = derivation
+            .subject_type
+            .as_ref()
+            .and_then(|t| match &t.typed {
+                symbolic_stage::Step::Derived(name) => Some(name.clone()),
+                symbolic_stage::Step::Refused(_) => None,
+            });
+        assert_eq!(view.subject_type, typed);
+        let inferred = derivation
+            .knowledge
+            .as_ref()
+            .and_then(|k| match &k.inference {
+                symbolic_stage::Step::Derived(i) => Some(i.facts.len()),
+                symbolic_stage::Step::Refused(_) => None,
+            });
+        assert_eq!(view.facts_inferred, inferred);
+        assert_eq!(view.violated_assumptions, derivation.violated_assumptions);
     }
 
     let agent = SymbolicReasoningAnalyst::new(
@@ -2394,7 +2449,28 @@ fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain
         fact("assumptions_violated"),
         Some(derivation.violated_assumptions.len() as f64)
     );
-    assert!(fact("reasoners_derived").is_some(), "{}", finding.claim);
+    // Counted here from the derivation itself, one reasoner at a time.
+    let held = derivation.temporal.links.len() > refused_links;
+    let derived = [
+        matches!(derivation.rules.verdict, symbolic_stage::Step::Derived(_)),
+        held,
+        matches!(derivation.posterior, symbolic_stage::Step::Derived(_)),
+        matches!(derivation.acting, symbolic_stage::Step::Derived(_)),
+        matches!(derivation.abduction, symbolic_stage::Step::Derived(_))
+            || matches!(derivation.intervention, symbolic_stage::Step::Derived(_)),
+        derivation
+            .subject_type
+            .as_ref()
+            .is_some_and(|t| matches!(t.typed, symbolic_stage::Step::Derived(_)))
+            || derivation
+                .knowledge
+                .as_ref()
+                .is_some_and(|k| matches!(k.inference, symbolic_stage::Step::Derived(_))),
+    ]
+    .into_iter()
+    .filter(|d| *d)
+    .count();
+    assert_eq!(fact("reasoners_derived"), Some(derived as f64));
     assert!(finding.claim.contains(&derivation.hypothesis_id));
     assert!(covered_by(std::slice::from_ref(&finding)).contains(&Scope::SymbolicReasoning));
     Ok(())

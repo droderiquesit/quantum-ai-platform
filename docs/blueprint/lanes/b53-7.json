@@ -3,7 +3,7 @@
  "rows": [
   {
    "id": "R12-REASON-3026",
-   "outcome": "CLAIMS_COMPLETE",
+   "outcome": "NEEDS_PERSON",
    "clauses": [
     {
      "clause": "A Symbolic Reasoning Brain exists as a specialist (ontology, temporal, causal, rule, probabilistic, constraint reasoning)",
@@ -43,7 +43,10 @@
     "qip-acceptance documentation: test result: ok. 28 passed; 0 failed (after CARDINALS/doc count fix)",
     "other 8 acceptance suites: 0 failed",
     "./scripts/check-secrets.sh: secret scan: nothing found",
-    "cargo fmt --all --check clean; clippy -p qip-investment-agents -p qip-kernel -p qip-deepbrain --all-targets -D warnings: Finished, no warnings"
+    "cargo fmt --all --check clean; clippy -p qip-investment-agents -p qip-kernel -p qip-deepbrain --all-targets -D warnings: Finished, no warnings",
+    "follow-up: qip-investment-agents organisation: test result: ok. 91 passed; 0 failed",
+    "follow-up: qip-kernel --test symbolic_federation: test result: ok. 30 passed; 0 failed",
+    "follow-up: fmt --check clean; clippy -p qip-investment-agents -p qip-kernel --all-targets -D warnings: Finished, no warnings; check-secrets: nothing found"
    ],
    "mutations": [
     "platform.rs reason_symbolically: slot write removed -> symbolic_federation.rs:2346 'REASON did not brief the desk'",
@@ -51,9 +54,12 @@
     "symbolic_brain.rs reasoners_derived: claim_probability.is_some() -> true -> a_reasoner_that_refused_is_not_counted_as_derived failed",
     "symbolic_brain.rs: observed guard -> if false -> unwritten_derivation_as_no_data failed",
     "symbolic_stage.rs desk_view: refused-link filter inverted -> symbolic_federation.rs:2387 timeline_links_refused mismatch",
-    "manifests.rs: competency renamed -> deepbrain brains.rs:180 coverage test failed"
+    "manifests.rs: competency renamed -> deepbrain brains.rs:180 coverage test failed",
+    "symbolic_brain.rs reasoners_derived: temporal entry -> true: the_temporal_reasoner_is_derived_only_when_a_link_held failed (organisation.rs:5133)",
+    "symbolic_brain.rs: evidence id prefix changed: removing_the_symbolic_reasoning_brain... failed (organisation.rs:5042)",
+    "symbolic_stage.rs desk_view: intervention.affected.len()+1: reason_briefs... failed (symbolic_federation.rs:2388)"
    ],
-   "remains": "The brain reports the latest hypothesis's derivation only (slot replaced wholesale each hypothesis); nothing in DECIDE reads the finding (advisory). check-dependencies.sh not run: no dependency added. The documentation guard's CARDINALS table was extended by one entry, as its own panic message instructs; flag for a person if that table counts as a protected guard table.",
+   "remains": "Round-60 review (cross-session message, verified against code): (1) CONFIRMED ordering defect: platform.rs stage_reason calls organisation.dispatch (~:18290) before reason_symbolically (~:18424), so in a production cycle the Symbolic Reasoning Brain reports no data on the first hypothesis and the previous hypothesis's derivation afterwards. It cannot simply be reordered: the derivation takes report.is_contested() from the panel's dispatch. Closing it needs a third dispatch phase run after the kernel's derivation (a split of Organisation::dispatch plus a platform.rs reorder) and a test that reads the cycle's own panel report; not built, a design decision. (6) CONFIRMED: OrganisationReport::covered_scopes has no production caller, and qip-deepbrain brains::standard derives coverage from roster manifests, so removing SymbolicReasoningAnalyst from standard_agents does not drop the scope on a deployed node (a manifest without an agent is allowed). The clause 'removing it drops its scope from coverage' is met only by the organisation test, not on a deployed node. NEEDS_PERSON: decide whether coverage should come from constructed agents or reported findings. Fixed in this follow-up: (2) desk_view test now asserts independently computed expected values; (3) temporal reasoner derived only when a link held, zero-link and all-refused tested; (4) blocking constraint ids emitted as finding.evidence 'blocking_constraint:<id>', asserted exactly; (5) reasoners_derived asserted against a count taken from the derivation. The first commit's 'CLAIMS_COMPLETE' is withdrawn. Remaining from the first pass: nothing in DECIDE reads the finding; check-dependencies.sh not run (no dependency added).",
    "commit": "f5d302a4"
   },
   {

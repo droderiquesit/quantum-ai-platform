@@ -5037,10 +5037,11 @@ fn removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage(
     assert_eq!(fact_value(finding, "causal_explanations"), Some(2.0));
     assert_eq!(fact_value(finding, "ontology_facts"), Some(11.0));
     assert_eq!(fact_value(finding, "assumptions_violated"), Some(1.0));
-    assert!(
-        finding.claim.contains("acting blocked by lot_cap+cash"),
-        "{}",
-        finding.claim
+    // The conflict's ids are machine-readable evidence, in the solver's order,
+    // not only words in the claim.
+    assert_eq!(
+        finding.evidence,
+        vec!["blocking_constraint:lot_cap", "blocking_constraint:cash"]
     );
 
     let (with, without) = scopes_with_and_without(desk, &brief(), ids::SYMBOLIC_REASONING)?;
@@ -5104,5 +5105,35 @@ fn a_reasoner_that_refused_is_not_counted_as_derived() -> Result<()> {
         "{:?}",
         finding.caveats
     );
+    Ok(())
+}
+
+/// The temporal reasoner counts as derived only when a link was held: a
+/// derivation that asked no link, or whose every link was refused, derived
+/// nothing temporal.
+///
+/// Mutation: set the temporal entry in `reasoners_derived` back to `true`;
+/// both the zero-link and the all-refused cases read one higher and fail.
+#[test]
+fn the_temporal_reasoner_is_derived_only_when_a_link_held() -> Result<()> {
+    let derived_with = |links: usize, refused: usize| -> Result<u32> {
+        let view = qip_investment_agents::desk::SymbolicView {
+            observed: true,
+            cycle: 1,
+            hypothesis_id: "h".into(),
+            subject: "AAPL".into(),
+            timeline_links: links,
+            timeline_links_refused: refused,
+            ..Default::default()
+        };
+        let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        let count = fact_value(symbolic_finding(&report), "reasoners_derived").expect("stated");
+        // A whole number of reasoners, so the conversion is exact.
+        Ok(count as u32)
+    };
+    assert_eq!(derived_with(0, 0)?, 0, "no link asked");
+    assert_eq!(derived_with(2, 2)?, 0, "every link refused");
+    assert_eq!(derived_with(2, 1)?, 1, "one link held");
     Ok(())
 }

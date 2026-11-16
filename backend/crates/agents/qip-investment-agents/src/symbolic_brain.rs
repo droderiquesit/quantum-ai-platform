@@ -34,9 +34,10 @@ const SOURCE: &[&str] = &["symbolic-derivation"];
 fn reasoners_derived(view: &SymbolicView) -> usize {
     [
         view.rules_eligible.is_some(),
-        // The timeline holds no refusal state of its own: it was built from
-        // the record's instants, so it derived if it was asked anything.
-        true,
+        // The timeline derived only if it held at least one link: no link
+        // asked is nothing derived, and every link refused is the temporal
+        // reasoner refusing, not ordering.
+        view.timeline_links > view.timeline_links_refused,
         view.claim_probability.is_some(),
         view.blocking_constraints.is_some(),
         view.causal_explanations.is_some() || view.causal_reach.is_some(),
@@ -155,6 +156,13 @@ impl Agent for SymbolicReasoningAnalyst {
                 "flag",
                 SOURCE,
             ))
+            .evidence(
+                view.blocking_constraints
+                    .iter()
+                    .flatten()
+                    .map(|id| format!("blocking_constraint:{id}"))
+                    .collect(),
+            )
             .caveats(caveats);
         // Each figure below is stated only where its reasoner produced it: a
         // probability nobody computed would read as a coin flip.
