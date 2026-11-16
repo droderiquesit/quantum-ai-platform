@@ -81,6 +81,7 @@ pub mod limit_narrowing;
 pub mod market_factory_stage;
 pub mod microstructure_model;
 pub mod microstructure_training;
+pub mod mismatch;
 pub mod model_serving;
 pub mod model_tournament;
 pub mod model_trust;

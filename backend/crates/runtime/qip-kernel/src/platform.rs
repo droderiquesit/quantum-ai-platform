@@ -536,6 +536,8 @@ pub struct Platform {
     /// family and the refutations they produced. Held across cycles because a
     /// budget that reset every cycle would be a budget of one.
     falsification: crate::falsification::Book,
+    /// Sequence of the last mismatch-proposal journal entry (ADR 0609).
+    mismatch_proposal_sequence: u64,
     /// Resolved episodes, for precedent (blueprint §10): what this platform
     /// reasoned in situations like the one in front of it, and what
     /// followed. Bounded by the memory's own capacity, and readable only
@@ -6819,6 +6821,8 @@ impl Platform {
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
+        let (falsification_resumed, mismatch_sequence_resumed) =
+            crate::mismatch::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
         let routing_reputation_resumed = crate::routing_score::resume_book(&event_log)?;
@@ -6858,7 +6862,8 @@ impl Platform {
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
-            falsification: crate::falsification::Book::new(),
+            falsification: falsification_resumed,
+            mismatch_proposal_sequence: mismatch_sequence_resumed,
             evaluations: Vec::new(),
             last_calibration: None,
             self_model,
@@ -24730,6 +24735,63 @@ impl Platform {
     /// gap it filled.
     pub const fn falsification(&self) -> &crate::falsification::Book {
         &self.falsification
+    }
+
+    /// Admit the relative-value hypotheses a tick round's mismatches proposed
+    /// (R12-TICK-2084, ADR 0609). Each is charged to the proposal family's
+    /// trial budget by the falsification book, and **every outcome that
+    /// changes the book is journaled**: an admission, an eviction the working
+    /// set's capacity forced, and a refusal because the family's budget was
+    /// spent. The working set is therefore rebuilt from the log
+    /// ([`crate::mismatch::replay`]), not from this process's memory. A
+    /// duplicate changes nothing and writes nothing.
+    pub fn admit_proposed_hypotheses(
+        &mut self,
+        proposals: Vec<crate::mismatch::ProposedHypothesis>,
+        now: Timestamp,
+    ) -> Result<crate::mismatch::MismatchAdmission> {
+        use crate::mismatch::{MismatchProposalJournal, ProposalAction, ProposalOutcome};
+        let mut admission = crate::mismatch::MismatchAdmission::default();
+        for hypothesis in proposals {
+            let outcome = self.falsification.propose(hypothesis.clone())?;
+            let family = crate::mismatch::PROPOSAL_FAMILY.to_string();
+            let mut entries = Vec::new();
+            match outcome {
+                ProposalOutcome::Duplicate => admission.duplicates += 1,
+                ProposalOutcome::BudgetExhausted { spent, budget } => {
+                    admission.refused_on_budget += 1;
+                    entries.push((ProposalAction::RefusedOnBudget, hypothesis, spent, budget));
+                }
+                ProposalOutcome::Admitted {
+                    spent,
+                    budget,
+                    evicted,
+                } => {
+                    admission.admitted += 1;
+                    if let Some(old) = evicted {
+                        admission.evicted += 1;
+                        entries.push((ProposalAction::Evicted, old, spent, budget));
+                    }
+                    entries.push((ProposalAction::Admitted, hypothesis, spent, budget));
+                }
+            }
+            for (action, hypothesis, spent, budget) in entries {
+                self.mismatch_proposal_sequence += 1;
+                self.journal_record(
+                    MismatchProposalJournal {
+                        action,
+                        hypothesis,
+                        family: family.clone(),
+                        spent,
+                        budget,
+                        sequence: self.mismatch_proposal_sequence,
+                    },
+                    crate::mismatch::PROPOSAL_ORIGIN,
+                    now,
+                )?;
+            }
+        }
+        Ok(admission)
     }
 
     /// What the platform's own series say, for the metrics named.

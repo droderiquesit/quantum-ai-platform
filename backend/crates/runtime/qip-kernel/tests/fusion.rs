@@ -839,3 +839,60 @@ fn each_market_input_the_trace_records_appears_in_the_measured_reaction() -> Res
     assert!(!beta.clears_spread, "BETA did not move");
     Ok(())
 }
+
+/// R12-TICK-2084, ADR 0609: every mismatch the fusion names reaches exactly
+/// one consumer's record, and the relative-value hypothesis enters
+/// falsification as proposed. Mutation: not run (nothing was compiled).
+#[test]
+fn each_world_market_mismatch_reaches_its_one_paper_only_consumer() -> Result<()> {
+    use qip_kernel::falsification::Book;
+    use qip_kernel::mismatch::{HypothesisStatus, route};
+    let (graph, traces) = episode()?;
+    let state = fuse(&graph, &traces, at(600), &config())?;
+    assert_eq!(
+        state.mismatches().len(),
+        3,
+        "premise: the episode raises one of each kind"
+    );
+    let routing = route(&state);
+    assert_eq!(
+        routing.total(),
+        state.mismatches().len(),
+        "a mismatch was dropped"
+    );
+    assert_eq!(routing.questions.len(), 1);
+    assert_eq!(routing.questions[0].event, "evt-guidance");
+    assert_eq!(routing.challenges.len(), 1);
+    assert_eq!(routing.challenges[0].event, "evt-rumour");
+    assert!(!routing.challenges[0].instruments.is_empty());
+    assert_eq!(routing.proposals.len(), 1);
+    assert_eq!(routing.proposals[0].event, "evt-merger");
+    assert_eq!(routing.proposals[0].status, HypothesisStatus::Proposed);
+
+    // A challenge can only lower a weight.
+    let c = &routing.challenges[0];
+    assert!(c.lowered(1.0) <= c.evidence_quality);
+    assert_eq!(c.lowered(0.0), 0.0, "a challenge raised a weight");
+
+    // Falsification takes the proposal once, as proposed, charged to its family.
+    use qip_kernel::mismatch::{PROPOSAL_FAMILY, ProposalOutcome};
+    let mut book = Book::new();
+    assert!(matches!(
+        book.propose(routing.proposals[0].clone())?,
+        ProposalOutcome::Admitted { spent: 1, .. }
+    ));
+    assert_eq!(book.ledger().spent(PROPOSAL_FAMILY), 1);
+    assert_eq!(
+        book.propose(routing.proposals[0].clone())?,
+        ProposalOutcome::Duplicate,
+        "counted twice"
+    );
+    assert_eq!(
+        book.ledger().spent(PROPOSAL_FAMILY),
+        1,
+        "a duplicate was charged"
+    );
+    assert_eq!(book.proposed().len(), 1);
+    assert_eq!(book.proposed()[0].status, HypothesisStatus::Proposed);
+    Ok(())
+}

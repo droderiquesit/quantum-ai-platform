@@ -1,0 +1,96 @@
+{
+ "lane": "04",
+ "note": "2026-11-16 round 60 fix. The production producer of the mismatch routing had been lost in a merge-conflict resolution (TickDesk.mismatch_routing was filled only by the test seed, so a deployed dispatch got an empty routing); `self.mismatch_routing = mismatch::route(&fused)` after round.mismatches in TickDesk::round_with_fills is restored (359c816a). Production path: node::run_with calls tick_desk::dispatch_mismatches each cycle; the desk's own round fills the routing. Test through that path: qip-deepbrain tests/tick_desk.rs::a_tick_rounds_own_mismatch_is_charged_and_journaled_through_the_run_loops_dispatch (a tick round over the recorded episode raises one mismatch, the round routes it, dispatch charges it to the proposal family and journals it); mutation: delete the route line -> 'the round's own mismatch was not routed to falsification ... admitted: 0', restored by cp+cmp. NOT covered end to end: node::run_with reaching dispatch_mismatches with a real world graph, because the platform's world model is read-only and has no seam to seed a strike graph; that call is covered by inspection and the existing run-loop test, which runs it with an empty routing. The investigation/challenge candidate side is covered by unit tests on ResearchLoop, not by a tick round (the recorded episode raises only a relative-value mismatch). Still dormant in a deployed binary: the tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY unset, entitlement grant required), so none of this runs until it is enabled; that is a decision for a person, not code. Gates (CARGO_INCREMENTAL=0, debug off): fmt --check ok; clippy -p qip-world-model -p qip-kernel -p qip-deepbrain -p qip-twin --all-targets -D warnings Finished, no warnings; cargo test --no-fail-fast summed from 'test result' lines, no compile errors: qip-world-model 27 binaries 332 passed 0 failed; qip-twin 7 binaries 61 passed 0 failed; qip-kernel 90 binaries 1353 passed 0 failed; qip-deepbrain 29 binaries 453 passed 0 failed. qip-acceptance: event_fabric_schema_lock 'ok. 6 passed; 0 failed'; architecture 'ok. 59 passed; 0 failed'; manifest_wiring 'ok. 27 passed; 0 failed'; documentation 'FAILED. 27 passed; 1 failed' on every_decision_record_is_listed_in_the_index only because ADR 0609 has no index row (orchestrator adds index rows). Only ADR numbers 0608 and 0609 used; 2086, 2090, 8110 NOT_BUILT.",
+ "rows": [
+  {
+   "id": "R12-TICK-2084",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "qip_kernel::mismatch routes each fused mismatch to one paper-only record. Investigations and challenges are research-loop candidates (bounded at MAX_MISMATCH_CANDIDATES=16, provisional, drops counted) charged to the acquisition budget by launch_ranked. Relative-value proposals go to falsification::Book::propose, charged to one TrialLedger family, journaled on every admission, eviction and budget refusal; mismatch::resume rebuilds the book (working set, spent trials, counts) and continues the journal sequence from the log at Platform::new; PROPOSED_CAPACITY=32 provisional and counted. ADR 0609 matches.",
+   "remains": "Dormant in a deployed binary until the tick desk is enabled (QIP_DEEPBRAIN_TICK_EVERY, entitlement grant: a person's decision). node::run_with -> dispatch_mismatches is not tested end to end with a real world graph (no seam to seed the read-only world model). Candidate side tested only at the ResearchLoop unit level. Proposals not evaluated by Book::review; EvidenceChallenge::lowered not applied to a live weight; no alert on proposals_refused_on_budget or mismatch_candidates_dropped; ADR 0609 needs its index row.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/mismatch.rs::tests::a_proposal_is_charged_to_its_family_journaled_and_rebuilt_from_the_log",
+    "backend/crates/runtime/qip-kernel/src/mismatch.rs::tests::the_cap_and_the_budget_count_and_journal_what_they_drop",
+    "backend/crates/services/qip-world-model/tests/falsification.rs::a_proposal_is_charged_to_its_familys_trial_budget_and_refused_at_the_budget",
+    "backend/crates/apps/qip-deepbrain/src/research.rs::tests::a_mismatch_scout_job_is_charged_to_the_acquisition_budget",
+    "backend/crates/apps/qip-deepbrain/src/node.rs::tests::a_rounds_mismatches_reach_falsification_and_the_research_loops_candidates",
+    "backend/crates/runtime/qip-kernel/tests/fusion.rs::each_world_market_mismatch_reaches_its_one_paper_only_consumer",
+    "backend/crates/runtime/qip-kernel/tests/mismatch_resume.rs::a_restart_rebuilds_the_book_from_the_log_keeps_the_spend_and_continues_the_sequence",
+    "backend/crates/apps/qip-deepbrain/src/research.rs::tests::the_mismatch_candidate_queue_is_bounded_and_counts_what_it_refuses",
+    "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_tick_rounds_own_mismatch_is_charged_and_journaled_through_the_run_loops_dispatch"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib mismatch; cargo test -p qip-world-model --test falsification a_proposal_is_charged; cargo test -p qip-deepbrain --lib -- a_rounds_mismatches a_mismatch_scout; cargo test -p qip-kernel --test mismatch_resume",
+   "mutations": [
+    "TrialLedger::charge_proposal increment removed: 'the proposal was not charged' left 0 right 1",
+    "Book::propose charge replaced by a constant: 'the proposal was not charged' left 0 right 1",
+    "journaling loop emptied: replay assertion left 0",
+    "budget refusal returning Duplicate: left 0 right 6",
+    "eviction counter removed: left 0 right 32",
+    "admit_mismatch_candidates no longer pushing the candidate: 'a candidate was offered twice' left 0 right 1",
+    "mismatch::resume returning Book::new(): 'a restart handed the family a fresh budget' left 0 right 64",
+    "journal sequence forced to 0: 'a journal key was repeated' left 96 right 97",
+    "TrialLedger::restore_spent skipped: same fresh-budget failure",
+    "candidate queue bound disabled: queued 20, left 20 right 16",
+    "tick_desk.rs: route(&fused) assignment deleted: 'the round's own mismatch was not routed to falsification ... admitted: 0'"
+   ],
+   "commit": "1e968baa, 418cc620, ed6d0af2, and the commit after it, 359c816a"
+  },
+  {
+   "id": "R12-TICK-2086",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Nothing built on this branch: the earlier slice was an uncalled seam and has been removed.",
+   "remains": "FusedDigest as a fused_digest Slot in qip_contracts::policy (ADR 0133 decision 1, with payload versioning and the signing string), built per cell after authorise_for, and read by an edge reader with a stale/region-refused test.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "withdrawn in the commit after ed6d0af2 (earlier: 258e212a, d709bb9c, 66e668ad)"
+  },
+  {
+   "id": "R12-TICK-2090",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Nothing built on this branch: the earlier slice was an uncalled seam and has been removed.",
+   "remains": "A VenueStatus or cell-halt feed writing UniverseHistory outages, membership rebuilt from the log at resume, a catalogue listing date, a licensed corporate-action feed, and a deep-brain test that a round's backtest refuses a delisted name.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "withdrawn in the commit after ed6d0af2 (earlier: 258e212a, d709bb9c, 66e668ad)"
+  },
+  {
+   "id": "R12-TICK-3097",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "qip_twin::worlds: DriverKind (Policy, Weather, Default, Supply, OwnAction, Price), KindedDriver, SyntheticWorlds; feed_backed never returns a hypothesis-only kind. ADR 0608 (Proposed). Compiled and tested before the write-only instruction: qip-twin all ok, worlds 3 passed, clippy and fmt clean, 3 mutations fired and were restored.",
+   "remains": "Tick desk and CLI do not call it; participant, liquidity and market-structure dimensions are in the simulation engine, not in the new test.",
+   "tests": [
+    "backend/crates/services/qip-twin/tests/worlds.rs::one_generator_grows_worlds_differing_along_every_named_dimension",
+    "backend/crates/services/qip-twin/tests/worlds.rs::a_branch_of_a_kind_no_feed_produces_never_reaches_the_market_facing_accessor",
+    "backend/crates/services/qip-twin/tests/worlds.rs::a_declared_kind_that_grows_no_world_is_refused"
+   ],
+   "test_command": "cargo test -p qip-twin --test worlds",
+   "mutations": [
+    "worlds.rs kind_of returned None: 'premise: every kind grew worlds' failed",
+    "worlds.rs has_feed_producer true for all: 'assertion failed: !backed.iter().any(.. pol: ..)'",
+    "worlds.rs unreached-driver check disabled: got \"\""
+   ],
+   "commit": "c470c473"
+  },
+  {
+   "id": "R12-TICK-8110",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Nothing built on this branch: the earlier slice was an uncalled seam and has been removed.",
+   "remains": "The public seam over score_declined/score_filled, a qip-deepbrain shard entry point reading ArchiveReader, and the Terraform (patch notes remain in docs/blueprint/lanes/b52-04-replay-job.patch.md; variables.tf is protected).",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "withdrawn in the commit after ed6d0af2 (earlier: 258e212a, d709bb9c, 66e668ad)"
+  }
+ ]
+}
