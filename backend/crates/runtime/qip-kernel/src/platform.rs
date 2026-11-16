@@ -15123,10 +15123,42 @@ impl Platform {
                 .get(qip_risk::shared_cause::CAUSAL_DRIVER_AXIS)
                 .cloned(),
             emerging: Vec::new(),
+            // The book's basis and gap, read from the same state, so the
+            // findings describe the book as the cycle left it.
+            market_exposure: crate::hedge::market_exposure_findings(
+                &self.config.hedge_candidates,
+                &self.signed_position_notionals(&state),
+                self.stress.as_ref(),
+                self.capital.equity().to_f64(),
+            ),
         }
         .with_emerging_since(self.last_risk_discovery.as_ref());
         self.last_risk_discovery = Some(discovery.clone());
         discovery
+    }
+
+    /// Each held instrument's marked notional, signed by the side of its lot.
+    ///
+    /// `RiskState::position_notionals` is gross, so a short and a long of the
+    /// same size are indistinguishable in it; the side is read from the lot,
+    /// the marked size from the state. An instrument with no open lot is left
+    /// out rather than guessed a side.
+    fn signed_position_notionals(&self, state: &RiskState) -> BTreeMap<String, Decimal> {
+        let lots = self.positions_at_cost();
+        state
+            .position_notionals
+            .iter()
+            .filter_map(|(instrument, gross)| {
+                let (quantity, _) = lots.get(instrument)?;
+                if quantity.is_positive() {
+                    Some((instrument.clone(), *gross))
+                } else if quantity.is_negative() {
+                    Some((instrument.clone(), -*gross))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Close one stage off: time it on the injected clock and keep it.

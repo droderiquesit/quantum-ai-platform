@@ -61,7 +61,7 @@ fn workspace() -> BTreeMap<String, BTreeSet<String>> {
         .arg(&manifest)
         .output()
         .unwrap_or_else(|error| panic!("could not run `{cargo} metadata`: {error}"));
-    assert!(output.status.success(), "`{cargo} metadata` failed");
+    assert!(output.status.success(), "`cargo metadata` failed");
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
     let packages = metadata["packages"].as_array().expect("packages");
     let members: BTreeSet<String> = packages
@@ -171,6 +171,14 @@ fn every_crate_the_hedge_modules_name_reaches_no_alpha_crate_but_the_named_excep
 /// `hedge.rs` reads `StressReport` from it and `asset_class_registry.rs` names
 /// `Platform`, and `platform.rs` composes every alpha component. `confidence`
 /// and `survival` are the kernel's re-exports of `qip-survival` (ADR 0464).
+///
+/// `cycle` is deliberately *not* on this list. `hedge.rs` names exactly one
+/// path into it — `crate::cycle::ExposureFinding`, the journaled record the
+/// hedge's own basis and gap readings are written into (R12-RISK-4095) — and
+/// `CYCLE_PATHS` pins that path by name, because `cycle.rs` composes every
+/// stage's report and a module-wide allowance would let the hedge read any of
+/// it. The entry is a debt marker: the type belongs in the module that builds
+/// it, and moving it there deletes the name from `CYCLE_PATHS`.
 const KERNEL_MODULES: [&str; 9] = [
     "Platform",
     "hedge_review",
@@ -182,6 +190,11 @@ const KERNEL_MODULES: [&str; 9] = [
     "confidence",
     "survival",
 ];
+
+/// The only paths into `cycle.rs` a hedge module may name, pinned whole. A
+/// second one fails the scan below: the hedge writes its reading into the
+/// cycle's record; it does not read the cycle.
+const CYCLE_PATHS: [&str; 1] = ["cycle::ExposureFinding"];
 
 #[test]
 fn the_hedge_modules_reach_only_the_named_kernel_modules() {
@@ -196,10 +209,17 @@ fn the_hedge_modules_reach_only_the_named_kernel_modules() {
                 .chars()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
                 .collect();
+            let path: String = text[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+                .collect();
             seen += 1;
             assert!(
-                KERNEL_MODULES.contains(&name.as_str()) || name.is_empty() || name == "tests",
-                "{module} reaches `crate::{name}`, a kernel module the Hedge Brain is not \
+                KERNEL_MODULES.contains(&name.as_str())
+                    || name.is_empty()
+                    || name == "tests"
+                    || CYCLE_PATHS.iter().any(|allowed| path.starts_with(*allowed)),
+                "{module} reaches `crate::{path}`, a kernel module the Hedge Brain is not \
                  declared to read"
             );
             at = start;

@@ -156,6 +156,31 @@ pub struct RiskDiscovery {
     pub causal_drivers: Option<BTreeMap<String, Decimal>>,
     /// What is new or larger than the cycle before: the emerging half.
     pub emerging: Vec<EmergingRisk>,
+    /// The book's basis and gap exposure, one finding each, every cycle
+    /// (R12-RISK-4095). Empty only on a cycle that measured nothing.
+    ///
+    /// Omitted from an old journal entry's JSON and read back as empty, so a
+    /// sealed entry written before this field existed still replays.
+    #[serde(default)]
+    pub market_exposure: Vec<ExposureFinding>,
+}
+
+/// One market exposure's reading, as the journal holds it.
+///
+/// `figure` is `None` when the exposure could not be measured this cycle —
+/// no stress report yet, or no equity to size a loss against — which is not
+/// the same fact as a measured zero. `verdict` is `within`, `breach`,
+/// `unbounded` or `unmeasured`; `unbounded` is the honest word while no owner
+/// has stated a bound, and it is never read as `within`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ExposureFinding {
+    /// `basis` or `gap`.
+    pub exposure: String,
+    pub figure: Option<f64>,
+    pub bound: Option<f64>,
+    pub verdict: String,
+    /// What was measured and how, so a reader can check the figure.
+    pub detail: String,
 }
 
 /// One concentration that appeared or grew since the previous cycle.

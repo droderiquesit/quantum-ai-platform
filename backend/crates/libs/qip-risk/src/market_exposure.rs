@@ -18,7 +18,8 @@
 //!   are not assumed to diversify, which is the restrictive reading.
 //! * **Gap**: the loss fraction of the worst stress world named by the caller
 //!   (the stress library's tail-risk-event world is the intended one),
-//!   multiplied by the gross notional it applies to.
+//!   multiplied by the base it is a fraction of (the book's equity, for the stress
+//!   library's tail worlds).
 //!
 //! # What is decided
 //!
