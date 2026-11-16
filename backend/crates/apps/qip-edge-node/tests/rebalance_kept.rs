@@ -23,7 +23,7 @@ fn the_scheduler_reads_the_peer_status_once_and_keeps_its_tasks() {
          tasks the first one delivered"
     );
     assert!(
-        source.contains(".absorb(std::mem::take(&mut status.rebalance_new))"),
+        source.contains(".keep(std::mem::take(&mut status.rebalance_new))"),
         "the one read does not hand rebalance_new to the keeper"
     );
 }
