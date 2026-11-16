@@ -16241,22 +16241,6 @@ impl Platform {
         };
         signals.flow_imbalance = std::mem::take(&mut self.lattice_flow_imbalance);
         self.lattice.set_signals(signals);
-        // R12-WORLD-3086 (ADR 0191 / owner ruling 2026-10-31): the rows'
-        // signals are set every pass from what the world model holds at
-        // `now`, so a recent macro release widens the hours-days row. Read
-        // here, before `run`, which takes and clears them.
-        let signal_subjects: Vec<String> = targets.iter().map(|t| t.subject.clone()).collect();
-        let signals = {
-            let world = self.world.read();
-            let surprises = qip_world_model::now::macro_surprises(&world, now);
-            crate::lattice_stage::signals_from_world(
-                world.causal(),
-                &surprises,
-                &signal_subjects,
-                now,
-            )
-        };
-        self.lattice.set_signals(signals);
         let lattice = self.lattice.run(
             LatticeInputs {
                 cycle: self.cycle,
