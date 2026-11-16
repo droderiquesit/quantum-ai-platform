@@ -1060,3 +1060,204 @@ fn government_and_corporate_debt_and_credit_trade_on_paper_and_each_debt_class_i
     }
     Ok(())
 }
+
+/// R12-COVERAGE-5104, ADR 0658: an event contract is a payoff bounded to one
+/// unit. One assembles in the Prediction class and trades on paper; a price
+/// above one is refused at the object, not clamped; and withdrawing the
+/// Prediction record refuses the instrument at assembly.
+///
+/// Mutation: drop the `EventContract` arm's price bound in
+/// `FinancialObject::validate`, or map `EventContract` to another class in
+/// `InstrumentType::asset_class`, and this fails.
+#[test]
+fn an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit()
+-> Result<()> {
+    let event = |id: &str, price| -> Result<FinancialObject> {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            id,
+            InstrumentType::EventContract,
+            liquidity(),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(price)
+        .provenance(Provenance::synthetic("asset-class-test", start()))
+        .build(start())
+    };
+
+    let refused = event("obj-EVT-HIGH", dec!("1.5"));
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.message().contains("one-unit payoff bound")),
+        "a price above the one-unit payoff was not refused: {refused:?}"
+    );
+
+    let contract = event("obj-EVT", dec!("0.4"))?;
+    assert_eq!(contract.asset_class, AssetClass::Prediction);
+    let mut platform = assemble(universe_of(vec![
+        object("obj-AAA", InstrumentType::CommonStock, None)?,
+        contract.clone(),
+    ])?)?;
+    assert!(
+        platform
+            .asset_class_registry()
+            .is_registered(AssetClass::Prediction)
+    );
+    use qip_execution_engine::order::Side;
+    let refuse = |platform: &mut Platform, side, quantity, price, needle: &str| {
+        let outcome = platform.order_for(
+            ObjectId::from_string("obj-EVT"),
+            side,
+            quantity,
+            price,
+            "prop-event",
+            vec!["hyp-event".to_string()],
+            start(),
+        );
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|e| e.message().contains(needle)),
+            "expected a refusal naming {needle:?}, got {outcome:?}"
+        );
+    };
+    // No order exists for each of these.
+    refuse(
+        &mut platform,
+        Side::Sell,
+        dec!("1"),
+        dec!("0.4"),
+        "would be a short",
+    );
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("2"),
+        dec!("0.4"),
+        "bounded to one unit",
+    );
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("1"),
+        dec!("1.5"),
+        "outside [0, 1]",
+    );
+    assert!(
+        platform.orders().orders().next().is_none(),
+        "a refused order existed"
+    );
+
+    let order = platform.order_for(
+        ObjectId::from_string("obj-EVT"),
+        Side::Buy,
+        dec!("1"),
+        dec!("0.4"),
+        "prop-event",
+        vec!["hyp-event".to_string()],
+        start(),
+    )?;
+    platform.submit_order(order, start())?;
+    let fills = platform.orders().fills();
+    assert!(
+        !fills.is_empty(),
+        "the event contract did not fill on paper"
+    );
+    assert!(fills.iter().all(|fill| fill.simulated));
+    // One unit is now held: a second is past the bound, and selling more
+    // than is held is a short.
+    refuse(
+        &mut platform,
+        Side::Buy,
+        dec!("1"),
+        dec!("0.4"),
+        "bounded to one unit",
+    );
+    refuse(
+        &mut platform,
+        Side::Sell,
+        dec!("2"),
+        dec!("0.4"),
+        "would be a short",
+    );
+
+    // Withdraw the class: assembly refuses the instrument naming it.
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let withdrawn = qip_kernel::asset_class_registry::AssetClassRegistry::shipped()?
+        .without(AssetClass::Prediction)?;
+    assert!(!withdrawn.is_registered(AssetClass::Prediction));
+    assert!(
+        withdrawn.admit(&contract).is_err(),
+        "an event contract was admitted with the Prediction record withdrawn"
+    );
+    drop(context);
+    Ok(())
+}
+
+/// ADR 0658, R12-COVERAGE-5104: cash is one pool across event contracts, so
+/// two buys admitted in one pass cannot each be funded from the same cash. The
+/// second is refused naming the earlier claim, and is admitted again once the
+/// first order's claim is gone (a new cycle drops unsubmitted reservations).
+///
+/// Mutation: stop `order_for` reserving the admitted order (or stop
+/// `event_commitments` summing cash) and the second buy is admitted.
+#[test]
+fn two_event_contract_buys_in_one_pass_are_not_both_funded_from_the_same_cash() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let event = |id: &str| -> Result<FinancialObject> {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            id,
+            InstrumentType::EventContract,
+            liquidity(),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("0.4"))
+        .provenance(Provenance::synthetic("asset-class-test", start()))
+        .build(start())
+    };
+    let config = PlatformConfig {
+        initial_equity: dec!("0.5"),
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe_of(vec![
+            object("obj-AAA", InstrumentType::CommonStock, None)?,
+            event("obj-EVT-A")?,
+            event("obj-EVT-B")?,
+        ])?,
+        LimitSet::conservative_default(),
+    )?;
+    let buy = |platform: &mut Platform, id: &str| {
+        platform.order_for(
+            ObjectId::from_string(id),
+            Side::Buy,
+            dec!("1"),
+            dec!("0.4"),
+            "prop-event",
+            vec!["hyp-event".to_string()],
+            start(),
+        )
+    };
+    // Premise: each buy alone is funded by the 0.5 of cash.
+    assert!(
+        buy(&mut platform, "obj-EVT-A").is_ok(),
+        "premise: one buy is funded"
+    );
+    let second = buy(&mut platform, "obj-EVT-B");
+    assert!(
+        second
+            .as_ref()
+            .is_err_and(|e| e.message().contains("earlier event-contract buys")),
+        "the second buy was funded from cash the first had claimed: {second:?}"
+    );
+    Ok(())
+}

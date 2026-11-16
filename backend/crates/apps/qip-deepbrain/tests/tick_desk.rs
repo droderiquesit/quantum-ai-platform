@@ -186,10 +186,15 @@ fn seal_session_uncertain(
 /// The world model's view: a strike at ACME, learned at 100 s, expected to
 /// push the price down.
 fn graph() -> Result<KnowledgeGraph> {
+    graph_expecting("down")
+}
+
+/// [`graph`] with the strike expected to move the price `direction`.
+fn graph_expecting(direction: &str) -> Result<KnowledgeGraph> {
     let mut graph = KnowledgeGraph::new();
     graph.add_node(
         Node::event("evt-strike", "strike", at(90_000), at(100_000))
-            .with_attribute("expected_direction", "down")
+            .with_attribute("expected_direction", direction)
             .with_attribute("evidence_quality", "0.9"),
     )?;
     graph.add_node(Node::entity("acme", EntityKind::Company, "Acme", at(0)))?;
@@ -1414,5 +1419,63 @@ fn a_reaction_inside_the_capture_clocks_doubt_is_unordered_and_the_same_reaction
         exact.iter().any(|t| t.order == Order::Before),
         "on a good clock a later move is ordered after its event: {exact:?}"
     );
+    Ok(())
+}
+
+/// R12-TICK-2084, ADR 0609, through the production path: a tick round fuses a
+/// recorded episode, the round itself routes its mismatches (nothing seeds
+/// them), and `dispatch_mismatches` — the call the run loop makes — charges
+/// the proposal to its family's trial budget and journals it.
+///
+/// Mutation: delete the `self.mismatch_routing = ...route(&fused)` line in
+/// `TickDesk::round_with_fills` — the routing is empty and the premise fails.
+#[test]
+fn a_tick_rounds_own_mismatch_is_charged_and_journaled_through_the_run_loops_dispatch() -> Result<()>
+{
+    use qip_deepbrain::research::{ResearchConfig, ResearchLoop};
+    use qip_deepbrain::tick_desk::dispatch_mismatches;
+    use qip_kernel::mismatch::{PROPOSAL_FAMILY, from_log};
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        lake as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()) as Arc<dyn BlobStore>,
+    );
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert_eq!(
+        round.mismatches, 1,
+        "premise: the recorded episode raises one mismatch (the market moved against the strike's expected direction)"
+    );
+    let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(at(400_000)));
+    let platform_config = PlatformConfig::default();
+    let context = Context::new(clock, platform_config.seed);
+    let mut platform = Platform::new(
+        platform_config,
+        context,
+        Telemetry::silent(),
+        Universe::new(),
+        LimitSet::conservative_default(),
+    )?;
+    let mut research = ResearchLoop::new(ResearchConfig::default(), BTreeMap::new())?;
+    let before = platform.falsification().ledger().spent(PROPOSAL_FAMILY);
+    let done = dispatch_mismatches(&mut desk, &mut platform, Some(&mut research), at(400_000))?;
+    assert_eq!(
+        done.admission.admitted, 1,
+        "the round's own mismatch was not routed to falsification: {done:?}"
+    );
+    assert_eq!(
+        platform.falsification().ledger().spent(PROPOSAL_FAMILY),
+        before + 1,
+        "the proposal was not charged"
+    );
+    assert_eq!(
+        from_log(platform.event_log())?.len(),
+        1,
+        "the proposal was not journaled"
+    );
+    // And the round's routing is taken, not kept.
+    let again = dispatch_mismatches(&mut desk, &mut platform, Some(&mut research), at(400_000))?;
+    assert_eq!(again.admission.admitted, 0, "a round was dispatched twice");
     Ok(())
 }
