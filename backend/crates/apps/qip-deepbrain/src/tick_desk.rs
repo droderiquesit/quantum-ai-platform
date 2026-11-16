@@ -570,10 +570,6 @@ pub struct TickDesk {
     book: BTreeMap<String, f64>,
     /// Multi-leg plans for the next round's replay (R12-TICK-1176).
     plans: Vec<qip_simulation_engine::tick_replay::MultiLegPlan>,
-    /// What the latest `reflex.feature_digested` said about the tape (ADR 0428
-    /// decision 5). `None` until a digest has been noted: a desk nothing
-    /// routes digests to reads its lake as it always did.
-    tape: Option<qip_kernel::tape_attestation::TapeAttestation>,
 }
 
 impl TickDesk {
@@ -592,7 +588,6 @@ impl TickDesk {
             outside_priors: Vec::new(),
             book: BTreeMap::new(),
             plans: Vec::new(),
-            tape: None,
         }
     }
 
@@ -605,19 +600,6 @@ impl TickDesk {
     /// the next round's portfolio outcome distribution.
     pub fn set_portfolio_weights(&mut self, weights: BTreeMap<String, f64>) {
         self.book = weights;
-    }
-
-    /// Record the tape attestation of the newest pass digest. The next round's
-    /// fusion drops the traces it does not admit and can never gain one.
-    pub fn note_feature_digest(&mut self, digest: &qip_contracts::replay::FeatureDigest) {
-        self.tape = Some(qip_kernel::tape_attestation::TapeAttestation::of_digest(
-            digest,
-        ));
-    }
-
-    /// The attestation the next round will fuse under, if a digest was noted.
-    pub const fn tape_attestation(&self) -> Option<&qip_kernel::tape_attestation::TapeAttestation> {
-        self.tape.as_ref()
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -1018,10 +1000,6 @@ impl TickDesk {
                 points,
             })
             .collect();
-        let traces = match &self.tape {
-            Some(tape) => tape.admit(traces),
-            None => traces,
-        };
         let fusion_config = FusionConfig {
             max_hops: 2,
             reaction_threshold_bps: 5.0,
