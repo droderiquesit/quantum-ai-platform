@@ -20,7 +20,7 @@ use crate::gap::{GapTrigger, RaisedGap};
 use crate::plan::{AcquisitionAction, Derivation, Environment, ResearchPlan};
 use crate::promotion::{EvaluationRecord, ResearchCampaign, promote};
 use qip_agents::research::{BenchmarkRef, ResearchRegistry, Verdict, campaign_id};
-use qip_agents::tools::{ToolName, ToolPermission, ToolRegistry};
+use qip_agents::tools::{ToolAdoption, ToolName, ToolPermission, ToolRegistry};
 use qip_contracts::expansion::{CapabilityEntry, CurriculumItem, GapClass};
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
@@ -279,6 +279,40 @@ impl ExpansionDesk {
 
     pub const fn queue(&self) -> &ResearchQueue {
         &self.queue
+    }
+
+    /// Register the tool the queue proposed under `name`, citing the gap that
+    /// asked for it and the record that this process runs it
+    /// (R12-EXPAND-1021). Refused when the queue holds no proposal of that
+    /// name: a tool cannot be adopted from a gap that never asked for it.
+    /// Read-only on adoption; the registry's `promote` widens it.
+    pub fn adopt_proposed_tool(&mut self, name: &str, mounted: &str) -> Result<()> {
+        let spec = self
+            .queue
+            .proposals()
+            .iter()
+            .find(|spec| spec.name() == name.trim())
+            .cloned()
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "no gap proposed tool `{}`; only a proposed tool is adopted",
+                    name.trim()
+                ))
+            })?;
+        let gap = self
+            .queue
+            .packs()
+            .iter()
+            .find(|pack| pack.tools().iter().any(|t| t.name() == spec.name()))
+            .map(|pack| pack.lineage().to_string())
+            .ok_or_else(|| Error::not_found("the proposal has no pack naming its gap"))?;
+        self.tools.adopt(&spec, ToolAdoption::new(&gap, mounted)?)?;
+        Ok(())
+    }
+
+    /// The registry of tools this desk plans against.
+    pub const fn tools(&self) -> &ToolRegistry {
+        &self.tools
     }
 
     pub fn lineage(&self, question: &str) -> Option<&Lineage> {

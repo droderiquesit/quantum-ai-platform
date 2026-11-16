@@ -746,6 +746,7 @@ dependencies = [
  "qip-portfolio",
  "qip-storage",
  "qip-streaming",
+ "qip-telemetry-drain",
  "qip-transport",
  "serde",
  "serde_json",

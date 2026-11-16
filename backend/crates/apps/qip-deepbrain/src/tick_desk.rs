@@ -1079,7 +1079,6 @@ impl TickDesk {
             .flat_map(|event| event.reactions.iter().cloned())
             .collect();
         round.mismatches = fused.mismatches().len();
-        self.mismatch_routing = qip_kernel::mismatch::route(&fused);
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
         for region in &self.config.map_regions {
             let authorised = match &round.model_card {

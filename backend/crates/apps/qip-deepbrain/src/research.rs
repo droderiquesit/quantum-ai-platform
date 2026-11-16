@@ -56,7 +56,7 @@
 
 use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
-    AcquisitionCriteria, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
+    AcquisitionCriteria, AcquisitionKind, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
     Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
@@ -75,9 +75,9 @@ use qip_expansion::desk::{
 use qip_expansion::detectors::{
     ContestedKey, Decline, PersistenceTracker, Reading, Refusal, Residual, anomaly_clusters,
     causal_driver_universe, contested_evidence, contradictions, coverage, cross_domain_links,
-    incompetent_specialists, low_confidence, missing_causal_links, model_drift, model_error_rate,
-    reconciliation_breaks, refusal_clusters, repeated_vetoes_priced, split_by_wanting,
-    theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
+    failed_sagas, incompetent_specialists, low_confidence, missing_causal_links, model_drift,
+    model_error_rate, reconciliation_breaks, refusal_clusters, repeated_vetoes_priced,
+    split_by_wanting, theory_contradictions, unexplained_anomalies, unexplained_residuals_priced,
     world_state_expired,
 };
 use qip_expansion::executor::{
@@ -989,6 +989,8 @@ pub struct ResearchRound {
     /// why the log could not be read, where it could not.
     pub reconciliation_breaks: usize,
     pub reconciliation_breaks_refused: Option<String>,
+    pub failed_sagas: usize,
+    pub failed_sagas_refused: Option<String>,
     /// Claim keys the world fabric held an unresolved contest on when the
     /// sweep read it (R12-EXPAND-6011), and of their subjects, how many the
     /// causal graph holds no live claim into.
@@ -1114,6 +1116,9 @@ pub struct ResearchRound {
     /// desk (R12-AMBIENT-9033): a launch that only recorded its cost reached
     /// no scout, so the platform paid for evidence nothing went to find.
     pub scouted: Vec<ScoutRequest>,
+    /// Where each launched request was routed by its kind (R12-DATA-3105).
+    /// Filled by the node when it hands the scout jobs on.
+    pub dispatched: Vec<crate::acquisition_dispatch::Dispatched>,
     /// The registries the sweep consulted and what each held
     /// (R12-EXPAND-1115): a sweep record that cannot say which sources,
     /// types, tools and brains it ran against cannot be replayed against the
@@ -1409,6 +1414,10 @@ pub struct ScoutRequest {
     pub rank_bp: u32,
     /// The entities the gap named — what a discovery query is built for.
     pub entities: Vec<String>,
+    /// What the request asks for (R12-DATA-3105); a record written without
+    /// one is a new source query.
+    #[serde(default)]
+    pub kind: qip_contracts::ambient::AcquisitionKind,
 }
 
 /// A simulation constructed for a started research item whose acquisition
@@ -1782,6 +1791,7 @@ pub struct ResearchLoop {
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
+    sagas_seen: usize,
     issued: u64,
     fills_read: usize,
     slippage_read: usize,
@@ -2045,6 +2055,7 @@ impl ResearchLoop {
             surprises_seen: 0,
             misses_seen: 0,
             breaks_seen: 0,
+            sagas_seen: 0,
             issued: 0,
             fills_read: 0,
             slippage_read: 0,
@@ -2432,6 +2443,29 @@ impl ResearchLoop {
         )
     }
 
+    /// The sweep's belief-discrepancy step (ADR 0346), taking what the
+    /// replay returned so the wiring is testable without a journal. A refused
+    /// read is reported on the round and the watch is not fed, so a refusal
+    /// does not reset a run in progress.
+    fn read_beliefs(
+        &mut self,
+        replayed: Result<Vec<Vec<Resolution>>>,
+        round: &mut ResearchRound,
+    ) -> Vec<Observation> {
+        match replayed {
+            Ok(reviews) => {
+                let read: Vec<&[Resolution]> = reviews.iter().map(Vec::as_slice).collect();
+                let raised = self.beliefs.feed(&read);
+                round.belief_discrepancies = raised.len();
+                raised
+            }
+            Err(error) => {
+                round.belief_reviews_refused = Some(error.message().to_string());
+                Vec::new()
+            }
+        }
+    }
+
     /// The sweep, over fills and slippage the caller read. `sweep` reads them
     /// from the platform; a test hands a campaign the fills a paper venue
     /// would have produced without running a book to produce them, through
@@ -2536,18 +2570,15 @@ impl ResearchLoop {
         // The price/belief discrepancy (ADR 0346): the federation's
         // resolutions, off the log. A review the replay refuses is reported
         // and the watch is not fed, so a refused read does not reset a run.
-        match federation_stage::replay(platform) {
-            Ok(reviews) => {
-                let read: Vec<&[Resolution]> = reviews
-                    .iter()
-                    .map(|review| review.resolved.as_slice())
-                    .collect();
-                let raised = self.beliefs.feed(&read);
-                round.belief_discrepancies = raised.len();
-                observations.extend(raised);
-            }
-            Err(error) => round.belief_reviews_refused = Some(error.message().to_string()),
-        }
+        observations.extend(self.read_beliefs(
+            federation_stage::replay(platform).map(|reviews| {
+                reviews
+                    .into_iter()
+                    .map(|review| review.resolved)
+                    .collect::<Vec<_>>()
+            }),
+            &mut round,
+        ));
 
         // --- calibration, declines, refusals, fills, coverage -------------
         if let Some(calibration) = platform.calibration() {
@@ -2745,6 +2776,21 @@ impl ResearchLoop {
                 observations.extend(reconciliation_breaks(&fresh));
             }
             Err(error) => round.reconciliation_breaks_refused = Some(error.message().to_string()),
+        }
+        // R12-EXPAND-6066: sagas that ended without completing, read the same
+        // way; one execution gap per venue.
+        match platform.saga_outcome_records() {
+            Ok(records) => {
+                let fresh: Vec<(String, String)> = records
+                    .iter()
+                    .skip(self.sagas_seen)
+                    .map(|r| (r.venue.clone(), r.record_id.clone()))
+                    .collect();
+                self.sagas_seen = records.len();
+                round.failed_sagas = fresh.len();
+                observations.extend(failed_sagas(&fresh));
+            }
+            Err(error) => round.failed_sagas_refused = Some(error.message().to_string()),
         }
         let deltas = match platform.knowledge_deltas() {
             Ok(deltas) => deltas,
@@ -4150,6 +4196,12 @@ impl ResearchLoop {
             let Some(mut request) = by_id.remove(id) else {
                 continue;
             };
+            // The kind follows from how the candidate was priced: a re-sweep
+            // of the own stream is a further measurement, everything else a
+            // new source query.
+            if sources.get(id).copied() == Some("resweep") {
+                request = request.with_kind(AcquisitionKind::AdditionalMeasurement);
+            }
             let cost = request.criteria().acquisition_cost_bp;
             if cost <= remaining {
                 remaining -= cost;
@@ -4168,6 +4220,7 @@ impl ResearchLoop {
                     question: request.decision_id().to_string(),
                     rank_bp,
                     entities: named,
+                    kind: request.kind(),
                 });
                 let source = sources.get(id).copied().unwrap_or("acquisition");
                 metrics.count(
@@ -4254,6 +4307,7 @@ impl ResearchLoop {
             question: question.to_string(),
             rank_bp: request.criteria().net_value_bp(),
             entities: self.launched_entities.get(&id).cloned().unwrap_or_default(),
+            kind: request.kind(),
         });
         metrics.count(names::INFO_REQUESTS, labels([("outcome", "reacquired")]));
         Ok(())
@@ -5376,6 +5430,58 @@ const fn class_str(class: qip_contracts::expansion::GapClass) -> &'static str {
 mod tests {
     use super::*;
 
+    fn against(subject: &str, cycle: u64) -> Resolution {
+        Resolution {
+            proposition: format!("{subject}@{cycle}"),
+            outcome: false,
+            closed: Vec::new(),
+            forecasts: Default::default(),
+            ensemble: Some(0.8),
+        }
+    }
+
+    /// R12-EXPAND-6067, the wiring ADR 0346's closure left untested: the
+    /// sweep's belief step feeds the watch from the replayed reviews,
+    /// reports a refused read on the round without feeding it, and a refusal
+    /// does not reset a run in progress. Mutations: feed nothing in
+    /// `read_beliefs` (nothing is ever raised); feed on the `Err` arm too
+    /// (the refusal sweep resets the run and the final raise never comes).
+    #[test]
+    fn the_sweeps_belief_step_raises_on_replayed_reviews_and_a_refusal_neither_raises_nor_resets() {
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let mut log: Vec<Vec<Resolution>> = Vec::new();
+        let mut raised = 0;
+        for n in 1..=u64::from(PERSIST_SWEEPS) {
+            log.push(vec![against("macro:rates:move-persists", n)]);
+            let mut round = ResearchRound::default();
+            if n == 2 {
+                // A refused replay between two flagged sweeps.
+                let out = research.read_beliefs(
+                    Err(qip_core::error::Error::invalid("a review is not trusted")),
+                    &mut round,
+                );
+                assert!(out.is_empty());
+                assert!(
+                    round
+                        .belief_reviews_refused
+                        .as_deref()
+                        .is_some_and(|m| m.contains("not trusted")),
+                    "{round:?}"
+                );
+                round = ResearchRound::default();
+            }
+            let out = research.read_beliefs(Ok(log.clone()), &mut round);
+            assert_eq!(round.belief_discrepancies, out.len());
+            assert!(round.belief_reviews_refused.is_none());
+            raised += out.len();
+        }
+        assert_eq!(
+            raised, 1,
+            "one item after {PERSIST_SWEEPS} flagged sweeps, a refusal between them notwithstanding"
+        );
+    }
+
     /// A priced gap worth more than the scale's 100 units saturates at the
     /// scale's end; `run_market` once declined such a gap as invalid.
     #[test]
@@ -5628,6 +5734,42 @@ mod tests {
         assert_eq!(status("info-b"), Some(AcquisitionStatus::InProgress));
         assert_eq!(status("info-a"), Some(AcquisitionStatus::Halted));
         assert_eq!((round.info_launched, round.info_outranked), (1, 1));
+    }
+
+    /// R12-DATA-3105: a candidate priced as a re-sweep launches as an
+    /// additional measurement and its scout job says so; an acquisition
+    /// launches as a new source query. Mutation: delete the `with_kind` in
+    /// `launch_ranked` — the first assertion fails.
+    #[test]
+    fn a_resweep_candidate_launches_as_an_additional_measurement() {
+        let at = Timestamp::from_secs(1_800_000_000);
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let request = |id: &str| {
+            InfoRequest::new(
+                id,
+                format!("question {id}"),
+                AcquisitionCriteria::new(9_000, 9_000, 10_000, 100).expect("criteria"),
+                at.saturating_add(Duration::from_hours(1)),
+                at,
+            )
+            .expect("request")
+        };
+        research.candidates.push((request("info-r"), "resweep"));
+        research.candidates.push((request("info-a"), "acquisition"));
+        let mut round = ResearchRound::default();
+        research
+            .launch_ranked(&Metrics::new("test"), &mut round)
+            .expect("launches");
+        let kind = |id: &str| {
+            round
+                .scouted
+                .iter()
+                .find(|s| s.request_id == id)
+                .map(|s| s.kind)
+        };
+        assert_eq!(kind("info-r"), Some(AcquisitionKind::AdditionalMeasurement));
+        assert_eq!(kind("info-a"), Some(AcquisitionKind::NewSourceQuery));
     }
 
     /// Urgency is the deadline (R12-AMBIENT-3106): two requests equal in

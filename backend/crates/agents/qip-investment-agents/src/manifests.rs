@@ -51,6 +51,7 @@ pub mod ids {
     pub const POISONING: &str = "poisoning-detector";
     pub const PORTFOLIO_ASSET: &str = "portfolio-asset-brain";
     pub const CRYPTO_ONCHAIN: &str = "crypto-onchain-brain";
+    pub const PRIVATE_MARKETS: &str = "private-markets-brain";
     pub const COMPANY_FUNDAMENTAL: &str = "company-fundamental-brain";
     pub const WORLD_MODEL_ARBITRATION: &str = "world-model-arbitration-brain";
     pub const SELF_EXPLOITATION: &str = "self-exploitation-probe";
@@ -197,6 +198,29 @@ pub fn crypto_onchain_brain(reviewed_at: Timestamp) -> AgentManifest {
             .into(),
         "states no token economics or smart-contract risk: no source in the tree carries either"
             .into(),
+    ])
+}
+
+/// R12-ASSET-3018: reads the private-markets book the kernel holds, the
+/// unfunded commitments, the capital calls standing against them and the
+/// dated marks on illiquid assets.
+pub fn private_markets_brain(reviewed_at: Timestamp) -> AgentManifest {
+    research(
+        ids::PRIVATE_MARKETS,
+        "Private Markets Brain",
+        "reads the unfunded private commitments, the capital calls standing against them and the dated marks on illiquid assets",
+        owners::PORTFOLIO,
+        reviewed_at,
+        &[Capability::ReadPortfolio],
+    )
+    .with_competencies(vec![
+        "unfunded commitments and the capital calls open or overdue against them".into(),
+        "illiquid marks past their review date and the confidence they carry".into(),
+    ])
+    .with_limitations(vec![
+        "reads the commitment book and the marks the kernel holds; it values nothing itself".into(),
+        "states no fund or company lifecycle stage: the kernel keeps none per holding".into(),
+        "plans no exit: a lockup refusal and a secondary discount are not read here".into(),
     ])
 }
 
@@ -831,6 +855,7 @@ pub fn roster(reviewed_at: Timestamp) -> Roster {
         poisoning_detector(reviewed_at),
         portfolio_asset_brain(reviewed_at),
         crypto_onchain_brain(reviewed_at),
+        private_markets_brain(reviewed_at),
         company_fundamental_brain(reviewed_at),
         world_model_arbitration_brain(reviewed_at),
         self_exploitation_probe(reviewed_at),

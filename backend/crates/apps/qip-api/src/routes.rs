@@ -147,6 +147,14 @@ pub const ROUTES: &[Route] = &[
     },
     Route {
         method: Method::Get,
+        pattern: "/portfolio/holdings",
+        required_role: Role::Viewer,
+        summary: "each held position's valuation confidence, investment horizon and expected \
+                  liquidity, or why the platform cannot state them",
+        success: 200,
+    },
+    Route {
+        method: Method::Get,
         pattern: "/opportunities",
         required_role: Role::Viewer,
         summary: "the current opportunity queue",
@@ -1277,6 +1285,9 @@ impl Api {
             (Method::Get, "/system/metrics") => Response::json(200, metrics(&platform)),
             (Method::Get, "/system/governance") => Response::json(200, governance(&platform, now)),
             (Method::Get, "/portfolio") => Response::json(200, portfolio(&platform)),
+            (Method::Get, "/portfolio/holdings") => {
+                Response::json(200, portfolio_holdings(&platform, now))
+            }
             (Method::Get, "/opportunities") => Response::json(200, opportunities(&platform)),
             (Method::Get, "/proposals") => Response::json(200, proposals(&platform)),
             (Method::Get, "/orders") => Response::json(200, orders(&platform)),
@@ -2844,6 +2855,33 @@ fn portfolio(platform: &Platform) -> String {
         platform.orders().fills().len(),
         !platform.orders().has_live_fills()
     )
+}
+
+/// Each held position's record (R12-ASSET-4067). The kernel builds each one
+/// from the figures the platform decides with; a position whose record
+/// refuses is served with the refusal, never omitted, so a holding with no
+/// stated horizon or mark cannot read as a clean book.
+fn portfolio_holdings(platform: &Platform, now: Timestamp) -> String {
+    let rendered: Vec<String> = platform
+        .position_holdings(now)
+        .into_iter()
+        .map(|(object, record)| match record {
+            Ok(holding) => format!(
+                r#"{{"object":{},"stated":true,"valuation_confidence":{},"hypothesis":{},"horizon_secs":{},"expected_exit_days":{}}}"#,
+                json::string(&object),
+                json::string(&holding.valuation_confidence().to_string()),
+                json::string(holding.hypothesis()),
+                holding.horizon().as_nanos() / 1_000_000_000,
+                json::number(holding.expected_exit_days())
+            ),
+            Err(error) => format!(
+                r#"{{"object":{},"stated":false,"refused":{}}}"#,
+                json::string(&object),
+                json::string(error.message())
+            ),
+        })
+        .collect();
+    format!(r#"{{"holdings":[{}]}}"#, rendered.join(","))
 }
 
 fn opportunities(platform: &Platform) -> String {

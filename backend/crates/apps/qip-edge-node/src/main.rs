@@ -609,6 +609,9 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
         // ones nobody priced. Restrictive; no committed strategy declares an
         // edge yet, so until one does this node enters nothing.
         .with_edgeless_signals_refused();
+    // ADR 0242, R12-RES-7099: the cell keeps the custody watch, fed by the
+    // statement the simulated venue makes each pass.
+    let cell_config = qip_edge_node::pass::arm_custody_watch(cell_config)?;
     // ADR 0155 section 14: the identity of this build, from a file the unit
     // that starts the process writes, never from the network, in line with
     // "secrets and facts reach the process as files". Unset leaves the
@@ -1396,7 +1399,28 @@ fn run() -> Result<()> {
     // it stops its renewal loop.
     let mut issued: Option<qip_transport::cas::CasIdentity> = None;
     match config.fabric.take() {
-        Some(fabric) => {
+        Some(mut fabric) => {
+            // R12-FABRIC-10016: the broker's address from its SRV record when a
+            // resolver and zone are configured; the configured endpoint is the
+            // last rung, so an unreachable resolver never stops the node.
+            if let Some(discovery) =
+                qip_edge_node::fabric_discovery::FabricDiscovery::read(&|name| {
+                    std::env::var(name).ok()
+                })?
+            {
+                let found = discovery.resolve(&fabric.url, Arc::clone(&clock))?;
+                qip_edge_node::fabric_discovery::record_source(metrics, found.source);
+                println!(
+                    "qip-edge-node: fabric endpoint {} from {}{}",
+                    found.url,
+                    found.source.as_label(),
+                    found
+                        .lookup_failure
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                );
+                fabric.url = found.url;
+            }
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said

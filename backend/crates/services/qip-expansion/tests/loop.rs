@@ -696,6 +696,46 @@ fn a_gap_whose_tool_is_missing_is_blocked_and_the_tool_becomes_a_build_task_of_i
     assert_eq!(desk.queue().proposals().len(), 1);
 }
 
+/// R12-EXPAND-1021: a tool gap's proposal becomes a registered tool only
+/// through `adopt_proposed_tool`, read-only and carrying the gap that asked
+/// and the record that the process runs it. Mutation: delete the
+/// `self.tools.adopt(..)` call and `get` finds nothing; widen the
+/// `proposals()` lookup to accept any name and the unproposed refusal fails.
+#[test]
+fn a_proposed_tool_is_adopted_read_only_with_its_gap_and_only_when_a_gap_proposed_it() {
+    use qip_agents::tools::ToolPermission;
+    let mut desk = desk_with(&[]);
+    desk.offer(low_confidence_gap(), &set(&[]), &set(&["US"]));
+    let name = ToolName::parse("model-fit").unwrap();
+    // Premise: the gap proposed the tool and the desk does not hold it.
+    assert_eq!(desk.queue().proposals().len(), 1);
+    assert!(desk.tools().get(&name).is_none());
+
+    assert!(
+        desk.adopt_proposed_tool("never-proposed", "mounted by operator")
+            .is_err(),
+        "a tool no gap asked for was adopted"
+    );
+    assert!(desk.adopt_proposed_tool("model-fit", "  ").is_err());
+    assert!(desk.tools().get(&name).is_none());
+
+    desk.adopt_proposed_tool("model-fit", "mounted: deepbrain fit desk")
+        .unwrap();
+    let held = desk.tools().get(&name).unwrap();
+    assert_eq!(
+        held.scope().iter().copied().collect::<Vec<_>>(),
+        vec![ToolPermission::Read]
+    );
+    let adoption = desk.tools().adoption(&name).unwrap();
+    assert_eq!(adoption.mounted(), "mounted: deepbrain fit desk");
+    assert!(!adoption.gap().is_empty());
+    assert!(
+        desk.adopt_proposed_tool("model-fit", "mounted again")
+            .is_err(),
+        "an adopted tool was adopted twice"
+    );
+}
+
 #[test]
 fn a_started_item_whose_gap_goes_quiet_closes_and_an_unstarted_one_is_withdrawn() {
     let mut desk = desk_with(&[("model-fit", ToolKind::ModelEndpoint)]);
@@ -1480,4 +1520,24 @@ fn a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result() {
         "a campaign that cleared no bar packs at least one failed criterion: {:?}",
         pack.findings
     );
+}
+
+/// R12-EXPAND-6066: failed sagas at one venue are one execution gap naming
+/// the venue and every record, and a venue with none raises nothing.
+/// Mutation: group by record instead of venue; the `len() == 2` assertion
+/// fails.
+#[test]
+fn failed_sagas_at_one_venue_are_one_execution_gap_citing_every_record() {
+    use qip_expansion::detectors::failed_sagas;
+    let sagas: Vec<(String, String)> = [
+        ("XNYS", "XNYS:g1"),
+        ("XNYS", "XNYS:g2"),
+        ("XLON", "XLON:g3"),
+    ]
+    .iter()
+    .map(|(v, r)| (v.to_string(), r.to_string()))
+    .collect();
+    let observations = failed_sagas(&sagas);
+    assert_eq!(observations.len(), 2, "{observations:#?}");
+    assert!(failed_sagas(&[]).is_empty());
 }

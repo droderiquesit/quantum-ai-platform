@@ -69,7 +69,7 @@ use qip_contracts::control::{
 };
 use qip_contracts::validated::Contract;
 use qip_core::Decimal;
-use qip_core::error::Result;
+use qip_core::error::{Error, Result};
 use qip_core::time::{Duration, Timestamp};
 use qip_events::{EventBody, Topic};
 use qip_investment_agents::chief::OrganisationReport;
@@ -631,7 +631,16 @@ pub struct TournamentStage {
     /// card the desk no longer offers leaves; an offer older than its own
     /// bar is dropped where it is read. Bounded by the registry's cards.
     cards: BTreeMap<String, BTreeMap<String, CardForecast>>,
+    /// The dossiers of the predictions the society attacked, newest last and
+    /// bounded by [`RETAINED_DOSSIERS`], so a challenge that arrives after the
+    /// prediction was made (R12-REASON-9032) is answered from what the critics
+    /// would have read at the time and not from a rebuilt guess.
+    dossiers: std::collections::VecDeque<PredictionDossier>,
 }
+
+/// Dossiers kept for late challenges. A working set that grew with the life
+/// of the process would be the retention this platform refuses.
+pub const RETAINED_DOSSIERS: usize = 256;
 
 /// How many past scores a forecaster's vote carries. Bounded, because the
 /// history rides on every vote journaled and a working set that grows with
@@ -1068,6 +1077,7 @@ impl TournamentStage {
             let question = format!("q-{}", hypothesis.hypothesis_id.as_str());
             let dossier =
                 self.prediction_dossier(&observation, 0.0, &subject, &BTreeMap::new(), &rets);
+            self.retain_dossier(&dossier);
             let verification = self.society.attack_prediction(&dossier, now);
             let refuted = verification
                 .verdict
@@ -1374,6 +1384,7 @@ impl TournamentStage {
         let mut refuted = None;
         if important {
             let dossier = self.prediction_dossier(&observation, sign, &subject, &forecasts, &rets);
+            self.retain_dossier(&dossier);
             let verification = self.society.attack_prediction(&dossier, now);
             if verification.verdict.is_refuted() {
                 let _ = self
@@ -1424,6 +1435,45 @@ impl TournamentStage {
             ),
             refuted,
         })
+    }
+
+    pub(crate) fn retain_dossier(&mut self, dossier: &PredictionDossier) {
+        self.dossiers
+            .retain(|held| held.hypothesis_id != dossier.hypothesis_id);
+        if self.dossiers.len() >= RETAINED_DOSSIERS {
+            self.dossiers.pop_front();
+        }
+        self.dossiers.push_back(dossier.clone());
+    }
+
+    /// Answer a challenge raised from outside the tournament's own cycle: the
+    /// named critics attack the dossier retained for the request's
+    /// hypothesis. Refuses a request for a hypothesis with no retained
+    /// dossier rather than attacking a reconstruction (R12-REASON-9032).
+    pub(crate) fn answer_challenge(
+        &self,
+        request: &ChallengeRequest,
+        now: Timestamp,
+    ) -> Result<VerificationResult> {
+        let qip_contracts::challenge::ChallengeTarget::Prediction { hypothesis_id, .. } =
+            &request.target
+        else {
+            return Err(Error::invalid(format!(
+                "challenge `{}` targets a model; this desk answers predictions only",
+                request.request_id
+            )));
+        };
+        let dossier = self
+            .dossiers
+            .iter()
+            .find(|d| &d.hypothesis_id == hypothesis_id)
+            .ok_or_else(|| {
+                Error::invalid(format!(
+                    "challenge `{}` targets hypothesis `{hypothesis_id}`, for which no dossier                      is retained; only a prediction the society has attacked can be challenged",
+                    request.request_id
+                ))
+            })?;
+        self.society.challenge_prediction(request, dossier, now)
     }
 
     fn prediction_dossier(

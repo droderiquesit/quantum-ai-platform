@@ -49,6 +49,7 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod acquisition_dispatch;
 pub mod ambient_agency;
 pub mod ambient_journal;
 pub mod ambient_models;
@@ -76,6 +77,7 @@ pub mod reference;
 pub mod research;
 pub mod research_plan;
 pub mod roster;
+pub mod scout;
 pub mod signal_mapper;
 pub mod source_alpha;
 pub mod status;

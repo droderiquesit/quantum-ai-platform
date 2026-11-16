@@ -56,14 +56,23 @@
   },
   {
    "id": "R12-GOV-6120",
-   "outcome": "NOT_BUILT",
+   "outcome": "SLICE",
    "claims_requirement_met": false,
-   "what": "Not attempted beyond reading the row: no code written.",
-   "remains": "Three ordered slices: issuer states AuthorityBounds (CapitalRequest, EnvelopeTerms, CentralPlane::issue_narrowed); edge-node assemble catalogue-derived instrument-to-class map + with_authority_bounds_required; admit_leg checked against block. Arm only after issuer exists.",
-   "tests": [],
-   "test_command": "",
-   "mutations": [],
-   "commit": ""
+   "what": "Step one of ADR 0155 section 6: EnvelopeTerms and CapitalRequest carry an optional AuthorityBounds, EnvelopeIssuer signs it into the payload, the approval chain binds it, and CentralPlane::set_authority_bounds makes issue_narrowed state it so the payload comparison covers the authority claim.",
+   "remains": "qip-edge-node catalogue-derived instrument-to-class map and with_authority_bounds_required (arm only once a composition root configures the plane); a composition root calling set_authority_bounds; admit_leg checked against the block.",
+   "tests": [
+    "backend/crates/services/qip-capital/tests/capital.rs::terms_stating_an_authority_block_sign_an_envelope_carrying_it",
+    "backend/crates/services/qip-capital/tests/capital.rs::terms_stating_a_leverage_that_contradicts_the_exposure_terms_are_refused",
+    "backend/crates/runtime/qip-kernel/tests/central.rs::a_plane_configured_with_an_authority_block_states_it_on_the_grant_it_issues"
+   ],
+   "test_command": "cargo test -p qip-capital --test capital; cargo test -p qip-kernel --test central; cargo test -p qip-acceptance --test paper_boundary --test compliance_proof --test security",
+   "mutations": [
+    "envelope.rs: issuer .bound() skipped -> both new capital tests FAILED",
+    "plane.rs: with_authority skipped -> central.rs:10511 assertion FAILED",
+    "approval.rs: chain .bound() skipped -> plane payload comparison refused, central test FAILED"
+   ],
+   "commit": "e7071dd7"
   }
- ]
+ ],
+ "note": "Rows R12-ARCH-1008, R12-ARCH-1191, R12-ARCH-7139 remain NOT_BUILT: each needs a new seam across several crates; R12-ARCH-1191 also needs a Lane 2 intervention threshold figure nobody gave (NEEDS_FIGURE). Nothing marked built_unverified: all built rows were compiled and tested."
 }

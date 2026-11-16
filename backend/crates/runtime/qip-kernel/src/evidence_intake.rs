@@ -52,10 +52,12 @@ use qip_core::error::{Error, Result};
 use qip_events::{EventBody, Topic};
 use qip_market_ingestion::connector::evidence::CheckedEvidence;
 use qip_observability::metrics::labels;
+use qip_world_model::BeliefEvidence;
 use qip_world_model::TemporalConsistency;
 use qip_world_model::causal::CausalEdge;
 use qip_world_model::fabric::{ClaimKey, EvidenceVerdict, JournaledClaim, KeyOutcome};
 use qip_world_model::graph::Node;
+use qip_world_model::now::BeliefDelta;
 pub use qip_world_model::poisoning::{
     PoisoningClass, PoisoningFinding, PoisoningThresholds, detect_poisoning,
 };
@@ -75,6 +77,59 @@ pub const EVIDENCE_POISONING_FINDINGS: &str = "qip_evidence_poisoning_findings_t
 /// Refusal reasons kept on one report. The counter carries the total; the
 /// first few reasons are what an operator reads on the cycle line.
 pub const REFUSALS_RETAINED: usize = 8;
+
+/// NOW beliefs bound to at least one admitted claim, per pass.
+pub const NOW_BELIEFS_BOUND: &str = "qip_now_beliefs_bound_total";
+
+/// What [`Platform::bind_now_beliefs`] did with one pass's deltas.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NowBinding {
+    /// Beliefs bound to at least one admitted claim.
+    pub bound: usize,
+    /// Manifest entries that named no admitted claim of that source.
+    pub unresolved: usize,
+}
+
+/// What a NOW manifest entry points at once it is resolved against the
+/// world fabric: the admitted claim, the source that served it and the hash
+/// of the fetched document, which is what a re-fetch is checked against
+/// (R12-EVID-3081).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedManifest {
+    pub claim: String,
+    pub source: String,
+    pub document_hash: Option<String>,
+}
+
+/// Resolve one manifest entry to the claim and source reference it names, or
+/// `None`. An entry resolves only when its `reference` is the id of a claim
+/// the fabric holds **and** its `source` is that claim's source identity; an
+/// in-process name (`kernel/bar-history`) resolves to nothing, and is not
+/// given an edge it does not have.
+pub fn resolve_manifest(
+    fabric: &qip_world_model::EvidenceFabric,
+    manifest: &qip_world_model::now::ManifestRef,
+) -> Option<ResolvedManifest> {
+    let held = fabric.get(&manifest.reference)?;
+    (held.record.source_identity == manifest.source).then(|| ResolvedManifest {
+        claim: manifest.reference.clone(),
+        source: manifest.source.clone(),
+        document_hash: held.document_hash.clone(),
+    })
+}
+
+/// The id a NOW belief is bound under in the provenance graph.
+pub fn now_belief_id(
+    key: &qip_world_model::now::VariableKey,
+    partition: &qip_world_model::now::PartitionKey,
+) -> String {
+    format!(
+        "now:{}:{}/{}",
+        partition.domain.as_str(),
+        partition.region,
+        key
+    )
+}
 
 /// One relationship handed to [`Platform::absorb_knowledge`]: the typed edge,
 /// the instant it became true, and the confidence it is asserted with.
@@ -153,6 +208,11 @@ struct AdmittedClaim<'a> {
     key: &'a ClaimKey,
     value: &'a str,
     document_hash: &'a str,
+    /// Where the claim came from and how it was extracted: the manifest the
+    /// connector declared, so the delta says which source stood behind it
+    /// without carrying the document (R12-DATA-8120).
+    source_identity: &'a str,
+    extraction_method: &'a str,
     weight: f64,
     contradicts: &'a [String],
     /// The fabric's version before and after the claim; one apart.
@@ -210,7 +270,12 @@ fn knowledge_delta_for(claim: &AdmittedClaim<'_>, now: Timestamp) -> Result<Know
             key: delta_key(claim.key),
             value: claim.value.to_string(),
         }],
-        provenance: vec![claim.id.to_string(), format!("doc:{}", claim.document_hash)],
+        provenance: vec![
+            claim.id.to_string(),
+            format!("doc:{}", claim.document_hash),
+            format!("source:{}", claim.source_identity),
+            format!("via:{}", claim.extraction_method),
+        ],
         // Rounded from a value just proven to be in [0, 1], so the cast
         // cannot leave [0, 10000].
         confidence_bp: (claim.weight * 10_000.0).round() as u32,
@@ -450,6 +515,8 @@ impl Platform {
                     continue;
                 }
                 let id = checked.record.id.clone();
+                let source_identity = checked.record.source_identity.clone();
+                let extraction_method = checked.record.extraction_method.clone();
                 let claim = ClaimKey::of(&checked.record);
                 let before = world.evidence().version();
                 let mut journaled = JournaledClaim {
@@ -479,6 +546,8 @@ impl Platform {
                                 key: &key,
                                 value: &value,
                                 document_hash: &checked.document_hash,
+                                source_identity: &source_identity,
+                                extraction_method: &extraction_method,
                                 weight: verdict.belief_weight,
                                 contradicts: &verdict.contradicts,
                                 versions: (before, world.evidence().version()),
@@ -589,6 +658,62 @@ impl Platform {
     /// fabric was fed rather than read a clean scan of nothing.
     pub fn evidence_held(&self) -> usize {
         self.world.read().evidence().len()
+    }
+
+    /// Bind a belief to the admitted claims it rests on (R12-EVID-2033).
+    /// Refused for an empty set or a claim the world fabric does not hold.
+    pub fn bind_belief(&mut self, belief: &str, claims: &BTreeSet<String>) -> Result<()> {
+        self.world.update(|world| world.bind_belief(belief, claims))
+    }
+
+    /// Walk from a belief to every claim, document hash and source it rests
+    /// on. An error means a link is missing; it is never a shorter answer.
+    pub fn trace_belief(&self, belief: &str) -> Result<BTreeSet<BeliefEvidence>> {
+        self.world.read().evidence().graph().trace_belief(belief)
+    }
+
+    /// Resolve one manifest entry against the world fabric; see
+    /// [`resolve_manifest`].
+    pub fn resolve_manifest(
+        &self,
+        manifest: &qip_world_model::now::ManifestRef,
+    ) -> Option<ResolvedManifest> {
+        resolve_manifest(self.world.read().evidence(), manifest)
+    }
+
+    /// Bind each NOW belief delta to the admitted claims its manifest names
+    /// (R12-EVID-2033, R12-EVID-3081). A manifest entry resolves to a claim
+    /// only when its `reference` is the id of a claim the world fabric holds
+    /// **and** its `source` is that claim's source identity; an entry that
+    /// merely shares an id with a claim from another source is not one. The
+    /// production manifests name in-process sources (`kernel/bar-history`),
+    /// which resolve to nothing and are counted as `unresolved`, not given an
+    /// invented edge. The belief id is the delta's variable key and partition.
+    pub fn bind_now_beliefs(&mut self, deltas: &[BeliefDelta]) -> NowBinding {
+        let mut out = NowBinding::default();
+        for delta in deltas {
+            let fields = delta.fields();
+            let belief = now_belief_id(&fields.key, &fields.partition);
+            let mut claims = BTreeSet::new();
+            {
+                let world = self.world.read();
+                for manifest in &fields.manifests {
+                    match resolve_manifest(world.evidence(), manifest) {
+                        Some(resolved) => {
+                            claims.insert(resolved.claim);
+                        }
+                        None => out.unresolved += 1,
+                    }
+                }
+            }
+            if claims.is_empty() {
+                continue;
+            }
+            if self.bind_belief(&belief, &claims).is_ok() {
+                out.bound += 1;
+            }
+        }
+        out
     }
 
     /// Every knowledge delta the log retains under

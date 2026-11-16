@@ -73,6 +73,7 @@ fn terms() -> EnvelopeTerms {
         validity: Duration::from_hours(2),
         exposure: qip_capital::ExposureTerms::default(),
         drawdown_of_loss: qip_capital::envelope::DEFAULT_DRAWDOWN_OF_LOSS,
+        authority: None,
     }
 }
 

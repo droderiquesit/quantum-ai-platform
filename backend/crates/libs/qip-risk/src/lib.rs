@@ -40,6 +40,7 @@ pub mod gate;
 pub mod hedge;
 pub mod hedge_search;
 pub mod limits;
+pub mod market_exposure;
 pub mod market_factor;
 pub mod metrics;
 pub mod operational;

@@ -155,6 +155,15 @@ pub struct EnvelopeTerms {
     /// still read, at the standing figure.
     #[serde(default = "default_drawdown_of_loss")]
     pub drawdown_of_loss: Decimal,
+    /// The authority block the grant states (R12-GOV-6120, ADR 0155): product
+    /// classes, regulated functions and the leverage measure. `None` signs an
+    /// envelope that carries no block, which a cell armed with
+    /// `with_authority_bounds_required` refuses; the issuer states one
+    /// before any cell is armed, because arming first is the
+    /// refuse-everything failure ADR 0155 section 6 names. Defaulted on
+    /// decode so terms written before the field existed still read.
+    #[serde(default)]
+    pub authority: Option<qip_contracts::capital::AuthorityBounds>,
 }
 
 impl EnvelopeTerms {
@@ -170,7 +179,16 @@ impl EnvelopeTerms {
             validity,
             exposure: ExposureTerms::default(),
             drawdown_of_loss: DEFAULT_DRAWDOWN_OF_LOSS,
+            authority: None,
         }
+    }
+
+    /// These terms stating `authority`. Its leverage must equal the
+    /// exposure terms' leverage — there is one measure — and the issuer
+    /// refuses a difference when it signs.
+    pub fn with_authority(mut self, authority: qip_contracts::capital::AuthorityBounds) -> Self {
+        self.authority = Some(authority);
+        self
     }
 
     pub fn with_drawdown_of_loss(mut self, share: Decimal) -> Self {
@@ -396,6 +414,13 @@ impl EnvelopeIssuer {
         )?
         .with_exposure(exposure)?
         .with_drawdown(drawdown)?;
+        // Inside the payload the signature covers: an authority claim added
+        // after signing would be unsigned, and one left off would let the
+        // cell read a bounded grant as unbounded.
+        let unsigned = match &terms.authority {
+            None => unsigned,
+            Some(authority) => unsigned.bound(authority.clone())?,
+        };
         let signature = self.sign(&unsigned.signing_payload())?;
         Ok(unsigned.signed(signature))
     }

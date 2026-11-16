@@ -303,3 +303,167 @@ fn a_granger_edge_carries_its_fitted_slope_and_a_claimed_edge_carries_none() {
     assert!(claimed.clone().with_slope(0.0).is_err());
     assert_eq!(claimed.with_slope(0.4).unwrap().slope, Some(0.4));
 }
+
+/// A reaction episode against `AAA` for event `event` read over `horizon`
+/// bars, the id shape the kernel's reaction loop writes (`<event>@<horizon>`).
+fn horizon_reaction(
+    event: &str,
+    horizon: usize,
+    sign: f64,
+) -> qip_core::error::Result<qip_world_model::reaction::ReactionEpisode> {
+    let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
+    qip_world_model::reaction::ReactionEpisode::new(
+        format!("{event}@{horizon}"),
+        "earnings".to_string(),
+        t0,
+        t0.saturating_add(qip_core::Duration::from_days(horizon as i64)),
+        vec![("AAA".to_string(), 120.0 * sign, sign)],
+        horizon,
+        0.8,
+        "test".to_string(),
+        t0.saturating_add(qip_core::Duration::from_days(horizon as i64)),
+    )
+}
+
+/// R12-WORLD-6015: the 1-, 5- and 20-bar reactions to one event are three
+/// readings of one move, so together they weaken a held edge once, not three
+/// times. A different event is new evidence and weakens it again.
+///
+/// The failure this prevents: three overlapping horizons each halving
+/// confidence, so one contradicting announcement left an edge at an eighth.
+/// Mutation: delete the `already_weighed` branch in `apply_reaction`; the
+/// confidence after the three horizons is an eighth, not a half.
+#[test]
+fn one_contradicting_event_weakens_an_edge_once_however_many_horizons_it_is_read_over() {
+    use qip_world_model::causal::{CausalEdge, CausalGraph, Mechanism};
+    use qip_world_model::granger::{CONTRADICTION_CONFIDENCE_FACTOR, apply_reaction};
+    let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
+    let now = t0.saturating_add(qip_core::Duration::from_days(30));
+    let mut graph = CausalGraph::new();
+    graph.add(
+        CausalEdge::new(
+            "earnings",
+            "AAA",
+            Mechanism::TemporalPrecedence,
+            0.5,
+            qip_core::Duration::from_days(1),
+            t0,
+        )
+        .unwrap()
+        .with_confidence(0.4)
+        .unwrap()
+        .with_evidence(vec!["seed".to_string()]),
+    );
+    let mut contradicted = 0;
+    let mut weighed_again = 0;
+    for horizon in [1, 5, 20] {
+        let outcome = apply_reaction(
+            &mut graph,
+            &horizon_reaction("evt-1", horizon, -1.0).unwrap(),
+            1.0,
+            Mechanism::TemporalPrecedence,
+            now,
+        )
+        .unwrap();
+        contradicted += outcome.contradicted.len();
+        weighed_again += outcome.already_weighed;
+    }
+    assert_eq!(
+        (contradicted, weighed_again),
+        (1, 2),
+        "premise: one weighing, two skipped"
+    );
+    let once = 0.4 * CONTRADICTION_CONFIDENCE_FACTOR;
+    assert!((graph.edges()[0].confidence - once).abs() < 1e-12);
+
+    let next = apply_reaction(
+        &mut graph,
+        &horizon_reaction("evt-2", 1, -1.0).unwrap(),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        next.contradicted.len(),
+        1,
+        "a different event is new evidence"
+    );
+    assert!((graph.edges()[0].confidence - once * CONTRADICTION_CONFIDENCE_FACTOR).abs() < 1e-12);
+}
+
+/// A reaction against what the mechanism says the event does does not
+/// establish an edge claiming the opposite. Mutation: delete the `declined`
+/// branch; an edge appears and `declined` is zero.
+#[test]
+fn a_first_reaction_against_the_mechanism_establishes_no_edge() {
+    use qip_world_model::causal::{CausalGraph, Mechanism};
+    use qip_world_model::granger::apply_reaction;
+    let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
+    let mut graph = CausalGraph::new();
+    let against = apply_reaction(
+        &mut graph,
+        &horizon_reaction("evt-1", 1, -1.0).unwrap(),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        t0.saturating_add(qip_core::Duration::from_days(2)),
+    )
+    .unwrap();
+    assert!(
+        Mechanism::TemporalPrecedence.preserves_sign(),
+        "premise: a sign-preserving mechanism"
+    );
+    assert_eq!((against.created, against.declined), (0, 1));
+    assert_eq!(graph.len(), 0);
+    let with = apply_reaction(
+        &mut graph,
+        &horizon_reaction("evt-1", 1, 1.0).unwrap(),
+        1.0,
+        Mechanism::TemporalPrecedence,
+        t0.saturating_add(qip_core::Duration::from_days(2)),
+    )
+    .unwrap();
+    assert_eq!(
+        (with.created, with.declined),
+        (1, 0),
+        "a reaction that agrees still establishes one"
+    );
+}
+
+/// An edge contradicted by more events than the cap keeps only the newest
+/// citations. Mutation: delete the `drain` in `weaken_on_contradiction`.
+#[test]
+fn an_edges_evidence_is_bounded_however_often_it_is_contradicted() {
+    use qip_world_model::causal::{CausalEdge, CausalGraph, MAX_EDGE_EVIDENCE, Mechanism};
+    let t0 = qip_core::Timestamp::from_civil(2026, 9, 1);
+    let mut graph = CausalGraph::new();
+    graph.add(
+        CausalEdge::new(
+            "c",
+            "e",
+            Mechanism::TemporalPrecedence,
+            0.5,
+            qip_core::Duration::from_days(1),
+            t0,
+        )
+        .unwrap()
+        .with_confidence(0.4)
+        .unwrap()
+        .with_evidence(vec!["seed".to_string()]),
+    );
+    for n in 0..MAX_EDGE_EVIDENCE + 10 {
+        graph
+            .weaken_on_contradiction(0, 0.99, format!("ev-{n}"))
+            .unwrap();
+    }
+    let evidence = &graph.edges()[0].evidence;
+    assert_eq!(evidence.len(), MAX_EDGE_EVIDENCE);
+    assert_eq!(
+        evidence.last().unwrap(),
+        &format!("ev-{}", MAX_EDGE_EVIDENCE + 9)
+    );
+    assert!(
+        !evidence.contains(&"seed".to_string()),
+        "the oldest went first"
+    );
+}

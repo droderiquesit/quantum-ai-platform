@@ -873,7 +873,12 @@ fn a_claim_batch_leaves_one_knowledge_delta_naming_its_new_and_contested_keys() 
     assert_eq!((second.base_version, second.new_version), (1, 2));
     assert_eq!(
         first.provenance,
-        vec!["a1".to_string(), format!("doc:{}", hash('a'))]
+        vec![
+            "a1".to_string(),
+            format!("doc:{}", hash('a')),
+            "source:https://a.example".to_string(),
+            "via:connector:test/1.0".to_string(),
+        ]
     );
     assert!(
         matches!(&first.changes[..], [ChangeOp::Assert { key, value }]
@@ -1132,5 +1137,206 @@ fn links_are_recorded_on_both_claims_and_survive_a_restart_from_the_event_log() 
     assert_eq!(
         after, before,
         "the restarted fabric holds the same links on every claim"
+    );
+}
+
+// ---- R12-EVID-2033: a belief walks to every source document hash ----
+
+fn now_delta(manifests: Vec<(&str, &str)>) -> qip_world_model::now::BeliefDelta {
+    use qip_world_model::now::{
+        BeliefDelta, BeliefDeltaFields, Domain, ManifestRef, NOW_SCHEMA_VERSION, PartitionKey,
+        Prior, Scope, ScopeKind, VariableKey,
+    };
+    BeliefDelta::new(BeliefDeltaFields {
+        schema_version: NOW_SCHEMA_VERSION,
+        key: VariableKey::new(
+            Scope::new(ScopeKind::Instrument, "EURUSD").unwrap(),
+            "return",
+        )
+        .unwrap(),
+        partition: PartitionKey::new(Domain::Markets, "global").unwrap(),
+        epoch: 1,
+        prior: Prior::Genesis,
+        posterior_mean: 0.01,
+        posterior_variance: 0.0001,
+        confidence_bp: 5_000,
+        at: at(40),
+        manifests: manifests
+            .into_iter()
+            .map(|(s, r)| ManifestRef::new(s, r).unwrap())
+            .collect(),
+    })
+    .unwrap()
+}
+
+/// A NOW belief citing two admitted claims walks to both documents' hashes
+/// and sources. Mutation: make `ProvenanceGraph::bind_belief` skip the
+/// `link` of the second claim — the traced set loses `hash('b')` and the
+/// second assertion fails.
+#[test]
+fn a_now_belief_walks_to_every_source_document_hash_it_rests_on() {
+    let mut platform = platform();
+    let a = checked("a1", "https://a.example", "rate 1.10", "1.10", &hash('a'));
+    let b = checked("b1", "https://b.example", "rate 1.10", "1.10", &hash('b'));
+    platform.absorb_evidence(vec![a, b], at(30));
+    assert_eq!(platform.evidence_held(), 2, "premise: both claims admitted");
+    let delta = now_delta(vec![
+        ("https://a.example", "a1"),
+        ("https://b.example", "b1"),
+        ("kernel/bar-history", "EURUSD@close"),
+    ]);
+
+    let binding = platform.bind_now_beliefs(std::slice::from_ref(&delta));
+
+    assert_eq!(binding.bound, 1, "{binding:?}");
+    assert_eq!(
+        binding.unresolved, 1,
+        "the in-process bar manifest names no admitted claim and is counted, not linked"
+    );
+    let f = delta.fields();
+    let id = qip_kernel::evidence_intake::now_belief_id(&f.key, &f.partition);
+    let walked = platform.trace_belief(&id).unwrap();
+    let hashes: std::collections::BTreeSet<_> =
+        walked.iter().map(|e| e.document_hash.clone()).collect();
+    assert_eq!(
+        hashes,
+        [hash('a'), hash('b')].into_iter().collect(),
+        "{walked:?}"
+    );
+    let sources: std::collections::BTreeSet<_> = walked.iter().map(|e| e.source.clone()).collect();
+    assert!(sources.contains("https://a.example") && sources.contains("https://b.example"));
+}
+
+/// A manifest whose reference is a claim id but whose source is another
+/// source's does not resolve, and a belief bound to nothing cannot be traced.
+/// Mutation: drop the `source_identity == manifest.source` guard in
+/// `bind_now_beliefs` — the belief binds and `trace_belief` succeeds.
+#[test]
+fn a_manifest_naming_a_claim_under_the_wrong_source_is_not_an_edge() {
+    let mut platform = platform();
+    platform.absorb_evidence(
+        vec![checked(
+            "a1",
+            "https://a.example",
+            "rate 1.10",
+            "1.10",
+            &hash('a'),
+        )],
+        at(30),
+    );
+    assert_eq!(platform.evidence_held(), 1, "premise: the claim is held");
+    let delta = now_delta(vec![("https://other.example", "a1")]);
+
+    let binding = platform.bind_now_beliefs(std::slice::from_ref(&delta));
+
+    assert_eq!((binding.bound, binding.unresolved), (0, 1));
+    let f = delta.fields();
+    let id = qip_kernel::evidence_intake::now_belief_id(&f.key, &f.partition);
+    assert!(platform.trace_belief(&id).is_err());
+}
+
+/// Binding a belief to a claim nobody admitted is refused: an edge to
+/// nothing is the invented edge the walk rules out.
+#[test]
+fn binding_a_belief_to_an_unadmitted_claim_is_refused() {
+    let mut platform = platform();
+    let claims: std::collections::BTreeSet<String> = ["ghost".to_string()].into();
+    assert!(platform.bind_belief("thesis-1", &claims).is_err());
+    assert!(platform.trace_belief("thesis-1").is_err());
+}
+
+// ---- R12-EVID-3081: a manifest entry resolves to a source reference ----
+
+/// A NOW delta citing connector evidence has every connector entry resolve to
+/// the claim's source and the hash of the document fetched; the bar entry
+/// resolves to nothing. Mutation: make `resolve_manifest` return
+/// `document_hash: None` — the hash assertion fails.
+#[test]
+fn a_now_manifest_entry_from_connector_data_resolves_to_its_source_and_document_hash() {
+    let mut platform = platform();
+    platform.absorb_evidence(
+        vec![checked(
+            "a1",
+            "https://a.example",
+            "rate 1.10",
+            "1.10",
+            &hash('a'),
+        )],
+        at(30),
+    );
+    assert_eq!(platform.evidence_held(), 1, "premise: the claim is held");
+    let delta = now_delta(vec![
+        ("https://a.example", "a1"),
+        ("kernel/bar-history", "EURUSD@close"),
+    ]);
+
+    let resolved: Vec<_> = delta
+        .fields()
+        .manifests
+        .iter()
+        .map(|m| platform.resolve_manifest(m))
+        .collect();
+
+    let first = resolved[0].as_ref().expect("connector entry resolves");
+    assert_eq!(first.source, "https://a.example");
+    assert_eq!(first.document_hash.as_deref(), Some(hash('a').as_str()));
+    assert!(
+        resolved[1].is_none(),
+        "an in-process name resolves to nothing"
+    );
+}
+
+/// R12-DATA-8120: the delta a fixture source leaves carries the manifest of
+/// where the claim came from (source and extraction method), the document's
+/// hash and the claim's id, and carries none of the claim's text. A delta
+/// that quoted the statement would be the raw payload kept after the stage
+/// that was meant to discard it. Mutation: drop the `source:` entry from
+/// `knowledge_delta_for` — the first assertion fails.
+#[test]
+fn a_fixture_source_leaves_a_delta_with_its_manifest_and_provenance_and_none_of_its_text() {
+    let mut platform = platform();
+    assert!(
+        journalled_deltas(&platform).is_empty(),
+        "premise: no delta before the fixture is absorbed"
+    );
+    let statement = "the fixture sentence the source published verbatim";
+    let item = checked(
+        "f1",
+        "https://fixture.example/feed",
+        statement,
+        "1.10",
+        &hash('f'),
+    );
+    assert!(
+        item.record.statement.contains("fixture sentence"),
+        "premise: the record the connector hands over holds the text"
+    );
+
+    let intake = platform.absorb_evidence(vec![item], at(30));
+    assert_eq!(intake.knowledge_deltas, 1, "{intake:?}");
+
+    let deltas = journalled_deltas(&platform);
+    assert_eq!(deltas.len(), 1);
+    let fields = deltas[0].fields();
+    assert!(
+        fields
+            .provenance
+            .contains(&"source:https://fixture.example/feed".to_string()),
+        "{:?}",
+        fields.provenance
+    );
+    assert!(
+        fields
+            .provenance
+            .contains(&"via:connector:test/1.0".to_string()),
+        "{:?}",
+        fields.provenance
+    );
+    assert!(fields.provenance.contains(&format!("doc:{}", hash('f'))));
+    assert!(fields.provenance.contains(&"f1".to_string()));
+    let text = format!("{fields:?}");
+    assert!(
+        !text.contains("fixture sentence"),
+        "the delta kept the payload: {text}"
     );
 }

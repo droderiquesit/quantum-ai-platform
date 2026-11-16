@@ -51,7 +51,7 @@ use qip_core::Timestamp;
 use qip_core::error::{Error, Result};
 use qip_core::kv::KeyValueStore;
 use qip_data_finder::admission::{AdmittedSource, CatalogueEntry, StandingAdmission};
-use qip_data_finder::reference::{DataReference, RevisionCheck, SourceOrigin};
+use qip_data_finder::reference::{DataPeriod, DataReference, RevisionCheck, SourceOrigin};
 use qip_data_finder::refetch::{ReFetchDriver, ReFetchFinding, TransportRefetcher};
 use qip_data_finder::registration::RegistrationRegistry;
 use qip_kernel::Platform;
@@ -64,7 +64,7 @@ use qip_market_ingestion::connector::transport::SourceTransport;
 use qip_market_ingestion::connector_feed::ConnectorFeed;
 use qip_storage::BlobStore;
 use qip_storage::tick_capture::{RetentionRight, TickLakeWriter};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// The variable naming what the tick lake may keep per licensing class, as
@@ -100,6 +100,10 @@ const LICENSING_CLASSES: [&str; 5] = ["public", "internal", "licensed", "restric
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TickLakeSettings {
     pub retention: BTreeMap<String, RetentionRight>,
+    /// Rights read per venue, from `venue/<name>=canonical|none` entries
+    /// (R12-DATA-1039). A venue's own entry decides for its events; a venue
+    /// with none falls back to its licensing class.
+    pub venues: BTreeMap<String, RetentionRight>,
 }
 
 impl TickLakeSettings {
@@ -113,6 +117,7 @@ impl TickLakeSettings {
             return Ok(None);
         };
         let mut retention = BTreeMap::new();
+        let mut venues = BTreeMap::new();
         for entry in raw.split(',').map(str::trim) {
             let Some((class, right)) = entry.split_once('=') else {
                 return Err(Error::invalid(format!(
@@ -120,6 +125,32 @@ impl TickLakeSettings {
                      licensing class and `canonical`"
                 )));
             };
+            if let Some(venue) = class.trim().strip_prefix("venue/") {
+                let right = match right.trim() {
+                    "canonical" => RetentionRight {
+                        canonical: true,
+                        raw: false,
+                    },
+                    "none" => RetentionRight {
+                        canonical: false,
+                        raw: false,
+                    },
+                    other => {
+                        return Err(Error::invalid(format!(
+                            "{TICK_LAKE_RETENTION_VARIABLE} gives venue `{venue}` the right \
+                             `{other}`; a venue is `canonical` or `none` (a connector's raw \
+                             bytes are never kept, ADR 0416)"
+                        )));
+                    }
+                };
+                if venue.is_empty() || venues.insert(venue.to_string(), right).is_some() {
+                    return Err(Error::invalid(format!(
+                        "{TICK_LAKE_RETENTION_VARIABLE} names venue `{venue}` empty or twice; \
+                         one venue has one reading of its terms"
+                    )));
+                }
+                continue;
+            }
             let class = class.trim().to_ascii_lowercase();
             if !LICENSING_CLASSES.contains(&class.as_str()) {
                 return Err(Error::invalid(format!(
@@ -155,17 +186,18 @@ impl TickLakeSettings {
                 )));
             }
         }
-        Ok(Some(Self { retention }))
+        Ok(Some(Self { retention, venues }))
     }
 
     /// One writer over `store`, for one arm.
     pub fn writer(&self, store: Arc<dyn BlobStore>) -> Result<TickLakeWriter> {
-        TickLakeWriter::new(
+        Ok(TickLakeWriter::new(
             store,
             self.retention.clone(),
             TICK_LAKE_BATCH,
             TICK_LAKE_MAX_BUFFERED,
-        )
+        )?
+        .with_venue_rights(self.venues.clone()))
     }
 }
 
@@ -277,7 +309,10 @@ impl ConnectorArm {
         let class = qip_market_ingestion::connector_feed::shipped_class(source_id)?;
         let (admission, decision) =
             StandingAdmission::open(registrations.clone(), source_id, class, at)?;
-        let mut feed = ConnectorFeed::open(source_id, base_url, seed, at)?;
+        // Every fetch this arm's platform accepts leaves a version-2 manifest
+        // (R12-DATA-8013), collected by `drain_document_manifests`.
+        let mut feed = ConnectorFeed::open(source_id, base_url, seed, at)?
+            .with_document_manifests(source_id, qip_contracts::governance::Usage::Research);
         // `feed.manifest()` is borrowed by `from_decision`'s error path too,
         // so the failure is matched rather than `?`-propagated: a refusal
         // here leaves the socket `ConnectorFeed::open` already holds with no
@@ -357,7 +392,12 @@ impl ConnectorArm {
             manifest.licensing,
             at,
         )?;
-        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?;
+        let manifest_source_id = manifest.source_id.clone();
+        let mut feed = ConnectorFeed::over_transport(connector, manifest, transport, seed, at)?
+            .with_document_manifests(
+                manifest_source_id,
+                qip_contracts::governance::Usage::Research,
+            );
         // Released on the way out, same as `Self::open` above: a refusal
         // here has no other path back to this stack frame, and unlike
         // `Self::open` the transport this constructor is handed is the one
@@ -388,8 +428,24 @@ impl ConnectorArm {
     }
 
     /// Keep every knowledge pack this arm's polls produce on `store`.
+    ///
+    /// The store is wrapped in the pack class's write check (R12-DATA-1041),
+    /// so whatever the caller hands in, bytes that are not a compact pack in
+    /// the packs namespace are refused before they reach it.
     pub fn with_knowledge_packs(mut self, store: Arc<dyn BlobStore>) -> Self {
-        self.pack_store = Some(store);
+        let class = qip_storage::classes::blob_class(
+            qip_storage::classes::DECLARED,
+            KNOWLEDGE_PACK_NAMESPACE,
+        )
+        .copied();
+        self.pack_store = Some(match class {
+            Ok(class) => Arc::new(qip_storage::class_checked::ClassCheckedStore::new(
+                store, class,
+            )),
+            // An undeclared class is a build defect; keep the caller's store
+            // rather than none so the pack write is not silently dropped.
+            Err(_) => store,
+        });
         self
     }
 
@@ -456,6 +512,12 @@ impl ConnectorArm {
 
     pub fn source_id(&self) -> &str {
         self.admitted.source_id()
+    }
+
+    /// The version-2 manifests of the fetches the platform accepted since the
+    /// last call (R12-DATA-8013).
+    pub fn drain_document_manifests(&mut self) -> Vec<qip_financial::manifest::SourceManifest> {
+        self.feed.drain_document_manifests()
     }
 
     pub fn admitted(&self) -> &AdmittedSource {
@@ -539,6 +601,31 @@ impl ConnectorArm {
         Ok(records)
     }
 
+    /// Poll once for the scout job (ADR 0144, R12-DATA-8112): the same
+    /// licence gate as [`Self::poll`], and the same transport, but no
+    /// platform — the scout holds none, and so can reference nothing on a
+    /// trading ledger. The fetch is handed over as a [`crate::scout::ScoutRecord`]
+    /// (its version-2 manifest beside what it decoded), or `None` when the
+    /// poll yielded no records. A refused gate is the poll's error.
+    pub fn scout_poll(&mut self, until: Timestamp) -> Result<Option<crate::scout::ScoutRecord>> {
+        self.admission
+            .check(until)
+            .and_then(|decision| AdmittedSource::from_decision(&decision, self.feed.manifest()))?;
+        let identified = self
+            .feed
+            .poll_referencing_identified(until, &mut |_| Ok(()))?;
+        // The evidence this poll checked is the trading plane's input and
+        // the scout has no fabric to put it in; it is discarded here rather
+        // than left to accumulate to the feed's bound.
+        drop(self.feed.drain_evidence());
+        let manifests = self.feed.drain_document_manifests();
+        let (Some(manifest), false) = (manifests.into_iter().last(), identified.is_empty()) else {
+            return Ok(None);
+        };
+        let records = identified.into_iter().map(|(record, _)| record).collect();
+        crate::scout::ScoutRecord::new(self.admitted.source_id(), manifest, records).map(Some)
+    }
+
     /// Ask the source again, through this arm's own transport, for up to
     /// `budget` of the extents the platform's ledger holds from it, and mark
     /// on the ledger every one the source no longer serves (R12-DATA-1037).
@@ -555,6 +642,48 @@ impl ConnectorArm {
         platform: &mut Platform,
         budget: usize,
         at: Timestamp,
+    ) -> Result<Vec<ReFetchFinding>> {
+        self.refetch_matching(platform, budget, at, |_| true)
+    }
+
+    /// Ask the source again for the extents a replay of a past document
+    /// touches (R12-DATA-8018): the references from this source whose period
+    /// overlaps `period` and which name at least one of `subjects`. The
+    /// served bytes are hashed and compared with the reference's hash, never
+    /// stored, so a replay reads the world as the provider serves it now and
+    /// says whether that differs from what was first read, instead of
+    /// reading a copy. Not on a cadence: the replay is the trigger.
+    ///
+    /// An empty `subjects` set is refused: a replay that names nothing would
+    /// re-fetch everything the source ever served, which is a corpus pull.
+    pub fn refetch_for_replay(
+        &mut self,
+        platform: &mut Platform,
+        subjects: &BTreeSet<String>,
+        period: DataPeriod,
+        at: Timestamp,
+    ) -> Result<Vec<ReFetchFinding>> {
+        if subjects.is_empty() {
+            return Err(Error::invalid(
+                "a replay re-fetch names the subjects it touches; an empty set would re-fetch \
+                 every extent the source ever served, which copies a corpus by another route",
+            ));
+        }
+        self.refetch_matching(platform, REFETCH_BUDGET, at, |reference| {
+            reference.range().overlaps(&period)
+                && reference
+                    .symbols()
+                    .iter()
+                    .any(|symbol| subjects.contains(symbol))
+        })
+    }
+
+    fn refetch_matching(
+        &mut self,
+        platform: &mut Platform,
+        budget: usize,
+        at: Timestamp,
+        wanted: impl Fn(&DataReference) -> bool,
     ) -> Result<Vec<ReFetchFinding>> {
         if let Err(refusal) = self
             .admission
@@ -573,6 +702,7 @@ impl ConnectorArm {
                         reference.origin(),
                         SourceOrigin::Discovered | SourceOrigin::CatalogueAdmitted
                     )
+                    && wanted(reference)
             })
             .cloned()
             .collect();
@@ -810,6 +940,28 @@ mod tests {
         assert!(lake("vendorx=canonical").is_err());
         assert!(lake("public=canonical,public=canonical+raw").is_err());
         assert!(lake("public").is_err());
+        Ok(())
+    }
+
+    /// R12-DATA-1039: rights may be read per venue. A `venue/<name>` entry
+    /// is `canonical` or `none` and nothing else, and a venue named twice or
+    /// with a raw right is refused, as a class is. The class entry in the
+    /// same list keeps the parse from passing on a list that admits only
+    /// venues.
+    ///
+    /// Mutation: drop the `venues.insert` duplicate check — the twice-named
+    /// venue assertion fails.
+    #[test]
+    fn a_venue_right_is_canonical_or_none_and_names_a_venue_once() -> Result<()> {
+        let settings = lake("public=canonical, venue/coinbase=none, venue/kraken=canonical")?
+            .ok_or_else(|| qip_core::error::Error::not_found("settings"))?;
+        assert!(settings.retention.contains_key("public"));
+        assert_eq!(settings.venues.len(), 2);
+        assert!(!settings.venues["coinbase"].canonical);
+        assert!(settings.venues["kraken"].canonical);
+        assert!(lake("venue/coinbase=canonical,venue/coinbase=none").is_err());
+        assert!(lake("venue/coinbase=canonical+raw").is_err());
+        assert!(lake("venue/=canonical").is_err());
         Ok(())
     }
 

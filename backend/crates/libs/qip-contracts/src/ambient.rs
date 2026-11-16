@@ -1051,10 +1051,70 @@ pub fn rank_acquisitions(requests: &[InfoRequest]) -> Vec<&InfoRequest> {
     open
 }
 
+/// What an information request asks to be done (R12-DATA-3105, blueprint
+/// §9.10): the seven acquisitions the platform may trigger to reduce
+/// uncertainty. A request with no kind could only ever mean the first, so
+/// every cheaper disambiguator went unused.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AcquisitionKind {
+    /// Query a new source. What every request meant before the kind existed,
+    /// so it is the default a record written without one decodes to.
+    #[default]
+    NewSourceQuery,
+    /// Ask another provider for the same fact.
+    AlternativeProvider,
+    /// Probe market microstructure (ticks, book) rather than a document.
+    MicrostructureProbe,
+    /// Construct a simulation that tests the missing link.
+    Simulation,
+    /// Put the question to a specialist agent.
+    SpecialistAgent,
+    /// Fetch a public filing.
+    PublicFilingFetch,
+    /// Measure again what the platform already observes.
+    AdditionalMeasurement,
+}
+
+impl AcquisitionKind {
+    /// Every kind, in declaration order.
+    pub const ALL: [Self; 7] = [
+        Self::NewSourceQuery,
+        Self::AlternativeProvider,
+        Self::MicrostructureProbe,
+        Self::Simulation,
+        Self::SpecialistAgent,
+        Self::PublicFilingFetch,
+        Self::AdditionalMeasurement,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NewSourceQuery => "new_source_query",
+            Self::AlternativeProvider => "alternative_provider",
+            Self::MicrostructureProbe => "microstructure_probe",
+            Self::Simulation => "simulation",
+            Self::SpecialistAgent => "specialist_agent",
+            Self::PublicFilingFetch => "public_filing_fetch",
+            Self::AdditionalMeasurement => "additional_measurement",
+        }
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::NewSourceQuery
+    }
+}
+
 /// A request to acquire evidence to reduce uncertainty in a decision.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InfoRequest {
     id: String,
+    /// What acquisition the request asks for. Absent on a record written
+    /// before the field existed, which then reads as a new source query.
+    #[serde(default, skip_serializing_if = "AcquisitionKind::is_default")]
+    kind: AcquisitionKind,
     decision_id: String,
     criteria: AcquisitionCriteria,
     /// When acquisition must complete, or after which new acquisitions are rejected.
@@ -1112,6 +1172,7 @@ impl InfoRequest {
             criteria,
             deadline,
             requested_at,
+            kind: AcquisitionKind::default(),
             status: AcquisitionStatus::Requested,
             cumulative_cost_bp: 0,
             launch_reduction_bp: None,
@@ -1122,6 +1183,16 @@ impl InfoRequest {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+    /// The acquisition this request asks for.
+    pub fn kind(&self) -> AcquisitionKind {
+        self.kind
+    }
+    /// The request asking for `kind` instead of the default.
+    #[must_use]
+    pub fn with_kind(mut self, kind: AcquisitionKind) -> Self {
+        self.kind = kind;
+        self
     }
     pub fn decision_id(&self) -> &str {
         &self.decision_id
