@@ -29,10 +29,10 @@ Each branch was deleted after its merge commit landed.
 
 ## The acceptance partition, and how each of the three failures was found
 
-The three lanes above (b53-10, b53-16, b53-7) each failed exactly one
-acceptance test while every other job passed. none of the three was a defect
-in the code the lane adds: each was an existing acceptance test whose premise
-the lane's new behaviour invalidates, in the same shape all three times.
+The last three lanes above (b53-10, b53-16, b53-7) each failed exactly one
+acceptance test while every other job passed. None of the three was a defect in
+the code the lane adds: each was an existing acceptance test whose premise the
+lane's new behaviour invalidates, in the same shape all three times.
 
 Finding out *which* test was the hard part, and worth recording. The job page
 says "Sign in to view logs" to an anonymous reader, the check-run annotations
@@ -46,6 +46,26 @@ where the summary block names the failing test.
 | b53-10 | `uncertainty_records::contradicting_evidence_on_the_semantic_and_self_models_is_recorded_beside_the_belief` | The lane makes `ResearchMemory::promote` refuse a lesson citing episodes the memory does not hold. The test promoted `run-1`..`run-6` into an empty memory. `90861c1`: the test records the six episodes first — the premise the new rule creates, not a weaker assertion |
 | b53-16 | `hedge_independence::the_hedge_modules_reach_only_the_named_kernel_modules` | The lane has `hedge.rs` construct `cycle::ExposureFinding`, so it names `crate::cycle`, which the Hedge Brain was not declared to reach. `5841e44`: `CYCLE_PATHS` pins that one path by name instead of opening the module, because `cycle.rs` composes every stage's report |
 | b53-7 | `model_gateway_boundary::the_organisation_is_convened_only_after_the_cost_router_places_the_decision` | The lane splits the convention into `dispatch_panel` and `dispatch_late` around the derivation, so the literal `self.organisation.dispatch(` count fell to zero. `240ecb9`: the scan counts the prefix and holds every call to the same three rules — inside `reason_about_the_queue`, after `self.cost_router.select` |
+
+## main requires a green run, from 2026-11-16
+
+Classic branch protection on `main`: the twenty-four `ci` jobs a pull request
+runs are required checks, branches must be up to date before merging, and the
+rule binds administrators. Force pushes and deletion of `main` are refused. A
+direct commit to `main` is now refused outright: this note reached `main` as a
+pull request because the first attempt to write it directly was rejected.
+
+`sast` is deliberately **not** on the list. It is the one job the workflow only
+runs on a push to `main` (`if: github.event_name == 'push' && github.ref ==
+'refs/heads/main'`), so on a pull request it concludes `skipped`, and a skipped
+required check never passes: requiring it would block every merge for ever. It
+remains a post-merge check. The other job with an `if:` is `rule-citation`,
+which runs on pull requests only and is therefore required.
+
+The required-check list is pinned to job names in `.github/workflows/ci.yml`. A
+job renamed there must be renamed here in the same change, or merges wait on a
+check that will never report — the acceptance partition's matrix names are the
+ones to re-read first, because they carry their package lists.
 
 ## Refuted by a reader, not merged (4) — branches retained
 
@@ -74,14 +94,12 @@ t51-02 `a6aae6ad5f703dd272e73b46933059f6b36b3644` ·
 t51-03 `3ca5a07c3f0daa87caed22cb14f84efee15e4197` ·
 t51-05 `29a3a9133632d1f144288cf6db758a48960eeac8`
 
-## Two traps found in the merge gate
+## The gate's other trap
 
-1. `scripts/rule-citation.mjs` diffs the branch against the *current* base tip,
-   not its merge base, so a branch cut before `main` moved is refused for rule
-   changes it never made. Bringing the branch up to date clears it. Four of the
-   six code pull requests were also opened with an empty body, which the gate
-   refuses independently.
-2. Nothing protects `main`, so a pull request can be merged with a failing `ci`.
+`scripts/rule-citation.mjs` diffs the branch against the *current* base tip,
+not its merge base, so a branch cut before `main` moved is refused for rule
+changes it never made. Bringing the branch up to date clears it — which the
+"up to date before merging" requirement above now enforces.
 
 No register row is regraded by any of this. Blueprint completion is unchanged at
 592 of 1,518 (ARCH-074).
