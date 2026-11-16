@@ -547,15 +547,10 @@ variable "fencing_lease_path" {
     or empty for a node with no standby. Required when `standby_enabled`: a
     standby with no lease is a second primary.
 
-    A `gs://<bucket>/<object>.json` value is the cross-zone lease (ADR 0137):
-    the module creates that bucket and grants the node identity get, create
-    and update on it and nothing else, and `qip-edge-node` writes the object
-    under a generation precondition. A file path is correct on one host only,
-    and a standby in another zone needs the gs:// form.
-
-    What this is not, said because the variable reads as more than it is: it
-    does not start a standby, and a deployed pair across two zones is the
-    evidence the row R12-REFLEX-8069 still lacks.
+    What this is not, said because the variable reads as more than it is:
+    `qip-edge-node`'s only lease store is a file, and its own start-up message
+    says the file store is correct on one host only — a standby in another
+    zone needs a store with a conditional write, which the tree does not have.
     ADR 0111's Spanner lease belongs to the fabric broker and this binary has
     no client for it. So a primary and a standby on two machines each hold a
     lease on their own disk, and this gate refuses the configuration that is
@@ -569,8 +564,8 @@ variable "fencing_lease_path" {
   nullable = false
 
   validation {
-    condition     = var.fencing_lease_path == "" || can(regex("^/var/lib/qip/[a-z0-9_-]+(/[a-z0-9_-]+)*\\.json$", var.fencing_lease_path)) || can(regex("^gs://[a-z0-9][a-z0-9_-]{1,61}[a-z0-9]/[a-z0-9_-]+(/[a-z0-9_-]+)*\\.json$", var.fencing_lease_path))
-    error_message = "fencing_lease_path is a file under /var/lib/qip such as /var/lib/qip/fencing/lease.json (one host only), a gs://<bucket>/<object>.json lease in the bucket this module creates for it (ADR 0137), or empty."
+    condition     = var.fencing_lease_path == "" || can(regex("^/var/lib/qip/[a-z0-9_-]+(/[a-z0-9_-]+)*\\.json$", var.fencing_lease_path))
+    error_message = "fencing_lease_path is a file under /var/lib/qip such as /var/lib/qip/fencing/lease.json, or empty."
   }
 
   validation {

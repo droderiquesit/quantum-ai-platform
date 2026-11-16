@@ -46,9 +46,6 @@ mod server {
         Json { status: u16, body: String },
         /// A response whose body is arbitrary bytes, for a media download.
         Raw { status: u16, body: Vec<u8> },
-        /// A media download that names the object's generation, as Cloud
-        /// Storage does in `x-goog-generation`.
-        Generation { body: Vec<u8>, generation: String },
         /// A well-formed response too large for the client's limit.
         Oversized { bytes: usize },
         /// Say nothing for this long, then answer, for the read timeout.
@@ -233,16 +230,6 @@ mod server {
         let bytes = match action {
             Action::Json { status, body } => framed(*status, "application/json", body.as_bytes()),
             Action::Raw { status, body } => framed(*status, "application/octet-stream", body),
-            Action::Generation { body, generation } => {
-                let mut out = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\nx-goog-generation: \
-                     {generation}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                    body.len()
-                )
-                .into_bytes();
-                out.extend_from_slice(body);
-                out
-            }
             Action::Oversized { bytes } => {
                 framed(200, "application/octet-stream", &vec![b'x'; *bytes])
             }
@@ -1124,75 +1111,4 @@ fn a_cloud_storage_put_if_absent_asks_for_generation_zero_and_reads_412_as_alrea
     );
     // A plain put is never conditional, and a 412 there is an error.
     assert!(store.put("lake/seg.seg", b"second".to_vec()).is_err());
-}
-
-/// ADR 0137 decision 1 (R12-REFLEX-8069): the lease store's two primitives.
-/// Mutations: dropping the precondition from `upload` fails the target
-/// assertion; reading the generation from anything but the response header
-/// fails the pairing assertion.
-#[test]
-fn a_generation_matched_write_names_the_generation_and_reads_412_as_a_lost_race() {
-    let won = TestServer::always(Action::ok(r#"{"name":"lease"}"#));
-    let store = bucket_store(&won);
-    assert!(
-        store
-            .put_if_generation("lease", b"x".to_vec(), 77)
-            .expect("won")
-    );
-    let requests = won.requests();
-    assert_eq!(requests.len(), 1, "premise: one request");
-    assert!(
-        requests[0].target.contains("&ifGenerationMatch=77"),
-        "the write was not conditional on the generation read: {}",
-        requests[0].target
-    );
-
-    let lost = TestServer::always(Action::json(412, r#"{"error":{"code":412}}"#));
-    assert!(
-        !bucket_store(&lost)
-            .put_if_generation("lease", b"x".to_vec(), 77)
-            .expect("a 412 is a lost race, not an error")
-    );
-    let broken = TestServer::always(Action::json(503, r#"{"error":{"code":503}}"#));
-    assert!(
-        bucket_store(&broken)
-            .put_if_generation("lease", b"x".to_vec(), 77)
-            .is_err(),
-        "an outage was read as a lost race"
-    );
-}
-
-#[test]
-fn a_read_with_generation_returns_the_bytes_and_the_generation_of_the_same_response() {
-    let server = TestServer::always(Action::Generation {
-        body: b"holder".to_vec(),
-        generation: "1700000000000001".to_string(),
-    });
-    let got = bucket_store(&server)
-        .get_with_generation("lease")
-        .expect("reads");
-    assert_eq!(got, Some((b"holder".to_vec(), 1_700_000_000_000_001)));
-    assert_eq!(
-        server.requests().len(),
-        1,
-        "a second request could straddle a writer"
-    );
-
-    let missing = TestServer::always(Action::json(404, "{}"));
-    assert_eq!(
-        bucket_store(&missing)
-            .get_with_generation("lease")
-            .expect("404"),
-        None
-    );
-    // No header: refused, because generation zero would mean "create".
-    let headerless = TestServer::always(Action::Raw {
-        status: 200,
-        body: b"x".to_vec(),
-    });
-    assert!(
-        bucket_store(&headerless)
-            .get_with_generation("lease")
-            .is_err()
-    );
 }

@@ -276,13 +276,6 @@ QIP_PEER_MESH_CLOCK_BOUND_MS=${peer_mesh.clock_bound_ms}
 QIP_FENCING_LEASE=${fencing_lease_path}
 QIP_NODE_ROLE=${node_role}
 QIP_NODE_NAME=${node_name}
-%{ if startswith(fencing_lease_path, "gs://") ~}
-# A gs:// lease is written through the in-tree Cloud Storage adapter (ADR
-# 0137): the proxy's Google APIs listener, and this machine's own identity from
-# the metadata server. Written only for that lease; the file form reads neither.
-QIP_GCP_ENDPOINT=${egress_endpoint}
-QIP_GCP_METADATA_SERVER=1
-%{ endif ~}
 %{ endif ~}
 EOF
 chmod 0444 "$CONF_DIR/node.env"
