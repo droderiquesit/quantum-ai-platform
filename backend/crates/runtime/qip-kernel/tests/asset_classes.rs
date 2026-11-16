@@ -1196,3 +1196,68 @@ fn an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bo
     drop(context);
     Ok(())
 }
+
+/// ADR 0658, R12-COVERAGE-5104: cash is one pool across event contracts, so
+/// two buys admitted in one pass cannot each be funded from the same cash. The
+/// second is refused naming the earlier claim, and is admitted again once the
+/// first order's claim is gone (a new cycle drops unsubmitted reservations).
+///
+/// Mutation: stop `order_for` reserving the admitted order (or stop
+/// `event_commitments` summing cash) and the second buy is admitted.
+#[test]
+fn two_event_contract_buys_in_one_pass_are_not_both_funded_from_the_same_cash() -> Result<()> {
+    use qip_execution_engine::order::Side;
+    let event = |id: &str| -> Result<FinancialObject> {
+        FinancialObject::builder(
+            ObjectId::from_string(id),
+            id,
+            InstrumentType::EventContract,
+            liquidity(),
+        )
+        .venue("XNYS")
+        .sector(Sector::InformationTechnology)
+        .price(dec!("0.4"))
+        .provenance(Provenance::synthetic("asset-class-test", start()))
+        .build(start())
+    };
+    let config = PlatformConfig {
+        initial_equity: dec!("0.5"),
+        ..PlatformConfig::default()
+    };
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut platform = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        universe_of(vec![
+            object("obj-AAA", InstrumentType::CommonStock, None)?,
+            event("obj-EVT-A")?,
+            event("obj-EVT-B")?,
+        ])?,
+        LimitSet::conservative_default(),
+    )?;
+    let buy = |platform: &mut Platform, id: &str| {
+        platform.order_for(
+            ObjectId::from_string(id),
+            Side::Buy,
+            dec!("1"),
+            dec!("0.4"),
+            "prop-event",
+            vec!["hyp-event".to_string()],
+            start(),
+        )
+    };
+    // Premise: each buy alone is funded by the 0.5 of cash.
+    assert!(
+        buy(&mut platform, "obj-EVT-A").is_ok(),
+        "premise: one buy is funded"
+    );
+    let second = buy(&mut platform, "obj-EVT-B");
+    assert!(
+        second
+            .as_ref()
+            .is_err_and(|e| e.message().contains("earlier event-contract buys")),
+        "the second buy was funded from cash the first had claimed: {second:?}"
+    );
+    Ok(())
+}

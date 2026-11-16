@@ -287,6 +287,9 @@ impl FinancingRegister {
                         ),
                     );
                 }
+                // An event contract is fully funded (ADR 0658): it carries no
+                // financing leg, so it has nothing to register here.
+                (InstrumentType::EventContract, _) => {}
                 _ => {}
             }
         }
