@@ -565,11 +565,51 @@ pub struct TickDesk {
     /// The same fused state as beliefs REASON may be narrowed by, never
     /// raised (ADR 0151 decision 3, R12-TICK-1002).
     outside_priors: Vec<qip_kernel::fusion::OutsidePrior>,
+    /// Where the last round's mismatches were routed, until the node takes
+    /// them (R12-TICK-2084, ADR 0609).
+    mismatch_routing: qip_kernel::mismatch::MismatchRouting,
     /// The platform's book as signed weights of equity, set by the caller
     /// before a round (R12-TICK-10121). Empty means no book was offered.
     book: BTreeMap<String, f64>,
     /// Multi-leg plans for the next round's replay (R12-TICK-1176).
     plans: Vec<qip_simulation_engine::tick_replay::MultiLegPlan>,
+}
+
+/// What [`dispatch_mismatches`] did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MismatchDispatch {
+    /// What the falsification book did with the relative-value proposals.
+    pub admission: qip_kernel::mismatch::MismatchAdmission,
+    /// What the research loop did with the investigations and challenges.
+    pub candidates: crate::research::MismatchCandidates,
+}
+
+/// Hand a round's routed mismatches to their consumers: proposals to the
+/// platform's falsification book (charged to the proposal family's trial
+/// budget and journaled), investigations and evidence challenges to the
+/// research loop as acquisition candidates (charged to the sweep's acquisition
+/// budget when launched). Paper-only by construction: none of the three
+/// records carries a quantity, price or side. Without a research loop the
+/// investigations and challenges are not offered anywhere, never handed to
+/// discovery around the budget.
+pub fn dispatch_mismatches(
+    desk: &mut TickDesk,
+    platform: &mut qip_kernel::Platform,
+    research: Option<&mut crate::research::ResearchLoop>,
+    now: Timestamp,
+) -> Result<MismatchDispatch> {
+    let routing = desk.take_mismatch_routing();
+    let admission = platform.admit_proposed_hypotheses(routing.proposals, now)?;
+    let candidates = match research {
+        Some(research) => {
+            research.admit_mismatch_candidates(&routing.questions, &routing.challenges, now)
+        }
+        None => crate::research::MismatchCandidates::default(),
+    };
+    Ok(MismatchDispatch {
+        admission,
+        candidates,
+    })
 }
 
 impl TickDesk {
@@ -586,6 +626,7 @@ impl TickDesk {
             tree: None,
             posteriors: BTreeMap::new(),
             outside_priors: Vec::new(),
+            mismatch_routing: qip_kernel::mismatch::MismatchRouting::default(),
             book: BTreeMap::new(),
             plans: Vec::new(),
         }
@@ -600,6 +641,17 @@ impl TickDesk {
     /// the next round's portfolio outcome distribution.
     pub fn set_portfolio_weights(&mut self, weights: BTreeMap<String, f64>) {
         self.book = weights;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_mismatch_routing(&mut self, routing: qip_kernel::mismatch::MismatchRouting) {
+        self.mismatch_routing = routing;
+    }
+
+    /// Take the mismatches the last round routed, leaving none, so a round
+    /// that fused nothing new does not re-dispatch the previous one's.
+    pub fn take_mismatch_routing(&mut self) -> qip_kernel::mismatch::MismatchRouting {
+        std::mem::take(&mut self.mismatch_routing)
     }
 
     pub const fn config(&self) -> &TickDeskConfig {
@@ -1027,6 +1079,7 @@ impl TickDesk {
             .flat_map(|event| event.reactions.iter().cloned())
             .collect();
         round.mismatches = fused.mismatches().len();
+        self.mismatch_routing = qip_kernel::mismatch::route(&fused);
         let map = fused.opportunity_map(MAP_CAPACITY, MAP_TTL)?;
         for region in &self.config.map_regions {
             let authorised = match &round.model_card {

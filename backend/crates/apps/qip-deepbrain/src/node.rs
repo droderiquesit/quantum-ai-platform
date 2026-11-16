@@ -880,6 +880,22 @@ pub fn run_with(
             } else if desk.due(cycles) {
                 cognition.held.insert(crate::cognition::CognitiveLoop::Tick);
             }
+            // What the market did against the world model reaches one paper-only
+            // consumer per kind (R12-TICK-2084, ADR 0609): proposals to the
+            // falsification book, investigations and challenges to the
+            // research loop's acquisition candidates (charged to its budget at
+            // the next ranked launch). Advisory like the desk: a refused
+            // journal is a side note on the cycle line, never a stopped node.
+            if let Err(error) = crate::tick_desk::dispatch_mismatches(
+                desk,
+                platform,
+                loops.research.as_deref_mut(),
+                now,
+            ) {
+                outcome
+                    .side_failures
+                    .push(format!("mismatch dispatch: {}", error.message()));
+            }
         }
         // Lost: the rounds due on this cycle wait in the backlog. Refused or
         // unqueued, they are still not run — a full backlog is not a reason
@@ -1176,6 +1192,81 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
     use qip_storage::MemoryKeyValueStore;
+
+    /// R12-TICK-2084: a round's routed mismatches reach their consumers — the
+    /// proposal the platform's falsification book (charged and journaled), the
+    /// investigation and the challenge the research loop's candidates — and are
+    /// taken, not kept. Mutations: drop `admit_proposed_hypotheses` in
+    /// `dispatch_mismatches` (admitted 0); drop the `admit_mismatch_candidates`
+    /// call (no candidate accounted for); drop the `take` in
+    /// `take_mismatch_routing` (the second dispatch re-sends).
+    #[test]
+    fn a_rounds_mismatches_reach_falsification_and_the_research_loops_candidates() {
+        use qip_kernel::mismatch::{
+            EvidenceChallenge, HypothesisStatus, MismatchRouting, ProposedHypothesis,
+            ResearchQuestion,
+        };
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock);
+        let mut desk = crate::tick_desk::TickDesk::new(
+            crate::tick_desk::TickDeskConfig::off(),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+            Arc::new(qip_storage::blob::MemoryBlobStore::new()),
+        );
+        let mut research = crate::research::ResearchLoop::new(
+            crate::research::ResearchConfig::default(),
+            std::collections::BTreeMap::new(),
+        )
+        .expect("the research loop assembles");
+        desk.seed_mismatch_routing(MismatchRouting {
+            questions: vec![ResearchQuestion {
+                event: "evt-a".into(),
+                instrument: "AAA".into(),
+                reason: "no reaction".into(),
+                prior: 0.8,
+            }],
+            challenges: vec![EvidenceChallenge {
+                event: "evt-b".into(),
+                evidence_quality: 0.25,
+                reason: "weak".into(),
+                instruments: vec!["BBB".into()],
+            }],
+            proposals: vec![ProposedHypothesis {
+                event: "evt-c".into(),
+                instrument: "CCC".into(),
+                expected_direction: 1.0,
+                measured_bps: -12.0,
+                status: HypothesisStatus::Proposed,
+            }],
+        });
+        let done = crate::tick_desk::dispatch_mismatches(
+            &mut desk,
+            &mut platform,
+            Some(&mut research),
+            start(),
+        )
+        .expect("dispatches");
+        assert_eq!(done.admission.admitted, 1);
+        assert_eq!(platform.falsification().proposed().len(), 1);
+        let c = done.candidates;
+        assert_eq!(
+            c.queued + c.unviable + c.refused + c.held,
+            2,
+            "a mismatch was not accounted for: {c:?}"
+        );
+        let again = crate::tick_desk::dispatch_mismatches(
+            &mut desk,
+            &mut platform,
+            Some(&mut research),
+            start(),
+        )
+        .expect("dispatches");
+        assert_eq!(
+            (again.admission.admitted, again.candidates.queued),
+            (0, 0),
+            "a round was dispatched twice"
+        );
+    }
 
     /// R12-TICK-2085: the run loop's hand-off replaces the engine's priors
     /// with the desk's posteriors, and leaves them alone when there is no

@@ -147,6 +147,13 @@ fn realised_volatility(closes: &[f64]) -> f64 {
 pub struct Book {
     ledger: TrialLedger,
     last: Option<FalsificationPass>,
+    /// Relative-value hypotheses a world/market mismatch proposed
+    /// (R12-TICK-2084). Held as proposed: no falsifier has been evaluated
+    /// against them and nothing here sizes from one.
+    proposed: Vec<crate::mismatch::ProposedHypothesis>,
+    proposed_capacity: usize,
+    evicted: u64,
+    refused_on_budget: u64,
 }
 
 impl Default for Book {
@@ -160,7 +167,99 @@ impl Book {
         Self {
             ledger: TrialLedger::new(),
             last: None,
+            proposed: Vec::new(),
+            proposed_capacity: crate::mismatch::PROPOSED_CAPACITY,
+            evicted: 0,
+            refused_on_budget: 0,
         }
+    }
+
+    /// Take a relative-value hypothesis a mismatch proposed, charging it to
+    /// [`crate::mismatch::PROPOSAL_FAMILY`]'s trial budget (R12-TICK-2084,
+    /// ADR 0609).
+    ///
+    /// Idempotent on the event and instrument, checked **before** the charge,
+    /// so a round that re-fuses an event neither counts one idea twice nor
+    /// spends the family's budget on it. A family at its budget refuses the
+    /// proposal and counts it ([`Self::proposals_refused_on_budget`]); a full
+    /// working set evicts the oldest and counts that
+    /// ([`Self::proposals_evicted`]), returning the evicted record so the
+    /// caller can journal it. Nothing is dropped silently.
+    pub fn propose(
+        &mut self,
+        hypothesis: crate::mismatch::ProposedHypothesis,
+    ) -> Result<crate::mismatch::ProposalOutcome, qip_core::error::Error> {
+        use crate::mismatch::ProposalOutcome;
+        use qip_world_model::falsification::ProposalCharge;
+        if self
+            .proposed
+            .iter()
+            .any(|p| p.event == hypothesis.event && p.instrument == hypothesis.instrument)
+        {
+            return Ok(ProposalOutcome::Duplicate);
+        }
+        let (spent, budget) = match self
+            .ledger
+            .charge_proposal(crate::mismatch::PROPOSAL_FAMILY)?
+        {
+            ProposalCharge::Charged { spent, budget } => (spent, budget),
+            ProposalCharge::BudgetExhausted { spent, budget } => {
+                self.refused_on_budget += 1;
+                return Ok(ProposalOutcome::BudgetExhausted { spent, budget });
+            }
+        };
+        let evicted = if self.proposed.len() >= self.proposed_capacity {
+            self.evicted += 1;
+            Some(self.proposed.remove(0))
+        } else {
+            None
+        };
+        self.proposed.push(hypothesis);
+        Ok(ProposalOutcome::Admitted {
+            spent,
+            budget,
+            evicted,
+        })
+    }
+
+    /// A book with the proposal working set the log holds
+    /// ([`crate::mismatch::resume`]): the proposals, the trials spent on the
+    /// proposal family, and the eviction and budget-refusal counts. The log,
+    /// not memory, is the record, so a restart does not hand the family a
+    /// fresh budget.
+    pub fn restored(
+        proposed: Vec<crate::mismatch::ProposedHypothesis>,
+        spent: usize,
+        evicted: u64,
+        refused_on_budget: u64,
+    ) -> Result<Self, qip_core::error::Error> {
+        let mut book = Self::new();
+        book.ledger
+            .restore_spent(crate::mismatch::PROPOSAL_FAMILY, spent)?;
+        book.proposed = proposed;
+        book.evicted = evicted;
+        book.refused_on_budget = refused_on_budget;
+        Ok(book)
+    }
+
+    /// The most proposals the working set holds before it evicts the oldest.
+    pub const fn proposed_capacity(&self) -> usize {
+        self.proposed_capacity
+    }
+
+    /// Proposals the working set evicted to stay within its capacity.
+    pub const fn proposals_evicted(&self) -> u64 {
+        self.evicted
+    }
+
+    /// Proposals refused because the family had no trial budget left.
+    pub const fn proposals_refused_on_budget(&self) -> u64 {
+        self.refused_on_budget
+    }
+
+    /// The hypotheses proposed so far, oldest first.
+    pub fn proposed(&self) -> &[crate::mismatch::ProposedHypothesis] {
+        &self.proposed
     }
 
     /// Cumulative trials and recorded refutations, for an operator and for a

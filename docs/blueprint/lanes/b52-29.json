@@ -1,0 +1,87 @@
+{
+ "lane": "29",
+ "rows": [
+  {
+   "id": "R12-COMMERCE-5096",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "The commerce plane's inventory Ledger is journalled each SIMULATE pass (CommerceLedgerJournalled, origin kernel/commerce-ledger) and replayed into the plane at install_breadth, with the purchase counter, so a restarted plane no longer reissues unit ids. Compiled, tested and mutation-verified.",
+   "remains": "Sales, settlements, listings and held units are not resumed, so pre-restart units stay in the ledger and are not re-listed. The dev mount patch for the commerce plan is not applied (deployable/e2e false).",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_restarted_commerce_plane_resumes_its_ledger_from_the_log_and_never_reissues_a_unit_id"
+   ],
+   "test_command": "cargo test -p qip-kernel --test breadth -- a_restarted_commerce",
+   "mutations": [
+    "breadth.rs, removed the resume_commerce_ledger call in install_breadth: 'the restarted ledger is not the one the log holds' (left: [])",
+    "breadth.rs, removed the journal_commerce_ledger call in breadth_simulate: same failing assertion"
+   ],
+   "commit": "608317dd"
+  },
+  {
+   "id": "R12-COVERAGE-5104",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Added InstrumentType::EventContract (Prediction class), price above one refused at validate; is_derivative and has_maturity are now exhaustive matches naming every variant; event_contract_gate refuses, before an order exists, a sell beyond the held position, a holding past one unit, a price outside [0,1] and an unfunded premium, at order_for and submit_released. ADR 0658 (Proposed). Compiled, tested, mutation-verified. Round 3: hedge.rs is_linear is an exhaustive match naming EventContract (non-linear); financing.rs has an explicit EventContract arm; the funding, one-unit and short checks count earlier admissions (order_for reservations, cleared each cycle) and open OMS orders, with cash pooled across event contracts. Round 5: financing.rs FinancingRegister's wildcard is replaced by an inner exhaustive match naming every InstrumentType, so a new variant fails to compile there.",
+   "remains": "Pricing only from a simulated-exchange print and settlement on an operator-declared dated outcome (ADR decisions 3 and 4) are not built. On the merged tree documentation passes 28/28 (ADR 0658 index row restored by the revert of fdeb1febd).",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit",
+    "backend/crates/runtime/qip-kernel/src/event_contract_gate.rs::tests::a_buy_the_cash_does_not_cover_is_refused_as_not_fully_funded",
+    "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::two_event_contract_buys_in_one_pass_are_not_both_funded_from_the_same_cash",
+    "backend/crates/runtime/qip-kernel/src/event_contract_gate.rs::tests::cash_an_earlier_admission_claimed_is_not_spent_twice",
+    "backend/crates/runtime/qip-kernel/src/hedge.rs::tests::a_linear_book_has_a_measured_zero_gamma_and_vega_and_anything_else_has_none"
+   ],
+   "test_command": "cargo test -p qip-kernel --test asset_classes --lib event_contract",
+   "mutations": [
+    "object.rs, loosened the price bound to 1_000_000: 'a price above the one-unit payoff was not refused'",
+    "asset_class.rs, mapped EventContract to Derivative: Prediction class assertion failed (left: Derivative)",
+    "event_contract_gate.rs, sell check disabled: expected a refusal naming 'would be a short'",
+    "one-unit check disabled: expected a refusal naming 'bounded to one unit'",
+    "price check disabled: expected a refusal naming 'outside [0, 1]'",
+    "funding check disabled: unit test a_buy_the_cash_does_not_cover... FAILED",
+    "platform.rs order_for reservation disabled: 'the second buy was funded from cash the first had claimed'",
+    "event_contract_gate.rs cash sum zeroed: same failing assertion",
+    "hedge.rs is_linear EventContract => true: a_linear_book_... FAILED",
+    "financing.rs, removed the EventContract arm from the exhaustive match: cargo check fails E0004 non-exhaustive patterns: &InstrumentType::EventContract not covered"
+   ],
+   "commit": "ecf1c506, 430fd255, 116ead9c, merge d10d72edb, revert 3fddfb257"
+  },
+  {
+   "id": "R12-COVERAGE-7163",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Not attempted: composite that closes only when constituents R12-COVERAGE-5099..5106 are COMPLETE and a suite proves it.",
+   "remains": "Constituents are PARTIAL (5104 advanced one slice here). No composite suite can honestly pass.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-COVERAGE-7170",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Not attempted: five constituents (R12-EXPAND-6055, 6056, 6057, 6061, 6062) are PARTIAL; each needs its own slice, including a production caller for extend_ontology and six more capability verbs.",
+   "remains": "All of it.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-COVERAGE-7175",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "built_unverified": false,
+   "what": "Not attempted: closes when R12-EXPAND-6049 does. Its remaining executors (lawful-data discovery, connector creation, specialist instantiation) cross crate boundaries (qip-expansion cannot depend on qip-data-finder) and rest on ADR 0157/0158 gap-only decisions, so they need a design ruling first.",
+   "remains": "All of it.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}
