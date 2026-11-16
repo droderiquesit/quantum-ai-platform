@@ -322,7 +322,12 @@ fn research_pass(
         .as_mut()
         .and_then(|engine| engine.discovery_desk_mut())
     {
-        desk.hand_off(&round.scouted);
+        // Only the new-source queries are the desk's: the other kinds are
+        // routed to their own handler, or refused with a reason
+        // (R12-DATA-3105).
+        let (to_desk, routed) = crate::acquisition_dispatch::dispatch(&round.scouted);
+        desk.hand_off(&to_desk);
+        round.dispatched = routed;
     }
     // The evolution round that preceded this sweep in the same gap rides on
     // the sweep record (R12-EXPAND-1117), so a reader of the research round
@@ -397,6 +402,16 @@ fn tick_pass(
     outcome: &mut StepOutcome,
 ) {
     let world = platform.world();
+    // R12-TICK-10121: price the grown worlds against what the platform holds.
+    match crate::tick_book::book_weights(&platform.positions_at_cost(), platform.equity()) {
+        Ok(weights) => desk.set_portfolio_weights(weights),
+        Err(error) => {
+            desk.set_portfolio_weights(std::collections::BTreeMap::new());
+            outcome
+                .side_failures
+                .push(format!("tick desk book: {}", error.message()));
+        }
+    }
     match desk.maybe_round_with_orders(
         world.graph(),
         cycle,

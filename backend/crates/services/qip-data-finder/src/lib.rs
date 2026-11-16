@@ -130,7 +130,7 @@ pub use manipulation::ManipulationRisk;
 pub use personal_data::{PersonalDataFinding, PersonalDataScreen, PersonalIdentifier};
 pub use probe::{
     HeadResponse, InMemoryProbe, NetworkProbe, PayloadSample, ProbeEvidence, RobotsFetch,
-    SampleManifest, SourceProbe,
+    RobotsRecord, SampleManifest, SourceProbe,
 };
 pub use quality::{SourceCost, SourceQuality};
 pub use reference::{DataPeriod, DataReference, RevisionCheck, SourceOrigin};

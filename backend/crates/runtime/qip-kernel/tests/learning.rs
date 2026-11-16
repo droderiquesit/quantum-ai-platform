@@ -3821,6 +3821,17 @@ fn a_cells_refused_cycle_is_priced_against_later_prices_and_charged_to_its_gate(
         bought.is_positive() && (bought - sold).is_positive(),
         "the buy leg earned {bought} and the sell leg {sold} on a rising tape"
     );
+    // One score for the whole cycle, the legs' earnings summed (R12-MESH-5068).
+    // Mutation: `cell_cycle_scores` returning the per-leg count fails the
+    // length assertion.
+    let cycles = platform.cell_cycle_scores();
+    assert_eq!(
+        cycles.len(),
+        1,
+        "two legs of one refusal are one cycle: {cycles:?}"
+    );
+    assert_eq!(cycles[0].legs_scored, 2);
+    assert_eq!(cycles[0].would_have_earned, bought + sold);
     // And kept out of the desk's own declined sample, which sizes the desk.
     assert!(platform.declined_scores().is_empty());
     Ok(())
@@ -3892,6 +3903,134 @@ fn a_venue_halt_reaches_the_centre_typed_and_the_next_book_is_read_under_it() ->
         map.usable_venue_count(),
         0,
         "a halted venue's book was read as tradable depth"
+    );
+    Ok(())
+}
+
+/// R12-TICK-2053: a record taken in under its admission header is refused
+/// when its entitlement has lapsed by the time the platform absorbs it. The
+/// header is checked once, when it is built; a licence keeps expiring.
+///
+/// Mutation: delete the `is_granted(now)` refusal in
+/// `Platform::observe_admitted`: the late batch is absorbed and the first
+/// assertion fails.
+#[test]
+fn an_admitted_record_whose_entitlement_lapsed_before_absorption_is_refused_and_reported()
+-> Result<()> {
+    use qip_contracts::admission::Admitted;
+    use qip_contracts::governance::{Entitlement, Usage};
+    use qip_market_ingestion::admit::{admit, record_digest};
+
+    let mut platform = platform()?;
+    let at = start().saturating_add(Duration::from_secs(60));
+    let admitted = |price: &str, until: Timestamp| -> Result<Admitted<SensedRecord>> {
+        let record = late_tick("AAA", at, Duration::from_secs(5), price);
+        let hash = record_digest(&record)?;
+        admit(
+            record,
+            hash,
+            Entitlement::Granted {
+                dataset: "xnys-ticks".to_string(),
+                usage: Usage::Derive,
+                expires_at: until,
+            },
+            Duration::ZERO,
+        )
+    };
+    let expiry = at.saturating_add(Duration::from_secs(3600));
+
+    // Premise: inside the licence the same path absorbs the record.
+    let inside = at.saturating_add(Duration::from_secs(600));
+    assert_eq!(
+        platform.observe_admitted(vec![admitted("123", expiry)?], inside),
+        1,
+        "premise: a licensed admitted record was refused"
+    );
+
+    let after = expiry.saturating_add(Duration::from_secs(1));
+    assert_eq!(
+        platform.observe_admitted(vec![admitted("124", expiry)?], after),
+        0,
+        "a record whose licence had lapsed was absorbed"
+    );
+    let report = platform.run_cycle(after);
+    let problems: Vec<&String> = report
+        .stages
+        .iter()
+        .flat_map(|stage| stage.problems.iter())
+        .collect();
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("no longer granted")),
+        "the refusal was not reported as a capture problem: {problems:?}"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-6002 (ADR 0683): the declined path and the fill a cycle priced
+/// are both in the one training export, read back from the event log, each
+/// under its own kind and naming its own order. The export is what a replay
+/// of the journal produces, so a record that is in the log and not in the
+/// export, or the reverse, fails here.
+///
+/// Mutation: not run (nothing was compiled). Dropping the `declined_outcomes`
+/// arm of `TrainingExport::from_counterfactuals` fails the Declined count;
+/// dropping the `fill_outcomes` arm fails the fill count.
+#[test]
+fn the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced() -> Result<()> {
+    use qip_kernel::training_export::PathKind;
+
+    let mut platform = platform()?;
+    platform.observe(quiet_bars("AAA", 90));
+    let declined = refuse_one(&mut platform, "prop-refused", start())?;
+    let filled = fill_one(&mut platform, "prop-filled", start())?;
+    assert_eq!(
+        platform.declined_awaiting_score(),
+        1,
+        "premise: one refusal"
+    );
+    assert_eq!(platform.filled_awaiting_score(), 1, "premise: one fill");
+    assert!(
+        platform.training_export()?.records.is_empty(),
+        "premise: nothing is priced, so nothing is exported"
+    );
+
+    platform.observe(flat_bars_after("AAA", start(), 5, 300.0));
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+    let journaled = platform.journal_entries()?[0]
+        .counterfactuals
+        .clone()
+        .expect("the cycle journaled what it priced");
+    assert_eq!(
+        (journaled.scored, journaled.fills_scored),
+        (1, 1),
+        "premise: both paths were priced in the one cycle"
+    );
+
+    let export = platform.training_export()?;
+    assert_eq!(export.count(PathKind::Declined), 1);
+    assert_eq!(
+        export.count(PathKind::Filled) + export.count(PathKind::PartiallyFilled),
+        1
+    );
+    let declined_record = export
+        .records
+        .iter()
+        .find(|record| record.path == PathKind::Declined)
+        .expect("the declined path is exported");
+    assert_eq!(declined_record.order_id, declined.as_str());
+    assert!(declined_record.would_have_earned.is_some());
+    let fill_record = export
+        .records
+        .iter()
+        .find(|record| record.path != PathKind::Declined)
+        .expect("the fill is exported");
+    assert_eq!(fill_record.order_id, filled.as_str());
+    assert_eq!(
+        export.to_json_lines()?.len(),
+        export.records.len(),
+        "one line per record"
     );
     Ok(())
 }

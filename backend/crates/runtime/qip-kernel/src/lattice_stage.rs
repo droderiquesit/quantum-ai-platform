@@ -199,6 +199,37 @@ pub fn signals_from_world(
     }
 }
 
+/// The buy-positive imbalance per subject from one cycle's signed aggressor
+/// flow (WORLD-3085, ADR 0632), across every venue that printed it.
+///
+/// Volume-weighted over the venues together, not averaged per venue: two
+/// venues printing 1 lot and 1,000 lots on opposite sides are one thousand
+/// lots of pressure, not a balanced book. A subject whose flow is empty, whose
+/// volume is zero or whose ratio is not finite is **absent**, never `0.0`:
+/// the flow member reads an absent subject as "no flow seen" and states the
+/// level, whereas a stated zero would be a measured balance it never took.
+/// The flow is the paper feed's own signed aggressor prints
+/// (`Platform::record_order_flow`) and nothing else; nothing here guesses a
+/// side.
+pub fn flow_imbalance_by_subject<'a>(
+    flows: impl IntoIterator<Item = (&'a str, &'a qip_world_model::order_flow::FlowObservation)>,
+) -> BTreeMap<String, f64> {
+    let mut volume: BTreeMap<&str, (f64, f64)> = BTreeMap::new();
+    for (subject, flow) in flows {
+        let entry = volume.entry(subject).or_insert((0.0, 0.0));
+        entry.0 += flow.buy_volume.to_f64();
+        entry.1 += flow.sell_volume.to_f64();
+    }
+    volume
+        .into_iter()
+        .filter_map(|(subject, (buy, sell))| {
+            let total = buy + sell;
+            let ratio = (buy - sell) / total;
+            (total > 0.0 && ratio.is_finite()).then(|| (subject.to_string(), ratio))
+        })
+        .collect()
+}
+
 /// One instrument as the pass reads it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LatticeTarget {
@@ -273,6 +304,42 @@ pub struct LatticeReview {
     /// Defaulted so a record journaled before the fan-out still decodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ForecastTask>,
+    /// What the row specialists were handed at this pass beyond the bars
+    /// (ADR 0632), so a replay from the log alone can tell a pass that read
+    /// no flow from a pass that was never fed. Empty when nothing was set.
+    #[serde(default, skip_serializing_if = "SignalsRead::is_empty")]
+    pub signals_read: SignalsRead,
+}
+
+/// A summary of the [`LatticeSignals`] one pass consumed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SignalsRead {
+    /// Buy-positive imbalance per subject, from the paper feed's signed flow.
+    pub flow_imbalance: BTreeMap<String, f64>,
+    /// Count of live causal claims bearing on each subject.
+    pub structural_claims: BTreeMap<String, usize>,
+    /// The source of the pending catalyst, if one was read.
+    pub catalyst: Option<String>,
+}
+
+impl SignalsRead {
+    fn of(signals: &LatticeSignals) -> Self {
+        Self {
+            flow_imbalance: signals.flow_imbalance.clone(),
+            structural_claims: signals
+                .structural_claims
+                .iter()
+                .map(|(subject, claims)| (subject.clone(), claims.len()))
+                .collect(),
+            catalyst: signals.pending_catalyst.as_ref().map(|c| c.source.clone()),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.flow_imbalance.is_empty()
+            && self.structural_claims.is_empty()
+            && self.catalyst.is_none()
+    }
 }
 
 impl EventBody for LatticeReview {
@@ -662,6 +729,7 @@ impl LatticeStage {
         let mut fallbacks = 0;
         let mut inconsistencies = Vec::new();
         let signals = std::mem::take(&mut self.signals);
+        let signals_read = SignalsRead::of(&signals);
         for target in order {
             let surprised = inputs.surprised.contains(&target.subject);
             self.learn_regime_return(target);
@@ -808,6 +876,7 @@ impl LatticeStage {
             refused,
             backlog: self.backlog.len(),
             tasks,
+            signals_read,
             weights,
             scorecards: LatticeHorizon::ALL
                 .iter()

@@ -66,6 +66,7 @@ pub mod execution;
 pub mod harness;
 pub mod market;
 pub mod montecarlo;
+pub mod participants;
 pub mod scenario;
 pub mod tick_replay;
 /// The overfitting corrections. Their code is `qip_numerics::validation`

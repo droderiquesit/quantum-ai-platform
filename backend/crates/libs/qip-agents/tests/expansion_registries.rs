@@ -544,14 +544,25 @@ fn a_passing_evaluation_is_not_replaced_and_an_unregistered_tool_holds_none() {
 
 #[test]
 fn a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_experiment() {
+    use qip_agents::research::{BenchmarkRef, campaign_id, experiment_ref};
+    let question = "moon phase predicts oil";
+    let id = campaign_id(question).unwrap();
+    let bench = BenchmarkRef::new(
+        "signal capability",
+        "the unconditioned baseline",
+        "IncrementalValue",
+    )
+    .unwrap();
     let mut registry = ResearchRegistry::new();
     assert_eq!(registry.screen("Moon phase predicts oil"), Screening::Novel);
     registry
-        .record(
-            "moon phase predicts oil",
+        .record_concluded(
+            question,
             Verdict::Null {
                 evidence: "exp-17".into(),
             },
+            &[experiment_ref(&id, "shadow")],
+            Some(&bench),
         )
         .unwrap();
     match registry.screen("  Moon   Phase predicts OIL ") {
@@ -560,11 +571,13 @@ fn a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_exper
     }
     assert!(
         registry
-            .record(
+            .record_concluded(
                 "x",
                 Verdict::Null {
                     evidence: String::new()
-                }
+                },
+                &[experiment_ref(&campaign_id("x").unwrap(), "shadow")],
+                Some(&bench),
             )
             .is_err()
     );
@@ -572,17 +585,30 @@ fn a_repeated_hypothesis_is_matched_to_its_recorded_null_result_before_any_exper
 
 /// R12-COVERAGE-7170: the research registry is versioned like the ontology
 /// registry. Recording once overwrote the entry, so a null result re-opened
-/// later was lost from the record it was screened against. Mutation:
-/// accepting a version equal to the latest lets the stale `version 2` in.
+/// later was lost from the record it was screened against. Since
+/// R12-EXPAND-6023 versions are only ever the next one (the stale-version
+/// refusal on the crate-private `record_version` is held in `research.rs`'s
+/// own tests); here every version stays readable.
 #[test]
-fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_version_is_kept() {
+fn a_research_verdict_recorded_again_keeps_every_version() {
+    use qip_agents::research::{BenchmarkRef, campaign_id, experiment_ref};
+    let question = "credit leads equity";
+    let id = campaign_id(question).unwrap();
+    let bench = BenchmarkRef::new(
+        "signal capability",
+        "the unconditioned baseline",
+        "IncrementalValue",
+    )
+    .unwrap();
     let mut registry = ResearchRegistry::new();
     let first = registry
-        .record(
-            "credit leads equity",
+        .record_concluded(
+            question,
             Verdict::Null {
                 evidence: "exp-1".into(),
             },
+            &[experiment_ref(&id, "shadow")],
+            Some(&bench),
         )
         .unwrap();
     let second = registry
@@ -590,45 +616,56 @@ fn a_research_verdict_that_does_not_raise_the_version_is_refused_and_every_versi
         .unwrap();
     // Premise: two verdicts, numbered in order, both held.
     assert_eq!((first, second), (1, 2));
-    assert_eq!(registry.history("credit leads equity").len(), 2);
-
-    for stale in [0, 1, 2] {
-        assert!(
-            registry
-                .record_version(
-                    "credit leads equity",
-                    stale,
-                    Verdict::Supported {
-                        evidence: "exp-2".into(),
-                    },
-                )
-                .is_err(),
-            "version {stale} was accepted over latest 2"
-        );
-    }
-    assert_eq!(registry.latest_version("credit leads equity"), Some(2));
+    assert_eq!(registry.history(question).len(), 2);
+    assert_eq!(registry.latest_version(question), Some(2));
     assert_eq!(
-        registry.screen("credit leads equity"),
+        registry.screen(question),
         Screening::AlreadyKnown {
             hypothesis: "Credit leads  equity".into(),
         }
     );
     assert_eq!(
-        registry.history("credit leads equity")[0].verdict,
+        registry.history(question)[0].verdict,
         Verdict::Null {
             evidence: "exp-1".into()
         }
     );
-    registry
-        .record_version(
-            "credit leads equity",
-            3,
+    let third = registry
+        .record_concluded(
+            question,
             Verdict::Supported {
                 evidence: "exp-2".into(),
             },
+            &[experiment_ref(&id, "live")],
+            Some(&bench),
         )
         .unwrap();
-    assert_eq!(registry.latest_version("credit leads equity"), Some(3));
+    assert_eq!(third, 3);
+}
+
+/// R12-EXPAND-6023: the plain `record` door takes only an Open question. A
+/// Null recorded through it named no experiment and no benchmark yet
+/// stopped every later repeat of the question. Mutation: delete the
+/// `!matches!(verdict, Verdict::Open)` refusal in `ResearchRegistry::record`
+/// and the Null is accepted.
+#[test]
+fn a_concluded_verdict_cannot_enter_the_research_registry_through_the_uncited_door() {
+    let mut registry = ResearchRegistry::new();
+    for verdict in [
+        Verdict::Null {
+            evidence: "exp-1".into(),
+        },
+        Verdict::Supported {
+            evidence: "exp-1".into(),
+        },
+    ] {
+        assert!(
+            registry.record("credit leads equity", verdict).is_err(),
+            "a concluded verdict was recorded with no experiment and no benchmark"
+        );
+    }
+    assert!(registry.history("credit leads equity").is_empty());
+    assert_eq!(registry.record("credit leads equity", Verdict::Open), Ok(1));
 }
 
 mod memory_registry {

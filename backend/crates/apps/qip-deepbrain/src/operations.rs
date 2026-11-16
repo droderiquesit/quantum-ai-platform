@@ -92,6 +92,64 @@ pub fn runbooks() -> Vec<Runbook> {
     }]
 }
 
+/// The SHA-256 of a runbook set, as its canonical text: the runbooks in name
+/// order, each its name, its action and its targets in target order, every
+/// free-text field length-prefixed so a name holding the separator cannot make
+/// two different sets digest alike. A set is a list of what this process may
+/// do to itself unattended, so a single added target must change the digest.
+pub fn runbook_set_digest(set: &[Runbook]) -> String {
+    let text = |value: &str| format!("{}:{value}", value.len());
+    let mut ordered: Vec<&Runbook> = set.iter().collect();
+    ordered.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut canonical = String::from("runbook-set-v1");
+    for runbook in ordered {
+        canonical.push_str(&format!(
+            "|runbook|{}|{}",
+            text(&runbook.name),
+            text(&runbook.action)
+        ));
+        for target in &runbook.targets {
+            canonical.push_str(&format!("|target|{}", text(target)));
+        }
+    }
+    qip_core::sha256_hex(canonical.as_bytes())
+}
+
+/// The digest of the runbook set a person reviewed (ADR 0683, decisions
+/// 6-8). It is changed in the same commit that changes [`runbooks`], and a
+/// commit that changes one without the other fails
+/// `the_shipped_runbook_set_is_the_reviewed_one` at the pipeline, before an
+/// image exists to attest.
+///
+/// This constant is **not itself a signature**. It is what makes the image
+/// the signature: the deep brain runs only under the deny-by-default Binary
+/// Authorization policy, whose attestor key CI alone holds, and no runbook is
+/// ever read at run time, so the set in the running process is the set in the
+/// attested image. A check inside the same build would prove nothing a
+/// tampered build could not also fake; the attestation is what a tampered
+/// build cannot have.
+pub const REVIEWED_RUNBOOK_SET_DIGEST: &str =
+    "0cbfa7b37e3d0c30bd085fdb0893457e9363c892291e39a1edb5719e0581039c";
+
+/// `set` if its digest is `reviewed`, else a refusal naming both digests and
+/// what to do: the process stops rather than hold a remediation set nobody
+/// reviewed.
+pub fn verified_runbooks(set: Vec<Runbook>, reviewed: &str) -> Result<Vec<Runbook>> {
+    let actual = runbook_set_digest(&set);
+    if actual != reviewed {
+        return Err(Error::denied(format!(
+            "the runbook set digests to {actual} and the reviewed set to {reviewed}; a runbook              was added, removed or widened without review. Review the change, then update              REVIEWED_RUNBOOK_SET_DIGEST in the same commit"
+        )));
+    }
+    Ok(set)
+}
+
+/// The runbooks this process runs: [`runbooks`], refused unless they are the
+/// reviewed set.
+fn reviewed_runbooks() -> Result<Vec<Runbook>> {
+    verified_runbooks(runbooks(), REVIEWED_RUNBOOK_SET_DIGEST)
+}
+
 /// The producer every remediation record carries.
 pub const REMEDIATION_ORIGIN: &str = "deepbrain/aiops";
 
@@ -880,9 +938,9 @@ impl Operations {
             timeline,
             remediator: match journal {
                 Some(sink) => {
-                    Remediator::journalled(runbooks(), CapabilitySwitch::default(), sink)?
+                    Remediator::journalled(reviewed_runbooks()?, CapabilitySwitch::default(), sink)?
                 }
-                None => Remediator::new(runbooks(), CapabilitySwitch::default())?,
+                None => Remediator::new(reviewed_runbooks()?, CapabilitySwitch::default())?,
             },
             book,
             incidents,
@@ -1101,6 +1159,7 @@ impl Operations {
             path.slo.service != critical_paths::EDGE_NODE_SERVICE
         });
         critical_paths::record(&metrics, &statuses);
+        critical_paths::record(&metrics, &critical_paths::evaluate_ai(&metrics.snapshot()));
         round.objectives_missed = statuses
             .iter()
             .filter(|s| s.is_observed() && !s.is_met)
@@ -1124,6 +1183,20 @@ impl Operations {
             && let Some(outcome) = quantum_outcome(&routing)
         {
             metrics.count(names::QUANTUM_JOBS, labels([("outcome", outcome)]));
+            // A quantum answer that ran, read against the classical
+            // baseline solved beside it (R12-OBS-9164). A negative
+            // improvement means the baseline was the better answer.
+            if outcome == "succeeded" {
+                let delta = if routing.improvement_over_classical < 0.0 {
+                    "worse"
+                } else {
+                    "not_worse"
+                };
+                metrics.count(
+                    names::QUANTUM_CLASSICAL_CHECKS,
+                    labels([("outcome", delta)]),
+                );
+            }
             round.quantum = Some(outcome);
         }
 

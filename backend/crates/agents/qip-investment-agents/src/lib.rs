@@ -31,6 +31,7 @@ pub mod manifests;
 pub mod meta_brain;
 pub mod poisoning;
 pub mod portfolio_brain;
+pub mod private_markets_brain;
 pub mod reasoning;
 pub mod review;
 pub mod simulation;
@@ -39,5 +40,5 @@ pub mod vocabulary;
 pub mod world_model_brain;
 
 pub use chief::{ChiefInvestmentIntelligence, Organisation, OrganisationReport};
-pub use desk::{BookView, ComplianceView, Desk, MarketView, RiskView};
+pub use desk::{BookView, ComplianceView, Desk, GrantsReading, MarketView, RiskView};
 pub use manifests::{ids, owners, roster};

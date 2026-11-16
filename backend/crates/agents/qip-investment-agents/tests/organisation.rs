@@ -90,12 +90,12 @@ fn brief() -> AgentBrief {
 #[test]
 fn the_declared_organisation_passes_its_own_governance() {
     let roster = manifests::roster(now());
-    // Twenty-nine: L2b's four probes, the Portfolio/Asset Brain
+    // Thirty: L2b's four probes, the Portfolio/Asset Brain
     // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017), the
-    // Company/Fundamental Brain (R12-REASON-3013), the Meta Brain
-    // (R12-AMBIENT-3024) and the World Model Arbitration Brain
-    // (R12-WORLD-3025, ADR 0488).
-    assert_eq!(roster.len(), 29, "the organisation is twenty-nine agents");
+    // Private Markets Brain (R12-ASSET-3018), the Company/Fundamental Brain
+    // (R12-REASON-3013), the Meta Brain (R12-AMBIENT-3024) and the World
+    // Model Arbitration Brain (R12-WORLD-3025, ADR 0488).
+    assert_eq!(roster.len(), 30, "the organisation is thirty agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -626,6 +626,7 @@ fn desk_with_purpose(
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -689,11 +690,11 @@ fn organisation(desk: Arc<Desk>) -> Result<Organisation> {
 #[test]
 fn the_organisation_assembles_and_dispatches() -> Result<()> {
     let mut org = organisation(populated_desk())?;
-    // Twenty-eight dispatched since the Meta Brain joined as the one arbiter
-    // (R12-AMBIENT-3024) and the World Model Arbitration Brain joined the
-    // panel (R12-WORLD-3025, ADR 0488): twenty-seven on the panel and one
-    // after it.
-    assert_eq!(org.len(), 28);
+    // Twenty-nine dispatched since the Meta Brain joined as the one arbiter
+    // (R12-AMBIENT-3024), the World Model Arbitration Brain joined the
+    // panel (R12-WORLD-3025, ADR 0488) and the Private Markets Brain
+    // (R12-ASSET-3018) after it: twenty-eight on the panel and one after it.
+    assert_eq!(org.len(), 29);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -1137,6 +1138,7 @@ fn the_credit_analyst_refuses_to_assume_a_duration_it_does_not_have() -> Result<
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1206,6 +1208,7 @@ fn the_alternative_data_analyst_will_not_use_an_unlicensed_dataset() -> Result<(
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1301,6 +1304,7 @@ fn compliance_blocks_a_restricted_name_with_full_conviction() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         compliance,
         ResearchMemory::new(),
@@ -1430,6 +1434,7 @@ fn the_construction_agent_respects_its_concentration_cap() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         ResearchMemory::new(),
@@ -1571,6 +1576,7 @@ fn the_learning_agent_cannot_score_an_unresolved_episode() -> Result<()> {
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         memory,
@@ -1641,6 +1647,7 @@ fn the_learning_agent_reports_the_sample_size_behind_each_hit_rate() -> Result<(
         RiskView {
             state: RiskState::default(),
             limits: LimitSet::conservative_default(),
+            grants: None,
         },
         ComplianceView::default(),
         memory,
@@ -1972,6 +1979,14 @@ fn two_briefs_identical_except_for_the_precedent_produce_identical_convictions_a
 
 /// A desk whose only interesting facility is the risk view.
 fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
+    desk_with_grants(state, limits, None)
+}
+
+fn desk_with_grants(
+    state: RiskState,
+    limits: LimitSet,
+    grants: Option<qip_investment_agents::GrantsReading>,
+) -> Arc<Desk> {
     Arc::new(Desk::new(
         MarketView {
             snapshot: MarketSnapshot::new(now()),
@@ -1989,7 +2004,11 @@ fn desk_with_risk(state: RiskState, limits: LimitSet) -> Arc<Desk> {
             marks: BTreeMap::new(),
             purpose: qip_investment_agents::desk::BookPurpose::default(),
         },
-        RiskView { state, limits },
+        RiskView {
+            state,
+            limits,
+            grants,
+        },
         ComplianceView::default(),
         ResearchMemory::new(),
         SearchIndex::new(),
@@ -3595,6 +3614,7 @@ fn the_manipulation_probe_examines_a_tape_only_and_a_book_only_instrument() -> R
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -3679,6 +3699,7 @@ fn the_manipulation_probe_reports_a_crossed_book_and_a_wash_tape_as_two_findings
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -3734,6 +3755,7 @@ fn adversary_desk(
             RiskView {
                 state: RiskState::default(),
                 limits: LimitSet::conservative_default(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -4797,5 +4819,155 @@ fn a_world_model_family_no_member_covers_is_a_fact_of_the_review_not_a_missing_i
         "{:?}",
         report.missing_inputs
     );
+    Ok(())
+}
+
+/// R12-CAPITAL-3020: the risk control reports the grants the capital plane
+/// made, what the society took off the allocator's figure and how many cells
+/// hold a grant, each only once an allocation has run; removing the control
+/// leaves those facts unreported. A grant nobody made is not reported as zero.
+///
+/// Mutation: drop the `capital_narrowed_by_society` fact from
+/// `RiskControl::analyse` (or compute it as `granted - allocator_total`) and
+/// this test fails at that label.
+#[test]
+fn the_risk_control_reports_grants_and_placement_only_once_an_allocation_ran() -> Result<()> {
+    use qip_investment_agents::GrantsReading;
+    let state = RiskState {
+        equity: dec!("10000000"),
+        cash: dec!("4000000"),
+        ..RiskState::default()
+    };
+    let grants = GrantsReading {
+        allocator_total: dec!("900000"),
+        granted_total: dec!("600000"),
+        by_cell: BTreeMap::from([
+            ("cell-a".to_string(), dec!("600000")),
+            ("cell-b".to_string(), dec!("0")),
+        ]),
+    };
+    let desk = desk_with_grants(state.clone(), LimitSet::new("t"), Some(grants));
+    let mut org = organisation(desk)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the standard organisation runs the risk control");
+    for (label, value) in [
+        ("capital_granted", 600_000.0),
+        ("capital_narrowed_by_society", 300_000.0),
+        ("capital_cells_funded", 1.0),
+    ] {
+        let got = fact_value(finding, label).expect(label);
+        assert!(
+            (got - value).abs() < 1e-6,
+            "{label} is {got}, expected {value}"
+        );
+    }
+
+    let before_any = desk_with_risk(state, LimitSet::new("t"));
+    let mut org = organisation(before_any)?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::RISK)
+        .expect("premise: the risk control ran");
+    assert!(
+        fact_value(finding, "capital_granted").is_none(),
+        "a grant nobody made was reported"
+    );
+    Ok(())
+}
+
+// --- the Private Markets Brain (R12-ASSET-3018) -----------------------------
+
+/// A desk whose private-markets slot holds two commitments, one with an
+/// overdue call, and two marks, one past its review date, as the kernel
+/// writes it.
+fn desk_with_private_holdings() -> Arc<Desk> {
+    use qip_investment_agents::desk::{
+        PrivateCommitmentReading, PrivateMarkReading, PrivateMarketsView,
+    };
+    Arc::new(Desk::empty(now()).with_private_markets(PrivateMarketsView {
+        observed: true,
+        commitments: vec![
+            PrivateCommitmentReading {
+                subject: "fund-a".to_string(),
+                unfunded: qip_core::dec!("400000"),
+                calls_open: 2,
+                calls_overdue: 1,
+            },
+            PrivateCommitmentReading {
+                subject: "fund-b".to_string(),
+                unfunded: qip_core::dec!("100000"),
+                calls_open: 0,
+                calls_overdue: 0,
+            },
+        ],
+        marks: vec![
+            PrivateMarkReading {
+                asset: "fund-a".to_string(),
+                stale: true,
+                confidence: 0.4,
+            },
+            PrivateMarkReading {
+                asset: "fund-b".to_string(),
+                stale: false,
+                confidence: 0.8,
+            },
+        ],
+    }))
+}
+
+/// R12-ASSET-3018. The Private Markets Brain reads commitments, capital calls
+/// and dated illiquid marks, and nobody else reports them: a call past due or
+/// a mark past its review reaches the chief only through it.
+///
+/// Mutation: drop the `PrivateMarketsAnalyst` from `standard_agents` — the
+/// premise finding is missing and the scope is not covered.
+#[test]
+fn removing_the_private_markets_brain_drops_private_markets_from_coverage() -> Result<()> {
+    let desk = desk_with_private_holdings();
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PRIVATE_MARKETS)
+        .expect("premise: the Private Markets Brain reported on the book");
+    assert_eq!(fact_value(finding, "private_commitments"), Some(2.0));
+    assert_eq!(fact_value(finding, "capital_calls_open"), Some(2.0));
+    assert_eq!(fact_value(finding, "capital_calls_overdue"), Some(1.0));
+    assert_eq!(fact_value(finding, "illiquid_marks_stale"), Some(1.0));
+    assert_eq!(
+        fact_value(finding, "private_unfunded_commitment"),
+        Some(500_000.0)
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::PRIVATE_MARKETS)?;
+    assert!(with.contains(&Scope::PrivateMarkets), "{with:?}");
+    assert!(!without.contains(&Scope::PrivateMarkets), "{without:?}");
+    Ok(())
+}
+
+/// A slot the kernel has not written is no data, never a book with no
+/// private holding.
+///
+/// Mutation: drop the `!view.observed` early return — an unwritten slot
+/// reports zero commitments as if it had read them and this fails.
+#[test]
+fn the_private_markets_brain_reports_an_unwritten_slot_as_no_data() -> Result<()> {
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::PRIVATE_MARKETS)
+        .expect("premise: the brain answered the brief");
+    assert_eq!(finding.status, qip_agents::finding::FindingStatus::NoView);
+    assert!(fact_value(finding, "private_commitments").is_none());
+    assert!(!report.covered_scopes().contains(&Scope::PrivateMarkets));
     Ok(())
 }

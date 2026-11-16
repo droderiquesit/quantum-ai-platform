@@ -125,6 +125,7 @@ fn pack_for(artifact: &str, name: &str, digest: &str, signature: &str) -> ModelP
             approver: "approver".to_string(),
             approved_at: start(),
         },
+        provenance: None,
         inline_model: Some(InlineModel {
             name: name.to_string(),
             digest: digest.to_string(),

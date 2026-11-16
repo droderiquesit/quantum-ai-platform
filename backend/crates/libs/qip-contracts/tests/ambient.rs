@@ -4,10 +4,10 @@
 #![allow(clippy::expect_used)]
 
 use qip_contracts::ambient::{
-    AcquisitionCriteria, AcquisitionStatus, ActivationReason, Advisory, AmbientSignal,
-    AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary, ComputeAllocation,
-    ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation, Pathway,
-    PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
+    AcquisitionCriteria, AcquisitionKind, AcquisitionStatus, ActivationReason, Advisory,
+    AmbientSignal, AttentionBudget, AttentionEvent, AttentionRouter, AuthorityBoundary,
+    ComputeAllocation, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
+    Pathway, ProducerQuarantine, PromotionCase, RoutingPolicy, SignalClass, Trigger, promote,
 };
 use qip_core::{Duration, Timestamp, dec};
 use std::collections::BTreeSet;
@@ -1539,4 +1539,179 @@ fn the_curiosity_rank_is_monotone_in_every_factor_and_zero_when_any_factor_is() 
         10_000,
         "premise: the grid's top is a nonzero rank, so the sweep is not of zeros"
     );
+}
+
+// ---- R12-RES-7107: a producer that spends attention on repeats is quarantined.
+
+fn from_producer(id: usize, producer: &str, entity: &str, secs: i64) -> AmbientSignal {
+    let mut d = detection(secs);
+    d.affected_entities = vec![entity.to_string()];
+    AmbientSignal::new(
+        format!("sig-{id}"),
+        SignalClass::Surprise,
+        "EURUSD",
+        9_000,
+        Trigger::Schedule(producer.into()),
+        at(secs),
+        d,
+    )
+    .expect("a well-formed signal")
+}
+
+fn quarantining() -> AttentionRouter {
+    // 4 signals before the record counts; floor 5000 bp. Test figures only:
+    // the production figure is the operator's, and `ProducerQuarantine::new`
+    // has no default.
+    let quarantine = ProducerQuarantine::new(4, 5_000).expect("valid");
+    AttentionRouter::new(
+        policy(50, 5)
+            .clustering_duplicates()
+            .quarantining_producers(quarantine),
+    )
+}
+
+/// A detector that re-raises one deviation every sweep has its reputation
+/// fall with each wasted repeat, and once it crosses the floor its signals
+/// wake nothing and charge nothing. Mutation: delete the `is_quarantined`
+/// early return in `route` — the sixth signal activates and this fails.
+#[test]
+fn a_producer_that_only_repeats_itself_is_quarantined_and_its_reputation_falls() {
+    let mut router = quarantining();
+    let mut dispositions = Vec::new();
+    let mut reputations = Vec::new();
+    for n in 0..6usize {
+        let events = router
+            .route(&from_producer(n, "noisy", "EURUSD", 1), at(1))
+            .expect("routes");
+        dispositions.extend(events.iter().map(|e| e.disposition));
+        reputations.push(router.producer_reputation_bp("noisy"));
+    }
+    assert_eq!(
+        dispositions,
+        vec![
+            Disposition::Activated,
+            Disposition::Clustered,
+            Disposition::Clustered,
+            Disposition::Clustered,
+            Disposition::Quarantined,
+            Disposition::Quarantined,
+        ],
+        "four signals build the record, then the producer is stopped"
+    );
+    assert_eq!(
+        reputations[..4],
+        [Some(10_000), Some(5_000), Some(3_333), Some(2_500)],
+        "reputation falls with every wasted repeat"
+    );
+    assert!(router.is_quarantined("noisy"));
+    assert_eq!(router.deferred_len(), 0, "a quarantined signal was held");
+}
+
+/// Quarantine is per producer: a quiet detector raising distinct deviations
+/// keeps its reputation and its attention. Mutation: key the record on a
+/// constant instead of the producer name — the quiet detector is stopped.
+#[test]
+fn a_quiet_producer_is_not_quarantined_alongside_a_noisy_one() {
+    let mut router = quarantining();
+    for n in 0..6usize {
+        router
+            .route(&from_producer(n, "noisy", "EURUSD", 1), at(1))
+            .expect("routes");
+    }
+    assert!(router.is_quarantined("noisy"), "premise");
+    let mut quiet = Vec::new();
+    for n in 0..6usize {
+        let entity = format!("PAIR-{n}");
+        quiet.extend(
+            router
+                .route(&from_producer(100 + n, "quiet", &entity, 2), at(2))
+                .expect("routes"),
+        );
+    }
+    assert_eq!(quiet.len(), 6);
+    assert!(
+        quiet
+            .iter()
+            .all(|e| e.disposition == Disposition::Activated),
+        "{quiet:?}"
+    );
+    assert!(!router.is_quarantined("quiet"));
+    assert_eq!(router.producer_reputation_bp("quiet"), Some(10_000));
+}
+
+/// A drifting model is quarantined on what its reputation measured, however
+/// few signals it has sent, and only an explicit release re-admits it.
+/// Mutation: change `<` to `>` in `report_model_reputation` — the drifting
+/// model is reported healthy and its signal activates.
+#[test]
+fn a_model_whose_reputation_fell_below_the_floor_is_quarantined_until_released() {
+    let mut router = quarantining();
+    let drifted = ModelReputation::new("fx", "1h", "calm", 2_000, 2_000, 2_000).expect("valid");
+    let healthy = ModelReputation::new("fx", "1h", "calm", 9_000, 9_000, 9_000).expect("valid");
+
+    assert!(
+        !router
+            .report_model_reputation("good-model", &healthy)
+            .expect("reported"),
+        "premise: a healthy model is not quarantined"
+    );
+    assert!(
+        router
+            .report_model_reputation("drifting-model", &drifted)
+            .expect("reported")
+    );
+    let stopped = router
+        .route(&from_producer(1, "drifting-model", "EURUSD", 1), at(1))
+        .expect("routes");
+    assert_eq!(stopped[0].disposition, Disposition::Quarantined);
+    assert_eq!(
+        stopped[0].budget.spent, 0,
+        "a quarantined signal was charged"
+    );
+
+    let woken = router
+        .route(&from_producer(2, "good-model", "EURUSD", 1), at(1))
+        .expect("routes");
+    assert_eq!(woken[0].disposition, Disposition::Activated);
+
+    assert!(router.release_producer("drifting-model"));
+    let readmitted = router
+        .route(&from_producer(3, "drifting-model", "EURUSD", 2), at(2))
+        .expect("routes");
+    assert_eq!(readmitted[0].disposition, Disposition::Activated);
+}
+
+/// The refusals: a policy without quarantine cannot be told a model drifted
+/// (the report would be silently ignored), and the quarantine's own figures
+/// are validated rather than clamped.
+#[test]
+fn reporting_a_drifting_model_to_a_router_with_no_quarantine_is_refused() {
+    let mut router = AttentionRouter::new(policy(3, 5));
+    let drifted = ModelReputation::new("fx", "1h", "calm", 0, 0, 0).expect("valid");
+    assert!(router.report_model_reputation("m", &drifted).is_err());
+    assert!(ProducerQuarantine::new(0, 5_000).is_err());
+    assert!(ProducerQuarantine::new(4, 0).is_err());
+    assert!(ProducerQuarantine::new(4, 10_001).is_err());
+    assert!(ProducerQuarantine::new(4, 10_000).is_ok());
+}
+
+/// R12-DATA-3105: the kind survives a round trip for every one of the seven
+/// kinds, and a record written before the field existed decodes as a new
+/// source query. Mutation: `#[serde(skip)]` on `InfoRequest::kind` — the
+/// round-trip row for the first non-default kind fails.
+#[test]
+fn an_information_request_keeps_its_kind_and_an_old_record_reads_as_a_new_source_query() {
+    let base = InfoRequest::new("r", "d", criteria(5_000, 5_000, 5_000, 100), at(100), at(0))
+        .expect("valid request");
+    assert_eq!(AcquisitionKind::ALL.len(), 7);
+    for kind in AcquisitionKind::ALL {
+        let request = base.clone().with_kind(kind);
+        let json = serde_json::to_string(&request).expect("encodes");
+        let back: InfoRequest = serde_json::from_str(&json).expect("decodes");
+        assert_eq!(back.kind(), kind, "{json}");
+    }
+    let old = serde_json::to_string(&base).expect("encodes");
+    assert!(!old.contains("kind"), "the default is not written: {old}");
+    let back: InfoRequest = serde_json::from_str(&old).expect("decodes");
+    assert_eq!(back.kind(), AcquisitionKind::NewSourceQuery);
 }

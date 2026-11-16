@@ -10,6 +10,7 @@ pub mod aiops;
 pub mod billing;
 pub mod cloud_monitoring;
 pub mod critical_paths;
+pub mod data_plane;
 pub mod golden;
 pub mod logs;
 pub mod metrics;

@@ -833,13 +833,24 @@ fn fabric_087_the_broker_module_publishes_an_srv_record_that_points_at_its_broke
         scanned > 30,
         "premise: the client and broker sources were scanned: {scanned}"
     );
-    let dns_module =
-        qip_acceptance::repository_root().join("backend/crates/libs/qip-transport/src/dns.rs");
+    let root = qip_acceptance::repository_root();
+    let mut expected: Vec<String> = [
+        // The SRV lookup itself.
+        "backend/crates/libs/qip-transport/src/dns.rs",
+        // R12-FABRIC-10016: the one composition root that asks for it,
+        // through its discovery module. A reader added here is a bootstrap to
+        // account for; each must go through `qip_transport::dns`.
+        "backend/crates/apps/qip-edge-node/src/fabric_discovery.rs",
+    ]
+    .iter()
+    .map(|path| root.join(path).display().to_string())
+    .collect();
+    expected.sort();
+    readers.sort();
     assert_eq!(
-        readers,
-        [dns_module.display().to_string()],
-        "the SRV lookup lives in qip_transport::dns and nowhere else; a second reader is a \
-         second bootstrap to account for"
+        readers, expected,
+        "the SRV lookup lives in qip_transport::dns and is asked for only by the edge node's \
+         discovery module; a further reader is a second bootstrap to account for"
     );
 }
 

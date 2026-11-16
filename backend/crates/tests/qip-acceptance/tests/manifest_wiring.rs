@@ -1514,7 +1514,37 @@ const NO_RESEARCH_WAREHOUSE_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The deep brain l
      it also names are never read by this binary, though the source walk counts them \
      with the rest of the family.";
 
+const NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT: &str = "The edge node \
+     bootstraps the fabric endpoint from the broker's SRV record only when a \
+     resolver, a zone, a per-query timeout and an attempt count are all set \
+     (R12-FABRIC-10016). No environment instantiates the event-fabric broker \
+     module that publishes the record, and the timeout and attempt count are \
+     figures nobody has given, so a deployment setting them would be choosing \
+     them. Absent, the node uses QIP_FABRIC_URL, which is the last rung of the \
+     ladder anyway. The entries end when a broker is deployed and the owner \
+     names the resolver and the two figures.";
+
 const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_RESOLVER",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_ZONE",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_TIMEOUT_MS",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
+    (
+        "qip-edge-node",
+        "QIP_FABRIC_SRV_ATTEMPTS",
+        NO_FABRIC_SRV_RESOLVER_IS_NAMED_BY_ANY_DEPLOYMENT,
+    ),
     ("qip-api", "QIP_LEDGERD_URL", NO_LEDGERD_IS_DEPLOYED),
     (
         "qip-api",
@@ -4363,7 +4393,13 @@ fn every_deployed_process_echoes_its_structured_log_to_stderr_and_no_drain_ships
     // One drain since ADR 0156 §5: the roots' `openobserve.rs` are thin modules
     // over `qip-telemetry-drain`, so the endpoint set is read from its single
     // definition, and each root is held to define no endpoint of its own.
-    for root in ["qip-api", "qip-fastbrain", "qip-deepbrain", "qip-fabricd"] {
+    for root in [
+        "qip-api",
+        "qip-fastbrain",
+        "qip-deepbrain",
+        "qip-fabricd",
+        "qip-ledgerd",
+    ] {
         let thin = read(&format!("backend/crates/apps/{root}/src/openobserve.rs"));
         assert!(
             thin.contains("qip_telemetry_drain") && !thin.contains("with_path("),

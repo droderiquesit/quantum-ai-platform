@@ -21,7 +21,9 @@
 //! Granting capital is at least as consequential as raising autonomy, so it is
 //! not held to a looser standard.
 
+use crate::attestation::{AttestedApproval, check_attested};
 use crate::signing::SigningKey;
+use qip_contracts::action::{ActionClass, ExecutableScope, Routed};
 use qip_contracts::capital::CapitalEnvelope;
 use qip_contracts::governance::Approval;
 use qip_contracts::signal::StrategyId;
@@ -125,6 +127,12 @@ pub struct CapitalRequest {
     /// (ADR 0126), carried into the approved envelope for the same reason
     /// as `exposure`: the issuing plane compares the two payloads.
     pub drawdown: Option<qip_contracts::DrawdownBounds>,
+    /// The product classes, regulated functions and leverage the grant is
+    /// asked under (R12-GOV-6120, ADR 0155 section 5), carried into the
+    /// approved envelope so the issuing plane's payload comparison covers
+    /// the authority claim too: an approval for a bounded grant cannot be
+    /// read as one for the same money in any class.
+    pub authority: Option<qip_contracts::capital::AuthorityBounds>,
 }
 
 impl CapitalRequest {
@@ -303,6 +311,57 @@ impl ApprovalChain {
         })
     }
 
+    /// Grant capital on attested approvals (ADR 0120; R12-GOV-6125).
+    ///
+    /// The grant is a capital-class intent. Each named approver must present
+    /// an [`AttestedApproval`] verified for exactly that intent, and
+    /// [`check_attested`] puts it through `check_authority`, so an approver
+    /// whose enrolled key is `Operational` is refused here even with a valid
+    /// assertion. The credentials handed on to [`Self::grant`] are built from
+    /// the attestations, never supplied by the caller.
+    pub fn grant_attested(
+        &mut self,
+        request: &CapitalRequest,
+        approval: &Approval,
+        attested: &[AttestedApproval],
+        now: Timestamp,
+    ) -> Result<ApprovedCapital> {
+        let intent = ExecutableScope::new([request.strategy.as_str().to_string()])
+            .route_with_class(
+                &request.subject(),
+                request.strategy.as_str(),
+                ActionClass::Capital,
+            );
+        let Routed::Executable(intent) = intent else {
+            return Err(Error::denied(
+                "the capital request produced no executable intent",
+            ));
+        };
+        let mut credentials = Vec::new();
+        for approver in
+            std::iter::once(approval.approver.as_str()).chain(approval.second_approver.as_deref())
+        {
+            let checked = attested
+                .iter()
+                .find(|a| a.subject() == approver)
+                .ok_or_else(|| {
+                    Error::denied(format!(
+                        "no attested approval was presented for approver {approver}"
+                    ))
+                })
+                .and_then(|a| check_attested(&intent, a).and_then(|()| a.credential()));
+            match checked {
+                Ok(credential) => credentials.push(credential),
+                Err(error) => {
+                    self.refusals
+                        .push((now, request.subject(), error.message().to_string()));
+                    return Err(error);
+                }
+            }
+        }
+        self.grant(request, approval, &credentials, now)
+    }
+
     /// Readmit an envelope that arrived from elsewhere — a cell restarting, a
     /// grant read back out of storage.
     ///
@@ -446,6 +505,10 @@ impl ApprovalChain {
         let envelope = match &request.drawdown {
             None => envelope,
             Some(drawdown) => envelope.with_drawdown(drawdown.clone())?,
+        };
+        let envelope = match &request.authority {
+            None => envelope,
+            Some(authority) => envelope.bound(authority.clone())?,
         };
         Ok(envelope.signed(signature))
     }

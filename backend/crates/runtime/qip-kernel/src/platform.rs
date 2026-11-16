@@ -154,7 +154,7 @@ use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
     ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
     ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
-    ModelsView, PoolReading, RiskView, TradeSide,
+    ModelsView, PoolReading, PrivateMarketsView, RiskView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -248,6 +248,9 @@ struct SymbolicReading {
     veto: Option<String>,
     /// The rule and invariant ids whose firing made `veto`; empty without one.
     veto_rules: Vec<String>,
+    /// The rule ids that made the pack find the thesis eligible; empty
+    /// without eligibility (R12-EXPAND-6044).
+    eligible_rules: Vec<String>,
     /// The pack and version the derivation ran under.
     pack: (String, u32),
     infeasible: Option<String>,
@@ -608,6 +611,8 @@ pub struct Platform {
     /// thesis is graded, so a refusal the outcome contradicted leaves a
     /// theory delta rather than nothing (R12-EXPAND-6044).
     pub(crate) symbolic_vetoes: BTreeMap<String, crate::theory_revision::SymbolicVetoNote>,
+    /// Theses the pack found eligible, awaiting a grade (R12-EXPAND-6044).
+    pub(crate) symbolic_admissions: BTreeMap<String, crate::theory_revision::SymbolicAdmissionNote>,
     /// What each priced refusal would have earned, most recent last, bounded
     /// by [`DECLINED_HISTORY`].
     declined_scores: Vec<DeclinedScore>,
@@ -824,6 +829,11 @@ pub struct Platform {
     /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
     cycle_order_flow: BTreeMap<(String, String), qip_world_model::order_flow::FlowObservation>,
+    /// The buy-positive imbalance per subject of the flow
+    /// `understand_federation` took this cycle, kept for the forecast
+    /// lattice that runs after it (R12-WORLD-3085, ADR 0632). Replaced, never
+    /// accumulated, on every UNDERSTAND pass.
+    lattice_flow_imbalance: BTreeMap<String, f64>,
     /// The active-sensing requests the latest federation pass issued, each
     /// with the disagreement spread behind it in basis points (ADR 0158
     /// decisions 9-10), replaced wholesale each pass so a disagreement that
@@ -1233,6 +1243,10 @@ pub struct Platform {
     /// (R12-ASSET-3017), rebuilt before every REASON by
     /// `brief_the_desk_on_chain`.
     chain_view: Upstream<ChainView>,
+    /// The private-markets book as the desk's Private Markets Brain reads it
+    /// (R12-ASSET-3018), rebuilt before every REASON by
+    /// `brief_the_desk_on_private_markets`.
+    private_markets_view: Upstream<PrivateMarketsView>,
     /// The company records the desk's Company/Fundamental Brain reads
     /// (R12-REASON-3013, ADR 0458), rebuilt before every REASON by
     /// `brief_the_desk_on_company`.
@@ -5104,6 +5118,33 @@ impl EventBody for RegistrationEntry {
     const SCHEMA_VERSION: u32 = 1;
 }
 
+/// An authenticated operator's authorisation to apply the generated joint
+/// tail world to the survival reserve (R12-RISK-4116, ADR 0685). Journalled
+/// before the switch moves, so [`Platform::replay_joint_tail_reserve_authorised`]
+/// rebuilds it from the log alone: applying the world raises the reserve, and a
+/// raised reserve with nobody's name on it is a control change nobody made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JointTailReserveAuthorisation {
+    /// The authenticated operator's subject, taken from the identity and never
+    /// from a request body.
+    pub operator: String,
+}
+
+impl EventBody for JointTailReserveAuthorisation {
+    /// A compliance decision, told apart from registrations and eligibility
+    /// records by producer ([`JOINT_TAIL_ORIGIN`]).
+    const TOPIC: Topic = Topic::ComplianceEvaluated;
+    const SCHEMA_VERSION: u32 = 1;
+}
+
+/// The producer a joint-tail authorisation is journalled under.
+const JOINT_TAIL_ORIGIN: &str = "kernel/joint-tail-reserve";
+
+/// How recently an operator authenticated to authorise the joint tail reserve.
+/// PROVISIONAL (ADR 0685): no figure was given, so the shortest age the
+/// platform already uses for an operator act is reused rather than a new one.
+const JOINT_TAIL_CREDENTIAL_AGE: Duration = ELIGIBILITY_CREDENTIAL_AGE;
+
 /// An operator's declaration that a claim is expected to fall due (ADR 0159
 /// decision 9). It records an expectation and moves nothing: the platform
 /// never processes a withdrawal (ADR 0021). Journalled before it is adopted,
@@ -6489,6 +6530,7 @@ impl Platform {
                 ..RiskState::default()
             },
             limits: limits.clone(),
+            grants: None,
         });
         let mut desk = Desk::new(
             MarketView {
@@ -6520,6 +6562,7 @@ impl Platform {
                     ..RiskState::default()
                 },
                 limits: limits.clone(),
+                grants: None,
             },
             ComplianceView::default(),
             ResearchMemory::new(),
@@ -6540,6 +6583,11 @@ impl Platform {
         desk.models = models.gate(desk.models.required(), desk.models.label());
         let chain_view = Upstream::new(ChainView::default());
         desk.chain = chain_view.gate(desk.chain.required(), desk.chain.label());
+        let private_markets_view = Upstream::new(PrivateMarketsView::default());
+        desk.private_markets = private_markets_view.gate(
+            desk.private_markets.required(),
+            desk.private_markets.label(),
+        );
         let company_view = Upstream::new(CompanyView::default());
         desk.company = company_view.gate(desk.company.required(), desk.company.label());
         let arbitration_view = Upstream::new(ArbitrationView::default());
@@ -6780,6 +6828,7 @@ impl Platform {
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
+        let routing_reputation_resumed = crate::routing_score::resume_book(&event_log)?;
         // One activity row per limit, before the set moves into the checker
         // and the monitor: the dormancy finding is about the rules that
         // never fire, and a table that gained rows on the first fire would
@@ -6842,6 +6891,7 @@ impl Platform {
             publication_delays: BTreeMap::new(),
             declined: Vec::new(),
             symbolic_vetoes: BTreeMap::new(),
+            symbolic_admissions: BTreeMap::new(),
             declined_scores: Vec::new(),
             filled: Vec::new(),
             cell_fills_queued: CellFillsQueued::default(),
@@ -6887,6 +6937,7 @@ impl Platform {
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
             cycle_order_flow: BTreeMap::new(),
+            lattice_flow_imbalance: BTreeMap::new(),
             federation_requests: Vec::new(),
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
@@ -6905,7 +6956,7 @@ impl Platform {
             monitor_routing: None,
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
-            routing_reputation: qip_cost_router::ReputationBook::new(),
+            routing_reputation: routing_reputation_resumed,
             universe_not_decision_grade: not_decision_grade,
             commitments,
             illiquid_marks,
@@ -7043,6 +7094,7 @@ impl Platform {
             executions,
             models,
             chain_view,
+            private_markets_view,
             company_view,
             arbitration_view,
             research_memory,
@@ -7496,6 +7548,10 @@ impl Platform {
         metrics.describe(
             names::COUNTERFACTUALS_DEFERRED,
             "declined paths due for pricing and left for a later cycle by the per-cycle cap",
+        );
+        metrics.describe(
+            names::OPPORTUNITIES_UNPRICED,
+            "opportunities seen and never graded, by reason: expired unworked, no mechanism, or an undirected claim",
         );
         metrics.describe(
             names::COUNTERFACTUALS_UNSCORED,
@@ -11895,6 +11951,12 @@ impl Platform {
         (Some(summary), problems, attempted)
     }
 
+    /// The same scores rolled up to one per refused cycle, legs' earnings
+    /// summed (R12-MESH-5068): see [`crate::cell_cycle_scores`].
+    pub fn cell_cycle_scores(&self) -> Vec<crate::cell_cycle_scores::CellCycleScore> {
+        crate::cell_cycle_scores::roll_up(&self.cell_declined_scores)
+    }
+
     /// What each priced leg of a cell's refused cycle would have done, most
     /// recent last.
     pub fn cell_declined_scores(&self) -> &[CellDeclinedScore] {
@@ -12443,7 +12505,16 @@ impl Platform {
     fn brief_the_desk_on_risk(&self) {
         let mut state = self.risk_state();
         let limits = self.monitor.limits().clone();
+        let grants =
+            self.central
+                .last_grants()
+                .map(|record| qip_investment_agents::GrantsReading {
+                    allocator_total: record.allocator_total,
+                    granted_total: record.granted_total,
+                    by_cell: record.by_cell,
+                });
         self.risk.update(|view| {
+            view.grants = grants;
             if state.survival_gross_ceiling.is_none() {
                 state.survival_gross_ceiling = view.state.survival_gross_ceiling;
             }
@@ -12610,6 +12681,21 @@ impl Platform {
             view.confirmed_trades = confirmed_trades;
             view.pools = pools;
         });
+    }
+
+    /// Write the commitment book and the dated illiquid marks into the slot
+    /// the desk's Private Markets Brain reads, before the panel is convened
+    /// (R12-ASSET-3018).
+    fn brief_the_desk_on_private_markets(&self, now: Timestamp) {
+        let view =
+            crate::private_markets_feed::reading(&self.commitments, &self.illiquid_marks, now);
+        self.private_markets_view.update(|slot| *slot = view);
+    }
+
+    /// The private-markets slot the desk's Private Markets Brain reads, as
+    /// REASON last wrote it.
+    pub fn desk_private_markets_view(&self) -> Reading<'_, PrivateMarketsView> {
+        self.private_markets_view.read()
     }
 
     /// The chain the desk's Crypto/On-chain Brain reads, as REASON last wrote
@@ -13048,6 +13134,58 @@ impl Platform {
     /// and no composition root does.
     pub fn set_joint_tail_reserve_applied(&mut self, applied: bool) {
         self.apply_joint_tail_reserve = applied;
+    }
+
+    /// The operator intent that applies the generated joint tail world to the
+    /// survival reserve and hedge selection (R12-RISK-4116, ADR 0685).
+    ///
+    /// This is what a composition root or the API's typed intent calls instead
+    /// of [`Self::set_joint_tail_reserve_applied`]: the API never mutates the
+    /// platform (`api_boundary`), and a configuration value must not raise a
+    /// reserve by itself. It only ever tightens: the reserve rises, never
+    /// falls, and there is no counterpart that switches it back off. A stale
+    /// credential is refused and changes nothing; an accepted authorisation is
+    /// journalled before the switch moves. Applying takes effect from the next
+    /// SIMULATE.
+    pub fn authorise_joint_tail_reserve(
+        &mut self,
+        operator: &OperatorIdentity,
+        now: Timestamp,
+    ) -> Result<()> {
+        if !operator.is_fresh(now, JOINT_TAIL_CREDENTIAL_AGE) {
+            return Err(Error::denied(format!(
+                "operator {} authenticated more than {:?} ago; re-authenticate to authorise the \
+                 joint tail reserve",
+                operator.subject(),
+                JOINT_TAIL_CREDENTIAL_AGE
+            )));
+        }
+        self.journal_record(
+            JointTailReserveAuthorisation {
+                operator: operator.subject().to_string(),
+            },
+            JOINT_TAIL_ORIGIN,
+            now,
+        )?;
+        self.apply_joint_tail_reserve = true;
+        Ok(())
+    }
+
+    /// Whether the log holds an authorisation of the joint tail reserve: the
+    /// switch's state rebuilt from the log alone, for comparison with the
+    /// running platform.
+    pub fn replay_joint_tail_reserve_authorised(&self) -> Result<bool> {
+        for record in self.event_log.records() {
+            if record.event.topic != JointTailReserveAuthorisation::TOPIC
+                || record.event.lineage.producer != JOINT_TAIL_ORIGIN
+            {
+                continue;
+            }
+            let envelope = StreamEnvelope::from_frame(&record.event)?;
+            envelope.decode::<JointTailReserveAuthorisation>()?;
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     /// The stressed-liquidity reserve the current stress demands at the
@@ -13638,6 +13776,36 @@ impl Platform {
     pub fn observe(&mut self, records: Vec<SensedRecord>) -> usize {
         self.count_lineage(0, records.len() as u64);
         self.absorb_records(records)
+    }
+
+    /// [`Self::observe`] for records that arrive under their admission
+    /// header (R12-TICK-2053, ADR 0132): a source hash and an entitlement
+    /// travel with each record, and `now` is when the platform takes it in.
+    ///
+    /// An entitlement that has lapsed between the admission and `now` is
+    /// refused here and reported as a capture problem, because a header is
+    /// checked once, at the instant it was built, and a licence does not stop
+    /// expiring after that. The record reaches no series.
+    pub fn observe_admitted(
+        &mut self,
+        batch: Vec<qip_contracts::admission::Admitted<SensedRecord>>,
+        now: Timestamp,
+    ) -> usize {
+        let mut records = Vec::with_capacity(batch.len());
+        for admitted in batch {
+            let entitlement = admitted.admission().entitlement();
+            if !entitlement.is_granted(now) {
+                self.capture_problems.push(format!(
+                    "a {} record was refused at absorption: its entitlement to {} is no longer \
+                     granted",
+                    admitted.record().topic(),
+                    entitlement.dataset()
+                ));
+                continue;
+            }
+            records.push(admitted.into_record());
+        }
+        self.observe(records)
     }
 
     /// The body of [`Self::observe`], shared with the lineage path so a
@@ -15988,6 +16156,7 @@ impl Platform {
                 )
             })
             .collect();
+        let lattice_surprises = macro_surprises.clone();
         let inputs = NowInputs {
             cycle: self.cycle,
             home_region: HOME_REGION.to_string(),
@@ -16000,6 +16169,14 @@ impl Platform {
             causal_parents: self.now_causal_parents(now),
         };
         let review = self.now_brain.run(inputs, now);
+        // Link each belief to the admitted claims its manifest names, so the
+        // provenance graph can be walked from it (R12-EVID-2033).
+        let binding = self.bind_now_beliefs(&review.deltas);
+        self.telemetry.metrics.increment(
+            crate::evidence_intake::NOW_BELIEFS_BOUND,
+            labels([]),
+            binding.bound as u64,
+        );
         let mut problems: Vec<String> = Vec::new();
         for surprise in &review.surprises {
             self.telemetry.metrics.count(
@@ -16059,6 +16236,22 @@ impl Platform {
                 ));
             }
         }
+        // The row specialists' signals, read at this pass and consumed by it
+        // (ADR 0632): the live causal claims and the pending catalyst from
+        // the world model as known at `now`, and the flow `understand_federation`
+        // took. Set every pass, so a pass with none states none.
+        let subjects: Vec<String> = targets.iter().map(|t| t.subject.clone()).collect();
+        let mut signals = {
+            let world = self.world.read();
+            crate::lattice_stage::signals_from_world(
+                world.causal(),
+                &lattice_surprises,
+                &subjects,
+                now,
+            )
+        };
+        signals.flow_imbalance = std::mem::take(&mut self.lattice_flow_imbalance);
+        self.lattice.set_signals(signals);
         let lattice = self.lattice.run(
             LatticeInputs {
                 cycle: self.cycle,
@@ -16099,6 +16292,10 @@ impl Platform {
                 crate::lattice_stage::CALIBRATION_BRIER_BOUND,
                 crate::lattice_stage::CALIBRATION_MIN_RESOLVED,
             ) {
+                self.telemetry.metrics.count(
+                    names::CALIBRATION_CHECKS,
+                    labels([("outcome", if breached { "breached" } else { "within" })]),
+                );
                 self.telemetry.metrics.gauge(
                     crate::lattice_stage::LATTICE_CALIBRATION_SLO_BREACHED,
                     labels([("horizon", horizon.as_str())]),
@@ -16650,6 +16847,11 @@ impl Platform {
         let surprises = self.fundamental_surprises(now);
         // This cycle's flow, taken so the next cycle starts empty: the
         // member reads one cycle's prints, never an accumulating history.
+        self.lattice_flow_imbalance = crate::lattice_stage::flow_imbalance_by_subject(
+            self.cycle_order_flow
+                .iter()
+                .map(|((subject, _), flow)| (subject.as_str(), flow)),
+        );
         let mut flows: BTreeMap<String, Vec<qip_world_model::order_flow::FlowObservation>> =
             BTreeMap::new();
         for ((subject, _), flow) in std::mem::take(&mut self.cycle_order_flow) {
@@ -16724,12 +16926,40 @@ impl Platform {
             &review,
             inputs.instruments.iter().map(|view| view.subject.clone()),
         );
+        // The widest disagreement among the forecasting members narrows the
+        // capital society's grants (R12-CAPITAL-10122). A spread the arithmetic
+        // cannot carry is a problem on this pass, not a silent clamp.
+        let widest = review
+            .arbitrations
+            .iter()
+            .map(|a| a.disagreement.spread)
+            .fold(None, |widest: Option<f64>, spread| {
+                Some(widest.map_or(spread, |w| w.max(spread)))
+            });
+        let forecast_problem = match widest.map(qip_core::Decimal::from_f64) {
+            Some(None) => Some("forecast disagreement spread is not a finite figure".to_string()),
+            Some(Some(spread)) => self
+                .central
+                .set_forecast_spread(Some(spread))
+                .err()
+                .map(|error| error.message().to_string()),
+            None => self
+                .central
+                .set_forecast_spread(None)
+                .err()
+                .map(|e| e.message().to_string()),
+        };
         let detail = review.detail();
         let mut problems: Vec<String> = review
             .refused
             .iter()
             .map(|(model, why)| format!("world model federation refused `{model}`: {why}"))
             .collect();
+        if let Some(problem) = forecast_problem {
+            problems.push(format!(
+                "capital society kept its last forecast spread: {problem}"
+            ));
+        }
         // Charge each resolved forecast to the member that made it, so a
         // world model is scored in the self-model like every other component
         // once its outcome resolves (R12-MODEL-6016).
@@ -17764,6 +17994,7 @@ impl Platform {
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
         self.brief_the_desk_on_chain();
+        self.brief_the_desk_on_private_markets(now);
         self.brief_the_desk_on_company();
         let outcome = self.reason_about_the_queue(now, lineage);
         if expired.is_empty() {
@@ -17828,6 +18059,10 @@ impl Platform {
                 continue;
             }
             unworked += 1;
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "expired_unworked")]),
+            );
             let Some(subject) = opportunity.affected_objects.first().cloned().or_else(|| {
                 opportunity
                     .affected_entities
@@ -18183,6 +18418,7 @@ impl Platform {
                     problem: symbolic_problem,
                     veto: symbolic_veto,
                     veto_rules: symbolic_veto_rules,
+                    eligible_rules: symbolic_eligible_rules,
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
@@ -18272,6 +18508,12 @@ impl Platform {
                         }
                     ),
                 );
+                if matches!(predicted, Ok(false)) {
+                    self.telemetry.metrics.count(
+                        names::OPPORTUNITIES_UNPRICED,
+                        labels([("reason", "undirected_claim")]),
+                    );
+                }
                 let claim_written = matches!(predicted, Ok(true));
                 if let Err(error) = predicted {
                     outcome = outcome.with_problem(format!(
@@ -18400,6 +18642,28 @@ impl Platform {
                                         report.runs.len(),
                                     );
                                     self.pending_theses.push(thesis);
+                                    // R12-EXPAND-6044: the pack's eligibility is
+                                    // held against the grade too, so a rule that
+                                    // admits a thesis the outcome then refutes
+                                    // leaves a delta beside the veto direction.
+                                    if claim_written
+                                        && let Some(problem) = self.note_symbolic_admission(
+                                            crate::theory_revision::SymbolicAdmissionNote {
+                                                hypothesis_id: reasoned
+                                                    .hypothesis
+                                                    .hypothesis_id
+                                                    .as_str()
+                                                    .to_string(),
+                                                cycle: self.cycle,
+                                                at: now,
+                                                pack: symbolic_pack.0.clone(),
+                                                version: symbolic_pack.1,
+                                                rules: symbolic_eligible_rules.clone(),
+                                            },
+                                        )
+                                    {
+                                        outcome = outcome.with_problem(problem);
+                                    }
                                     // Bounded like the proposal working set: an idea
                                     // nobody sized for this many cycles is stale, and
                                     // the event log keeps the record.
@@ -18464,14 +18728,20 @@ impl Platform {
                 }
                 outcome
             }
-            Ok(None) => StageOutcome::ran(
-                Stage::Reason,
-                report.findings.len(),
-                format!(
-                    "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
-                    report.findings.len()
-                ),
-            ),
+            Ok(None) => {
+                self.telemetry.metrics.count(
+                    names::OPPORTUNITIES_UNPRICED,
+                    labels([("reason", "no_mechanism")]),
+                );
+                StageOutcome::ran(
+                    Stage::Reason,
+                    report.findings.len(),
+                    format!(
+                        "{} finding(s), but the anomaly implies no mechanism, so no hypothesis was formed",
+                        report.findings.len()
+                    ),
+                )
+            }
             Err(error) => StageOutcome::ran(
                 Stage::Reason,
                 report.findings.len(),
@@ -18785,6 +19055,7 @@ impl Platform {
         let detail = derivation.detail();
         let veto = derivation.veto();
         let veto_rules = derivation.veto_rules();
+        let eligible_rules = derivation.eligible_rules();
         let pack = (
             self.symbolic_rule_pack.name.clone(),
             self.symbolic_rule_pack.version,
@@ -18804,6 +19075,7 @@ impl Platform {
             problem,
             veto,
             veto_rules,
+            eligible_rules,
             pack,
             infeasible,
         }
@@ -20770,6 +21042,109 @@ impl Platform {
             hypothesis,
             horizon,
             expected_exit_days,
+        )
+    }
+
+    /// Every held position's record, or the reason it cannot be stated
+    /// (R12-ASSET-4067), in object order. A position whose record refuses
+    /// stays in the list with its refusal: a holding nobody can state a
+    /// horizon or mark for is the finding, and dropping it would read as a
+    /// book with nothing wrong. Read-only, and the one enumeration the
+    /// API's holdings route serves; `position_holding` remains the one place
+    /// each record is built.
+    pub fn position_holdings(
+        &self,
+        now: Timestamp,
+    ) -> Vec<(String, Result<crate::position_register::PositionHolding>)> {
+        self.capital
+            .positions
+            .keys()
+            .map(|object| (object.clone(), self.position_holding(object, now)))
+            .collect()
+    }
+
+    /// A secondary-sale route for a held private position, priced off its
+    /// dated mark at a discount the caller evidences (R12-ASSET-4072).
+    ///
+    /// Every input is a record and a missing one refuses: the position must
+    /// be held and have a dated exit plan (its horizon end), carry a mark
+    /// that is not past its review date (a stale mark cannot price a sale),
+    /// and sit on the private-stages lifecycle. The lockup is the
+    /// catalogue's; a lockup that outlasts the horizon refuses, as
+    /// [`plan_secondary_exit`] does. `None` is the answer when the holding's
+    /// own forecast returns capital before the horizon, so no secondary
+    /// route is needed.
+    ///
+    /// The discount is a [`DiscountToMark`] the caller built with its
+    /// evidence. This method has no default for it and the platform holds no
+    /// source of secondary-market discounts: a plan is only as evidenced as
+    /// the figure handed in. Planning only; nothing is sold here.
+    ///
+    /// [`plan_secondary_exit`]: qip_financial::secondary_exit::plan_secondary_exit
+    /// [`DiscountToMark`]: qip_financial::secondary_exit::DiscountToMark
+    pub fn secondary_exit_plan(
+        &self,
+        object_id: &str,
+        discount: qip_financial::secondary_exit::DiscountToMark,
+        now: Timestamp,
+    ) -> Result<Option<qip_financial::secondary_exit::SecondarySale>> {
+        let held_plan = self.position_exit_plan(object_id).ok_or_else(|| {
+            Error::not_found(format!(
+                "{object_id} has no dated exit plan, so there is no horizon to plan a sale                  inside; it is not held, or no construction in this log sized it"
+            ))
+        })?;
+        let mark = self.illiquid_marks.get(object_id).ok_or_else(|| {
+            Error::not_found(format!(
+                "{object_id} carries no dated illiquid mark, so a secondary sale has nothing                  to be discounted from"
+            ))
+        })?;
+        if mark.is_stale(now) {
+            return Err(Error::invalid(format!(
+                "{object_id}'s mark is past its review date; re-mark it before pricing a sale                  off it"
+            )));
+        }
+        match self.private_stage(object_id) {
+            Some(qip_financial::private_stage::PrivateStage::Exited) | None => {
+                return Err(Error::invalid(format!(
+                    "{object_id} is not a private position still held on the private-stages                      lifecycle, so it has no secondary exit to plan"
+                )));
+            }
+            Some(_) => {}
+        }
+        let id = ObjectId::from_string(object_id);
+        let lockup = {
+            let market = self.market.read();
+            match market.universe.get(&id).map(|record| &record.extension) {
+                Some(qip_financial::extensions::Extension::PrivateAsset(details)) => {
+                    let origin = private_asset_origin(details)?;
+                    let term = details.lockup()?;
+                    Some(
+                        origin
+                            .as_nanos()
+                            .checked_add(term.as_nanos())
+                            .map(Timestamp::from_nanos)
+                            .ok_or_else(|| {
+                                Error::numeric(format!(
+                                    "{object_id}'s lockup ends at an instant no timestamp can \
+                                     represent; correct the reference record"
+                                ))
+                            })?,
+                    )
+                }
+                _ => None,
+            }
+        };
+        let primary: Vec<Timestamp> = match self.private_forecasts.get(object_id) {
+            Some(forecast) => forecast.first_return_at(now)?.into_iter().collect(),
+            None => Vec::new(),
+        };
+        qip_financial::secondary_exit::plan_secondary_exit(
+            mark.value(),
+            now,
+            held_plan.exit_at(),
+            &primary,
+            lockup,
+            discount,
         )
     }
 
@@ -23304,6 +23679,14 @@ impl Platform {
             .attribution_lineage
             .last()
             .and_then(|pass| crate::attribution::by_forecaster(pass).ok());
+        // R12-REASON-9032: challenges a second brain journaled are answered
+        // from the dossiers the tournament retained.
+        if let Err(error) = self.answer_challenges(now) {
+            outcome = outcome.with_problem(format!(
+                "journaled challenges could not be answered: {}",
+                error.message()
+            ));
+        }
         match self
             .tournament
             .learn(&self.bar_history, attributed.as_ref(), self.cycle, now)
@@ -27045,6 +27428,29 @@ impl Platform {
         probe: &mut dyn SourceProbe,
         now: Timestamp,
     ) -> Result<SourceAssessment> {
+        self.assess_sources_scouted(
+            candidates,
+            probe,
+            now,
+            crate::scout_record::ScoutChecks::ALL,
+        )
+    }
+
+    /// [`Self::assess_sources`] with the scout checks it records chosen by
+    /// the caller (R12-DATA-1102, R12-DATA-1103): every candidate's
+    /// access-rights verdict and novelty reach the log, first passes
+    /// included, and a disabled check is recorded as absent.
+    pub fn assess_sources_scouted(
+        &mut self,
+        candidates: Vec<SourceCandidate>,
+        probe: &mut dyn SourceProbe,
+        now: Timestamp,
+        checks: crate::scout_record::ScoutChecks,
+    ) -> Result<SourceAssessment> {
+        // Read before the finder registers anything: after the pass every
+        // accepted candidate is held, and "first pass" would read false.
+        let held_before: std::collections::BTreeSet<String> =
+            self.data_finder.registry().keys().cloned().collect();
         // Read before anything registers: a target is something no source
         // covered when the pass began, and a candidate this call registers
         // must not erase the reason it was assessed.
@@ -27058,6 +27464,7 @@ impl Platform {
         // `source_lifecycle` for why a move the log does not hold must not
         // be reported as a pass.
         self.journal_source_transitions(&decisions, now)?;
+        self.journal_scout_verdicts(&decisions, &held_before, checks, now)?;
         let mut claims_invalidated = Vec::new();
         let mut claims_downweighted = Vec::new();
         // A source policy stopped is a dataset the mesh must stop offering.
@@ -32262,6 +32669,52 @@ mod decide_tests {
             "a restarted process began the versions again"
         );
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// R12-WORLD-7023, ADR 0680: a reader cites the snapshot version a
+    /// decision could have seen, never a later one, and cites nothing for a
+    /// domain not yet snapshotted.
+    ///
+    /// Mutations: ignore the instant and cite the highest version; return
+    /// version 0 instead of `None` before the first snapshot.
+    /// Mutation: not run (nothing was compiled, owner instruction 2026-11-15).
+    #[test]
+    fn a_world_model_version_is_cited_as_of_the_decision_instant_and_never_later() {
+        use crate::world_snapshot::{KNOWLEDGE_GRAPH, cite};
+        use qip_world_model::relationship::{Relationship, RelationshipKind};
+        let mut platform = small_book_platform();
+        let t0 = Timestamp::from_secs(1_760_000_000);
+        let day = |n: i64| t0.saturating_add(Duration::from_days(n));
+        let relate = |platform: &Platform, to: &str, at: Timestamp| {
+            platform.world.update(|world| {
+                world
+                    .relate(
+                        Relationship::new("FOUNDRY", to, RelationshipKind::Supplies, 0.3, "filing"),
+                        at,
+                        at,
+                        0.9,
+                    )
+                    .expect("the fixture relates");
+            });
+        };
+        assert!(
+            cite(platform.event_log(), KNOWLEDGE_GRAPH, day(5))
+                .expect("the log reads")
+                .is_none(),
+            "a domain with no snapshot had a citation"
+        );
+        relate(&platform, "CHIPS", t0);
+        platform.run_cycle(day(1));
+        relate(&platform, "DEVICES", day(2));
+        platform.run_cycle(day(3));
+        let version_at = |n: i64| {
+            cite(platform.event_log(), KNOWLEDGE_GRAPH, day(n))
+                .expect("the log reads")
+                .map(|c| c.version)
+        };
+        assert_eq!(version_at(0), None, "cited a snapshot before it was read");
+        assert_eq!(version_at(2), Some(1), "cited a later version");
+        assert_eq!(version_at(3), Some(2), "did not cite the current version");
     }
 
     /// R12-WORLD-9037: the platform's company twin is built from the

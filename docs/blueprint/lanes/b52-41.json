@@ -1,0 +1,99 @@
+{
+ "lane": "41",
+ "built_unverified_note": "NOTHING WAS COMPILED, TESTED, LINTED OR FORMATTED. Written under the owner's 2026-11-15 instruction; the pipeline builds and tests after merge. Every test below is 'mutation: not run'. Only ./scripts/check-secrets.sh was run (see commit).",
+ "adrs": [
+  "docs/adr/0682-*.md",
+  "docs/adr/0683-*.md"
+ ],
+ "rows": [
+  {
+   "id": "R12-EXPAND-6033",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The two generated tail worlds, the joint world and the capacity probe's seeded agent run now journal MonteCarlo SyntheticEpisodes with their seeds (cycle number; configured seed), via the new qip-kernel module synthetic_worlds and stage_simulate. A Conditional-arm test with a real causal graph was added.",
+   "remains": "LEARN's counterfactual twin scores are deliberately not episodes (ADR 0682 decision 3: the twin replays recorded bars, which the contract says is not synthetic) - a reviewer must accept or reject that decision. Nothing was compiled, so every test is unrun.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/synthetic_worlds.rs::tests::only_drawn_worlds_become_monte_carlo_episodes_and_each_carries_the_seed",
+    "...::a_drawn_worlds_digest_moves_with_its_seed_and_its_loss",
+    "...::a_probe_episode_carries_its_seed_and_a_digest_of_every_input",
+    "backend/crates/runtime/qip-kernel/src/platform.rs::simulate_tests::a_claimed_driver_leaves_a_conditional_episode_for_each_sign_of_its_shock",
+    "...::the_drawn_tail_worlds_and_the_capacity_probe_leave_monte_carlo_episodes_with_their_seeds"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib --no-fail-fast",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "2c093dd6",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-OBS-9140",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "qip-ledgerd now links qip-telemetry-drain, has the thin openobserve module and spawns the drain from main.rs. A new acceptance suite otlp_coverage enumerates apps/* and fails any binary that neither links the drain nor is on a committed EXPORTERLESS list (edge-node, web, cli, each with a reason).",
+   "remains": "qip-edge-node, qip-web and qip-cli export nothing (edge-node waits on an ADR 0116 sidecar record); no collector is configured or shown to ingest. Nothing was compiled. The earlier draft failed because its test gave a URL with no organisation; the new test supplies both and a third pins the refusal.",
+   "tests": [
+    "backend/crates/apps/qip-ledgerd/src/openobserve.rs::tests (three tests)",
+    "backend/crates/tests/qip-acceptance/tests/otlp_coverage.rs::every_binary_exports_through_the_drain_or_is_named_on_the_exporterless_list",
+    "...::a_binary_on_the_exporterless_list_really_has_no_exporter",
+    "...::the_ledger_daemon_spawns_the_drain_from_its_composition_root"
+   ],
+   "test_command": "cargo test -p qip-ledgerd --lib; cargo test -p qip-acceptance --test otlp_coverage --test manifest_wiring",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "878b704a",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-OBS-9163",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "All six data objectives are declared in a new data_plane catalogue chained into evaluate_where (the 11-entry critical-path catalogue and 3-entry default_slos data set are untouched). Lineage and re-fetch health are fed (new qip_data_refetch_checks_total recorded beside the gauge); archive delay, Bigtable p99, knowledge-delta and BQ freshness are Unbuilt and say why.",
+   "remains": "Four objectives have no series: no process ingests a GCS archive and the Bigtable/BQ/knowledge-delta stores are not on. Their figures (10 ms p99; 300 s freshness; 0.99) are PROVISIONAL, chosen restrictive, owned by nobody. One existing test expectation changed (statuses.len() now adds data-plane objectives). Nothing was compiled.",
+   "tests": [
+    "backend/crates/libs/qip-observability/tests/data_plane.rs (three tests)",
+    "backend/crates/runtime/qip-kernel/tests/refetch_health_series.rs::a_refetch_pass_moves_the_refetch_objective_and_an_unrun_pass_reads_unmeasured"
+   ],
+   "test_command": "cargo test -p qip-observability --no-fail-fast; cargo test -p qip-kernel --test refetch_health_series",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "1de4852d",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-OBS-9074",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Per owner ruling, the image's Binary Authorization attestation is the signature; the deep brain now refuses (Error::denied) at Operations::build a runbook set whose SHA-256 is not REVIEWED_RUNBOOK_SET_DIGEST, and a pin test fails a commit that changes the set without the digest. The ADR says the digest is not itself a signature.",
+   "remains": "The digest constant was computed by a script, not by running Rust: if the pin test fails on first run the constant is wrong and the failure message holds the right value. No signer, KMS or Terraform was added. Nothing was compiled.",
+   "tests": [
+    "backend/crates/apps/qip-deepbrain/tests/runbook_set.rs (four tests)"
+   ],
+   "test_command": "cargo test -p qip-deepbrain --test runbook_set",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "e514758b",
+   "built_unverified": true
+  },
+  {
+   "id": "R12-MODEL-6002",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "New qip-kernel module training_export gives one TrainingExport of every path LEARN priced (declined, cell-declined, filled, partly-unfilled), read from the replayed journal via Platform::training_export, Simulated figures kept tainted, with JSON-lines output.",
+   "remains": "Hedge-not-taken (owner decision 7), agency proposals (ambient door) and the individual different-hedge/different-venue arm figures are not journaled, so they cannot be exported; named in ADR 0683. Nothing was compiled.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/training_export.rs::tests (two tests)",
+    "backend/crates/runtime/qip-kernel/tests/learning.rs::the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced"
+   ],
+   "test_command": "cargo test -p qip-kernel --lib training_export; cargo test -p qip-kernel --test learning",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "4a01ae88",
+   "built_unverified": true
+  }
+ ]
+}

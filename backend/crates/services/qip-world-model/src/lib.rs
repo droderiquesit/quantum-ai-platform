@@ -66,8 +66,8 @@ pub use exposure::{
     hidden_concentration, instruments_exposed_to, second_order_exposure, unheld_dependencies,
 };
 pub use fabric::{
-    Authenticity, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, KeyOutcome, KnowledgeDelta,
-    ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
+    Authenticity, BeliefEvidence, ClaimKey, Contest, EvidenceFabric, EvidenceVerdict, KeyOutcome,
+    KnowledgeDelta, ProvenanceEdge, ProvenanceGraph, ProvenanceNode, SourceHistory,
 };
 pub use falsification::{
     Breach, FalsificationPass, Falsifier, HeldOut, HypothesisSource, Inadmissible, LeakageTally,

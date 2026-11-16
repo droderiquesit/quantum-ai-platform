@@ -599,7 +599,19 @@ fn cell_configuration(config: &NodeConfig) -> Result<(CellConfig, String)> {
     // wire is armed here and nowhere a spool is not.
     let cell_config = cell_config
         .with_journal_trimmed_on_ship()
-        .with_journal_wire();
+        .with_journal_wire()
+        // R12-RISK-5044: a stated edge must clear fixed cost, sweep slippage
+        // and this margin before an order exists. Armed here because an
+        // unarmed gate is one nobody runs.
+        .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)?
+        // ADR 0693: a directional signal that states no edge is refused, so
+        // the gate above judges every entry rather than waving through the
+        // ones nobody priced. Restrictive; no committed strategy declares an
+        // edge yet, so until one does this node enters nothing.
+        .with_edgeless_signals_refused();
+    // ADR 0242, R12-RES-7099: the cell keeps the custody watch, fed by the
+    // statement the simulated venue makes each pass.
+    let cell_config = qip_edge_node::pass::arm_custody_watch(cell_config)?;
     // ADR 0155 section 14: the identity of this build, from a file the unit
     // that starts the process writes, never from the network, in line with
     // "secrets and facts reach the process as files". Unset leaves the
@@ -1372,19 +1384,43 @@ fn run() -> Result<()> {
             .join(", "),
         lake_codec
     );
-    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(LakeSink::new(
-        config.storage.blobs(LAKE_NAMESPACE)?,
-        &config.cell_id,
-        &config.region,
-        retention,
-        lake_codec,
-    )?)];
+    let mut sinks: Vec<Box<dyn Sink>> = vec![Box::new(
+        LakeSink::new(
+            config.storage.blobs(LAKE_NAMESPACE)?,
+            &config.cell_id,
+            &config.region,
+            retention,
+            lake_codec,
+        )?
+        .with_metrics(Arc::clone(metrics)),
+    )];
     // The fabric link's issued certificate under `cas`, held for the life
     // of `run` — which never returns while the node runs — because dropping
     // it stops its renewal loop.
     let mut issued: Option<qip_transport::cas::CasIdentity> = None;
     match config.fabric.take() {
-        Some(fabric) => {
+        Some(mut fabric) => {
+            // R12-FABRIC-10016: the broker's address from its SRV record when a
+            // resolver and zone are configured; the configured endpoint is the
+            // last rung, so an unreachable resolver never stops the node.
+            if let Some(discovery) =
+                qip_edge_node::fabric_discovery::FabricDiscovery::read(&|name| {
+                    std::env::var(name).ok()
+                })?
+            {
+                let found = discovery.resolve(&fabric.url, Arc::clone(&clock))?;
+                qip_edge_node::fabric_discovery::record_source(metrics, found.source);
+                println!(
+                    "qip-edge-node: fabric endpoint {} from {}{}",
+                    found.url,
+                    found.source.as_label(),
+                    found
+                        .lookup_failure
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                );
+                fabric.url = found.url;
+            }
             // ADR 0112: the fabric is a link between Compute Engine
             // processes, so it is mutual TLS with this node's workload
             // certificate unless the deployment is `local` and said

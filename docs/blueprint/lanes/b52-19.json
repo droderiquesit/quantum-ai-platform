@@ -1,0 +1,75 @@
+{
+ "lane": "19",
+ "rows": [
+  {
+   "id": "R12-EXPAND-6023",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "ResearchRegistry::record now refuses a Null or Supported verdict (only Open is accepted) and record_version is crate-private, so record_concluded, which demands the cited experiments and a benchmark, is the only door for a concluded verdict. Four existing tests that used the old door were moved to record_concluded; none was loosened.",
+   "remains": "ResearchMemory::promote still counts cited episodes without resolving them to held episodes: the kernel LEARN stage (platform.rs, research_lessons tally) cites resolution ids that are not held analyst episodes, so resolving would make every kernel promotion refuse until LEARN is reworked to cite held episodes. The ontology candidate from the sweep still cites a gap, not an evaluation. No skeptic round ran.",
+   "tests": [
+    "backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_concluded_verdict_cannot_enter_the_research_registry_through_the_uncited_door",
+    "backend/crates/libs/qip-agents/src/research.rs::tests::a_version_not_above_the_latest_is_refused"
+   ],
+   "test_command": "cargo test -p qip-agents --no-fail-fast && cargo test -p qip-expansion --no-fail-fast && cargo test -p qip-acceptance --test registry_versioning",
+   "mutations": [
+    "research.rs ResearchRegistry::record: disabled the non-Open refusal (if false && ...); failed 'a concluded verdict was recorded with no experiment and no benchmark' at expansion_registries.rs:662; restored, cmp clean"
+   ],
+   "commit": "91372307"
+  },
+  {
+   "id": "R12-AMBIENT-7146",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted. Forecast/scenario ambient model types and an autonomous model/strategy lifecycle are a multi-crate build that did not fit this session.",
+   "remains": "Everything in the last reader's note: forecast/scenario ambient models and the lifecycle seam under authority envelopes.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-AMBIENT-9001",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "ADR 0638 records the BigQuery-only decision. qip-agents gains Capability::ReadEvidence, a read-only EvidenceStore port behind a Gated desk, a validated bounded EvidenceQuery (limit 500, provisional) and read_evidence, which refuses over-returns and rows knowable after the run clock. Research tasks already ride the journaled federation review on WorldModelUpdated; no new topic was added.",
+   "remains": "BigQuery REST adapter in qip-storage, composition-root wiring and a production caller in REASON, a decision whether research tasks need their own fabric topic. The ADR has no index row in docs/adr/README.md (the orchestrator adds it), so the documentation guard test every_decision_record_is_listed_in_the_index fails until it does.",
+   "tests": [
+    "backend/crates/libs/qip-agents/tests/evidence.rs::evidence_is_read_only_through_its_own_capability_and_the_read_is_on_the_record",
+    "backend/crates/libs/qip-agents/tests/evidence.rs::a_store_that_returns_a_row_from_the_future_is_refused"
+   ],
+   "test_command": "cargo test -p qip-agents --test evidence",
+   "mutations": [
+    "evidence.rs: disabled knowable_at refusal; failed at evidence.rs:121 'Succeeded'",
+    "evidence.rs: gated desk on ReadNews; failed at evidence.rs:94 'agent reader is not granted read_news'"
+   ],
+   "commit": "ad3a7860"
+  },
+  {
+   "id": "R12-AMBIENT-9029",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted.",
+   "remains": "Fabric task/result topics for specialist agents, a knowledge-API seam, multimodal reasoning; each needs an ADR first.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-1021",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "ToolRegistry::adopt registers a gap's read-only proposal with a ToolAdoption (gap, mount record), and ExpansionDesk::adopt_proposed_tool adopts only a name the queue proposed. Widening stays promote's.",
+   "remains": "No production caller mounts a built tool into a running node; brains and model families from gaps are not registered; no skeptic round.",
+   "tests": [
+    "backend/crates/services/qip-expansion/tests/loop.rs::a_proposed_tool_is_adopted_read_only_with_its_gap_and_only_when_a_gap_proposed_it"
+   ],
+   "test_command": "cargo test -p qip-agents -p qip-expansion --no-fail-fast",
+   "mutations": [
+    "desk.rs adopt_proposed_tool: replaced the self.tools.adopt call; failed at loop.rs:724 'called Option::unwrap() on a None value'; restored, cmp clean"
+   ],
+   "commit": "cca1c954"
+  }
+ ]
+}

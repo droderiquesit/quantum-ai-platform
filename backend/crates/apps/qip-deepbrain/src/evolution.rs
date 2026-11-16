@@ -419,6 +419,9 @@ pub struct EvolutionStats {
     pub discarded: u64,
 }
 
+/// Manifests the engine keeps for inspection.
+pub const DOCUMENT_MANIFESTS_KEPT: usize = 256;
+
 /// The crank. Owns the data adapter, the per-subject histories and foundries.
 pub struct EvolutionEngine {
     config: EvolutionConfig,
@@ -475,6 +478,9 @@ pub struct EvolutionEngine {
     /// Scores each connector against the own stream (R12-DATA-2022, 2025,
     /// 1105). `None`, the default, observes and scores nothing.
     source_alpha: Option<crate::source_alpha::SourceAlphaDesk>,
+    /// The latest version-2 manifests of accepted connector fetches
+    /// (R12-DATA-8013), oldest first, bounded.
+    document_manifests: std::collections::VecDeque<qip_financial::manifest::SourceManifest>,
 }
 
 impl std::fmt::Debug for EvolutionEngine {
@@ -522,6 +528,7 @@ impl EvolutionEngine {
             connectors: Vec::new(),
             refetch_every: 0,
             source_alpha: None,
+            document_manifests: std::collections::VecDeque::new(),
         })
     }
 
@@ -583,6 +590,25 @@ impl EvolutionEngine {
         Ok(Some(findings))
     }
 
+    /// A replay of a past document asks every arm's source for the extents it
+    /// touches again and compares their hash with the one first read
+    /// (R12-DATA-8018). Not on the cadence of [`Self::maybe_refetch`]: the
+    /// replay is the trigger, so a replay never reads a stored copy of what a
+    /// provider can serve again. A licence refusal stops the pass.
+    pub fn refetch_for_replay(
+        &mut self,
+        platform: &mut Platform,
+        subjects: &std::collections::BTreeSet<String>,
+        period: qip_data_finder::reference::DataPeriod,
+        now: Timestamp,
+    ) -> Result<Vec<qip_data_finder::refetch::ReFetchFinding>> {
+        let mut findings = Vec::new();
+        for arm in &mut self.connectors {
+            findings.extend(arm.refetch_for_replay(platform, subjects, period, now)?);
+        }
+        Ok(findings)
+    }
+
     /// Score every connector arm against the own stream every `every`
     /// cycles; zero attaches nothing, so nothing is observed either.
     pub fn with_source_alpha(mut self, every: u64) -> Self {
@@ -590,7 +616,23 @@ impl EvolutionEngine {
         self
     }
 
+    /// Rebuild the attached desk's score history from the log (R12-EVID-8108).
+    /// Zero when no desk is attached.
+    pub fn restore_source_alpha(&mut self, platform: &Platform) -> Result<usize> {
+        match self.source_alpha.as_mut() {
+            Some(desk) => desk.restore(&platform.source_alpha_rounds()?),
+            None => Ok(0),
+        }
+    }
+
     /// The source-alpha desk, when one is attached.
+    /// The manifests of the connector fetches accepted most recently.
+    pub fn document_manifests(
+        &self,
+    ) -> impl Iterator<Item = &qip_financial::manifest::SourceManifest> {
+        self.document_manifests.iter()
+    }
+
     pub fn source_alpha(&self) -> Option<&crate::source_alpha::SourceAlphaDesk> {
         self.source_alpha.as_ref()
     }
@@ -605,6 +647,15 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> (Option<crate::source_alpha::SourceAlphaRound>, Result<()>) {
+        // What LEARN last attributed to each source's decisions goes to the
+        // desk before it scores, so the round carries it (R12-DATA-2025).
+        // A grouping that cannot be built leaves the previous figures.
+        if let (Some(desk), Some(pass)) = (self.source_alpha.as_mut(), platform.last_attribution())
+            && let Ok(figures) =
+                qip_kernel::source_decision_attribution::decision_contributions(pass)
+        {
+            desk.observe_decisions(figures);
+        }
         let round = self
             .source_alpha
             .as_mut()
@@ -837,6 +888,11 @@ impl EvolutionEngine {
             &window.bars,
             now,
         )?);
+        // The microstructure models the cells' folded residuals support,
+        // registered before the journal below so a restart rebuilds them
+        // (R12-MODEL-7022). Registers only; a refusal is a declined entry,
+        // never a stopped round.
+        self.learning.train_microstructure_models(platform, now)?;
         // Every card the round registered, evaluated, drifted, promoted or
         // rolled back, on the log, so a restart rebuilds it (R12-MODEL-9003).
         platform.journal_model_registry(self.learning.registry(), now)?;
@@ -958,6 +1014,12 @@ impl EvolutionEngine {
         let mut absorbed = Self::absorb(&mut self.history, self.config.history_cap, platform, own);
         for arm in &mut self.connectors {
             let records = arm.poll(platform, until)?;
+            for manifest in arm.drain_document_manifests() {
+                if self.document_manifests.len() == DOCUMENT_MANIFESTS_KEPT {
+                    self.document_manifests.pop_front();
+                }
+                self.document_manifests.push_back(manifest);
+            }
             if let Some(desk) = self.source_alpha.as_mut() {
                 desk.observe_source(arm.source_id(), &records);
             }
@@ -4239,6 +4301,104 @@ mod tests {
         )
     }
 
+    /// R12-DATA-8018: a replay of a past document is what triggers the
+    /// re-fetch, not the cadence (`with_refetch` is never set here). The
+    /// source is asked again for the extent the replay touches and the hash
+    /// is compared with the one first read; a replay naming a subject no
+    /// reference covers, or a period none overlaps, re-fetches nothing; and
+    /// an empty subject set is refused. Mutation: drop the
+    /// `symbols().iter().any(..)` clause in `refetch_for_replay` — the
+    /// non-matching-subject assertion fails.
+    #[test]
+    fn a_replay_of_a_past_document_refetches_it_by_its_manifest_and_compares_the_hash() -> Result<()>
+    {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let mut platform = platform()?;
+        let mut engine =
+            engine(0).with_connector(scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?);
+        engine.sense(&mut platform, now)?;
+        let reference = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        let subjects: std::collections::BTreeSet<String> = reference.symbols().clone();
+        let period = reference.range();
+
+        let other: std::collections::BTreeSet<String> =
+            std::iter::once("not-a-subject".to_string()).collect();
+        assert!(
+            engine
+                .refetch_for_replay(&mut platform, &other, period, now)?
+                .is_empty(),
+            "a replay touching another subject re-fetches nothing"
+        );
+        assert!(
+            engine
+                .refetch_for_replay(
+                    &mut platform,
+                    &std::collections::BTreeSet::new(),
+                    period,
+                    now
+                )
+                .is_err(),
+            "an empty subject set is refused"
+        );
+        let findings = engine.refetch_for_replay(&mut platform, &subjects, period, now)?;
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(findings[0].check, Some(RevisionCheck::Unchanged));
+
+        // The provider has revised the document since: the same replay now
+        // reads a different hash, and says so.
+        let later = now.saturating_add(Duration::from_mins(5));
+        let mut platform = self::platform()?;
+        let mut engine = engine_with_every(0).with_connector(scripted_coinbase_arm(
+            now,
+            vec![ok(), ok(), RecordedAnswer::json(200, ticker_body(later))],
+        )?);
+        engine.sense(&mut platform, now)?;
+        let findings = engine.refetch_for_replay(&mut platform, &subjects, period, now)?;
+        assert!(
+            matches!(findings[0].check, Some(RevisionCheck::Revised { .. })),
+            "{findings:?}"
+        );
+        Ok(())
+    }
+
+    /// R12-DATA-8112: a scout execution polls an arm with no platform, writes
+    /// the fetch as an immutable record, and the deep brain's reader returns
+    /// exactly it; a second execution serving the same fetch writes nothing
+    /// new. Mutation: make `scout_poll` return `Ok(None)` — nothing is
+    /// written and the first assertion fails.
+    #[test]
+    fn a_scout_execution_writes_one_immutable_record_and_the_reader_returns_it() -> Result<()> {
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        use qip_storage::{BlobStore, MemoryBlobStore};
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let mut arms = vec![scripted_coinbase_arm(now, vec![ok(), ok(), ok()])?];
+        let store = MemoryBlobStore::new();
+        let first = crate::scout::run_once(&mut arms, &store, now);
+        assert_eq!(first.written.len(), 1, "{first:?}");
+        assert!(first.failed.is_empty(), "{first:?}");
+        let source = first.written[0].clone();
+        let read = crate::scout::read_scout_records(&store, &source)?;
+        assert_eq!(read.valid.len(), 1, "{read:?}");
+        assert!(read.rejected.is_empty());
+        assert!(!read.valid[0].records().is_empty());
+        // The same fetch served again is a duplicate the connector's own dedup
+        // window drops, so the second execution has nothing to write and the
+        // bucket still holds exactly the first record.
+        let second = crate::scout::run_once(&mut arms, &store, now);
+        assert_eq!(second.empty, vec![source.clone()], "{second:?}");
+        assert_eq!(store.list(&format!("{source}/"))?.len(), 1);
+        Ok(())
+    }
+
     /// R12-DATA-1037, through the engine `main.rs` builds and the cadence
     /// the node loop drives: an extent the platform referenced is asked for
     /// again through the connector's own transport and the manifest's
@@ -4337,6 +4497,99 @@ mod tests {
         Ok(())
     }
 
+    /// R12-DATA-1037, the revised half: an extent the source has rewritten
+    /// since it was referenced is recorded the moment a re-fetch finds it —
+    /// on the log, on the metric and on the ledger, where the newer
+    /// reference replaces the old — and not at whatever later poll happens
+    /// to cover the same extent. Until this was driven through the arm, a
+    /// `Revised` finding was returned to the caller and nothing else moved,
+    /// so a research campaign that had read the old bytes stayed unflagged.
+    ///
+    /// The unchanged re-fetch in the same test is the premise that keeps the
+    /// assertions from passing on a recorder that records everything.
+    ///
+    /// Mutated by deleting the `platform.record_reference(revised, at)?`
+    /// call in `ConnectorArm::refetch`: the revision-detected log count stays
+    /// 0 and the first assertion after the revised pass fails; restored.
+    #[test]
+    fn a_re_fetch_that_finds_a_revised_extent_records_the_revision_at_once() -> Result<()> {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_events::Topic;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let rewritten = RecordedAnswer::json(200, ticker_body(now).replace("64230.99", "64999.99"))
+            .with_etag("v2");
+        assert_ne!(
+            ticker_body(now),
+            ticker_body(now).replace("64230.99", "64999.99"),
+            "premise: the rewritten body differs"
+        );
+        let mut platform = platform()?;
+        let mut engine = engine(0)
+            .with_connector(scripted_coinbase_arm(
+                now,
+                vec![ok(), ok(), ok(), rewritten],
+            )?)
+            .with_refetch(1);
+        engine.sense(&mut platform, now)?;
+        let original = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        let revisions = |platform: &Platform| {
+            platform
+                .event_log()
+                .by_topic(Topic::SourceRevisionDetected)
+                .len()
+        };
+        assert_eq!(revisions(&platform), 0, "premise: nothing revised yet");
+
+        let later = now.saturating_add(Duration::from_hours(1));
+        let same = engine
+            .maybe_refetch(&mut platform, 1, later)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(same[0].check, Some(RevisionCheck::Unchanged));
+        assert_eq!(
+            revisions(&platform),
+            0,
+            "an unchanged re-fetch recorded a revision"
+        );
+
+        let latest = later.saturating_add(Duration::from_hours(1));
+        let found = engine
+            .maybe_refetch(&mut platform, 1, latest)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert!(
+            matches!(&found[0].check, Some(RevisionCheck::Revised { .. })),
+            "premise: the re-fetch saw the rewrite: {found:?}"
+        );
+        assert_eq!(
+            revisions(&platform),
+            1,
+            "a revised extent found by a re-fetch was not recorded on the log"
+        );
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                qip_observability::metrics::names::DATA_REVISIONS_DETECTED,
+                &qip_observability::metrics::labels([("origin", original.origin().as_str())]),
+            ),
+            1,
+            "the revision is not counted"
+        );
+        let held = platform
+            .reference_ledger()
+            .references()
+            .find(|reference| reference.locator() == original.locator())
+            .ok_or_else(|| Error::not_found("the extent left the ledger"))?;
+        assert_ne!(held.content_hash(), original.content_hash());
+        assert_eq!(held.retrieved_at(), latest);
+        assert_eq!(held.etag(), Some("v2"));
+        Ok(())
+    }
+
     /// R12-EVID-8108: with nothing set, the engine `main.rs` builds scores
     /// every connector on the desk's default cadence, and the round is on
     /// the log, so a replay reads back exactly the scores it produced.
@@ -4428,6 +4681,72 @@ mod tests {
             vec![round.record(due, now)],
             "the log does not hold the round the desk scored"
         );
+        Ok(())
+    }
+
+    /// A restarted deep brain reads the scores back off the log instead of
+    /// beginning with none (R12-EVID-8108): a source promoted or retired on
+    /// its score had nothing behind it after a restart. Computed scores come
+    /// back in order and a refused pair comes back as nothing; a second
+    /// restore is refused; a desk with no scores in the log restores zero.
+    /// Mutation: make `SourceAlphaDesk::restore` skip the
+    /// `if let Ok(alpha)` push — the history stays empty and the first
+    /// assertion fails.
+    #[test]
+    fn a_restarted_deep_brain_rebuilds_the_source_scores_from_the_log() -> Result<()> {
+        use crate::source_alpha::DEFAULT_SOURCE_ALPHA_EVERY;
+        use qip_data_finder::source_alpha::SourceAlpha;
+        use qip_kernel::source_alpha_record::{ScoredSource, SourceAlphaScored};
+        let mut platform = platform()?;
+        let at = start();
+        let scored = |gain: f64| ScoredSource {
+            source: "coinbase-spot-ticker".to_string(),
+            subject: "BTC-USD".to_string(),
+            samples: 16,
+            outcome: Ok(SourceAlpha {
+                at,
+                incremental_gain: gain,
+                realised_contribution: 0.25,
+            }),
+        };
+        let refused = ScoredSource {
+            source: "coinbase-spot-ticker".to_string(),
+            subject: "ETH-USD".to_string(),
+            samples: 2,
+            outcome: Err("2 aligned sample(s); a score needs 10".to_string()),
+        };
+        for (cycle, gain) in [(1_u64, 0.5), (2, 0.75)] {
+            let round = SourceAlphaScored {
+                cycle,
+                at: at.saturating_add(Duration::from_mins(cycle as i64)),
+                scores: vec![scored(gain), refused.clone()],
+            };
+            assert!(platform.journal_source_alpha_round(round)?);
+        }
+        let mut cold = engine(0).with_source_alpha(DEFAULT_SOURCE_ALPHA_EVERY);
+        assert_eq!(
+            cold.source_alpha()
+                .map_or(usize::MAX, |d| d.history("coinbase-spot-ticker").count()),
+            0,
+            "premise: a fresh desk holds no score"
+        );
+
+        let restored = cold.restore_source_alpha(&platform)?;
+
+        assert_eq!(restored, 2, "the refused pair carries no score");
+        let gains: Vec<f64> = cold
+            .source_alpha()
+            .ok_or_else(|| Error::not_found("desk attached"))?
+            .history("coinbase-spot-ticker")
+            .map(|alpha| alpha.incremental_gain)
+            .collect();
+        assert_eq!(gains, vec![0.5, 0.75], "log order");
+        assert!(
+            cold.restore_source_alpha(&platform).is_err(),
+            "restoring onto a desk that holds scores would count each twice"
+        );
+        let mut bare = engine(0);
+        assert_eq!(bare.restore_source_alpha(&platform)?, 0, "no desk attached");
         Ok(())
     }
 

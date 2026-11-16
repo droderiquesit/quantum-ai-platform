@@ -521,6 +521,7 @@ fn the_journal_chain_catches_an_edited_decision() -> Result<()> {
             equalised: true,
             grants: Vec::new(),
             grounds: Vec::new(),
+            cycle_id: None,
         },
         t(2),
     );

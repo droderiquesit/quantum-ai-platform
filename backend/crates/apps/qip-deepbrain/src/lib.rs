@@ -49,10 +49,12 @@
 //! deterministic templates narrating — which is what every deployment does
 //! today.
 
+pub mod acquisition_dispatch;
 pub mod ambient_agency;
 pub mod ambient_journal;
 pub mod ambient_models;
 pub mod artifacts;
+pub mod assembly;
 pub mod attestation;
 pub mod brains;
 pub mod breadth;
@@ -63,6 +65,7 @@ pub mod connectors;
 pub mod discovery;
 pub mod evolution;
 pub mod features;
+pub mod fusion_clock;
 pub mod health;
 pub mod language;
 pub mod learning;
@@ -74,10 +77,12 @@ pub mod reference;
 pub mod research;
 pub mod research_plan;
 pub mod roster;
+pub mod scout;
 pub mod signal_mapper;
 pub mod source_alpha;
 pub mod status;
 pub mod succession;
+pub mod tick_book;
 pub mod tick_desk;
 pub mod trust;
 pub mod warehouse;

@@ -61,6 +61,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+/// What the last allocation granted (R12-CAPITAL-3020).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GrantsRecord {
+    pub allocator_total: Decimal,
+    pub granted_total: Decimal,
+    pub by_cell: BTreeMap<String, Decimal>,
+}
+
 /// The key id every signature the central plane makes is recorded under.
 ///
 /// Carried into the envelope issuer, the approval chain and the artifact store
@@ -98,6 +106,7 @@ pub fn capital_subject(strategy: &StrategyId, cell: &str) -> String {
         requested_by: String::new(),
         exposure: None,
         drawdown: None,
+        authority: None,
     }
     .subject()
 }
@@ -799,10 +808,18 @@ pub struct CentralPlane {
     /// (R12-CAPITAL-4085, ADR 0229). Empty until a caller hands one over, and
     /// an agent whose figure is absent abstains.
     society_inputs: qip_capital::society::SocietyInputs,
+    /// The authority block every grant this plane issues states
+    /// (R12-GOV-6120, ADR 0155 section 6, step one: the issuer states it
+    /// before any cell is armed to require it). `None` until configured, so
+    /// an unconfigured plane signs what it always signed.
+    authority: Option<qip_contracts::capital::AuthorityBounds>,
     /// Every agent's plan for the last allocation, recorded before the plan
     /// acted on was chosen. Behind a mutex because `allocate` is a read of
     /// the plane: recording what it was told is not a change to its state.
     society: std::sync::Mutex<Vec<qip_capital::society::CapitalPlan>>,
+    /// The last allocation as the desk reads it (R12-CAPITAL-3020): the
+    /// allocator's total beside what was granted after narrowing.
+    last_grants: std::sync::Mutex<Option<GrantsRecord>>,
     /// The liquidity, collateral and funding claims on each cell's grant the
     /// coordinator settles beside the plan's allocation lines
     /// (R12-CAPITAL-9047, ADR 0230). Empty until a caller hands them over;
@@ -1064,7 +1081,9 @@ impl CentralPlane {
                 .with_promotion_eligibility(config.promotion_eligibility.clone()),
             allocator: CapitalAllocator::new(limits, config.drawdown.clone()),
             society_inputs: qip_capital::society::SocietyInputs::default(),
+            authority: None,
             society: std::sync::Mutex::new(Vec::new()),
+            last_grants: std::sync::Mutex::new(None),
             coordinator_claims: BTreeMap::new(),
             coordination: BTreeMap::new(),
             issuer: EnvelopeIssuer::new(signing_secret.to_vec(), CENTRAL_KEY_ID)?,
@@ -2002,14 +2021,50 @@ impl CentralPlane {
         // widen a line.
         let plans = qip_capital::society::propose_all(&plan, &self.society_inputs)?;
         let settled = qip_capital::society::settle(&plan, &plans);
+        let settled = qip_capital::society::narrow_for_disagreement(
+            &settled,
+            self.society_inputs.forecast_spread,
+        )?;
         *self.society.lock().unwrap_or_else(|e| e.into_inner()) = plans;
+        *self.last_grants.lock().unwrap_or_else(|e| e.into_inner()) = Some(GrantsRecord {
+            allocator_total: plan.allocated(),
+            granted_total: settled.allocated(),
+            by_cell: settled
+                .allocations
+                .iter()
+                .fold(BTreeMap::new(), |mut cells, line| {
+                    *cells.entry(line.cell.clone()).or_insert(Decimal::ZERO) += line.notional;
+                    cells
+                }),
+        });
         Ok(settled)
+    }
+
+    /// State `authority` on every grant issued from now on. Its leverage must
+    /// equal the exposure terms' leverage; a difference is refused when a
+    /// grant is signed, not here, because the figure it is measured against
+    /// is the issuer's.
+    pub fn set_authority_bounds(
+        &mut self,
+        authority: Option<qip_contracts::capital::AuthorityBounds>,
+    ) {
+        self.authority = authority;
     }
 
     /// The figures on record the capital society reads from the next
     /// allocation on. Only narrows: see [`qip_capital::society::settle`].
     pub fn set_society_inputs(&mut self, inputs: qip_capital::society::SocietyInputs) {
         self.society_inputs = inputs;
+    }
+
+    /// The widest forecast disagreement this cycle, as a spread in `[0, 1]`,
+    /// narrowing every allocation line from the next allocation on
+    /// (R12-CAPITAL-10122). `None` withdraws it. A spread outside `[0, 1]`
+    /// is refused here so a bad figure never replaces a good one.
+    pub fn set_forecast_spread(&mut self, spread: Option<qip_core::Decimal>) -> Result<()> {
+        qip_capital::society::check_spread(spread)?;
+        self.society_inputs.forecast_spread = spread;
+        Ok(())
     }
 
     /// The non-allocation claims the coordinator settles from the next
@@ -2103,6 +2158,15 @@ impl CentralPlane {
                 )
             })
             .collect()
+    }
+
+    /// The last allocation's total, granted total and grant per cell, or
+    /// `None` before the first allocation has run.
+    pub fn last_grants(&self) -> Option<GrantsRecord> {
+        self.last_grants
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Every agent's plan for the last allocation, in the order recorded.
@@ -2528,6 +2592,9 @@ impl CentralPlane {
                     allocation.notional
                 ))
             })?;
+        if let Some(authority) = &self.authority {
+            terms = terms.with_authority(authority.clone());
+        }
         let envelope = self.issuer.issue(&terms, approval, now)?;
         // Verified immediately rather than trusted: the issuer is the boundary
         // that decides whether a cell may commit capital, and a grant that does
@@ -2548,6 +2615,7 @@ impl CentralPlane {
             // payload comparison below covers them (R12-CAPITAL-4088).
             exposure: envelope.exposure().cloned(),
             drawdown: envelope.drawdown().cloned(),
+            authority: envelope.bounds().cloned(),
         };
         let approved =
             self.compliance

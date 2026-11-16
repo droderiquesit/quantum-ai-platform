@@ -170,6 +170,43 @@ impl FetchDigest {
         })
     }
 
+    /// This fetch as the one manifest type, version 2 (R12-DATA-8013): the
+    /// content hash, the source's etag and resume cursor, the parser lineage
+    /// and how to read the original again, beside the locator and retrieval
+    /// time. `entitlement` and `fresh_until` are the caller's because the
+    /// digest knows neither the licence nor the source's freshness bound.
+    /// The re-fetch is a resume from the cursor where the fetch left one and
+    /// a re-read of the locator otherwise.
+    pub fn source_manifest(
+        &self,
+        entitlement: qip_contracts::governance::Entitlement,
+        fresh_until: Timestamp,
+    ) -> Result<qip_financial::manifest::SourceManifest> {
+        use qip_financial::manifest::{ManifestV2, Refetch, SourceManifest};
+        let refetch = if self.cursor.is_some() {
+            Refetch::FromCursor
+        } else {
+            Refetch::Locator
+        };
+        let v2 = ManifestV2::new(
+            self.etag.clone(),
+            entitlement,
+            self.cursor.clone(),
+            fresh_until,
+            self.parser.parser.clone(),
+            self.parser.parser_version.clone(),
+            refetch,
+        )?;
+        SourceManifest::from_hash(
+            self.source_id.clone(),
+            self.locator.clone(),
+            self.retrieved_at,
+            self.bytes,
+            self.sha256.clone(),
+        )?
+        .with_v2(v2)
+    }
+
     /// Attach the topic the source's records publish under.
     pub fn with_topic(mut self, topic: Topic) -> Self {
         self.topic = Some(topic);

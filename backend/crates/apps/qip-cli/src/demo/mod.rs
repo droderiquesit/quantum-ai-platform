@@ -839,7 +839,7 @@ impl LiveDemo {
         venue.bring_up(&venue_credential()?, start)?;
 
         let cell = Cell::new(
-            CellConfig::new(CELL, REGION).with_venue(VenueId::new(VENUE)),
+            demo_cell_config()?,
             FeatureEngine::new(MarketState::default(), Duration::from_secs(30)),
         )?;
 
@@ -981,6 +981,7 @@ impl LiveDemo {
             validity: Duration::from_hours(8),
             exposure: qip_capital::ExposureTerms::default(),
             drawdown_of_loss: qip_capital::envelope::DEFAULT_DRAWDOWN_OF_LOSS,
+            authority: None,
         };
         let approval = Approval::new(
             "capital grant for the live demonstration",
@@ -1341,6 +1342,16 @@ fn venue_config(base: &str) -> RestVenueConfig {
     }
 }
 
+/// The demonstration cell's configuration. Its own function so a test can
+/// read what the cell is armed with: a demonstration that composes "the live
+/// path" on a cell without the net-edge gate shows a path the node does not
+/// run (R12-RISK-5044).
+fn demo_cell_config() -> Result<CellConfig> {
+    CellConfig::new(CELL, REGION)
+        .with_venue(VenueId::new(VENUE))
+        .with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP)
+}
+
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)]
 mod tests {
@@ -1348,6 +1359,16 @@ mod tests {
 
     fn at() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
+    }
+
+    #[test]
+    fn the_demonstration_cell_is_armed_with_the_decided_net_edge_margin() -> Result<()> {
+        assert_eq!(
+            demo_cell_config()?.net_edge_margin_bp,
+            Some(qip_edge::cell::NET_EDGE_MARGIN_BP)
+        );
+        assert_eq!(qip_edge::cell::NET_EDGE_MARGIN_BP, qip_core::dec!("25"));
+        Ok(())
     }
 
     /// The reference record states the tape it is served beside, and states a

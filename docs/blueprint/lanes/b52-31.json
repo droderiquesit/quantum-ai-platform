@@ -1,0 +1,91 @@
+{
+ "lane": "31",
+ "rows": [
+  {
+   "id": "R12-RES-7095",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "qip_edge::band adds DirectionalBand and BandBook: bands are reserved against the cell's share (refused, not trimmed, above it), a replayed epoch is refused, and usable() yields nothing while the mesh is healthy. ADR 0662 records it.",
+   "remains": "No centre issues bands, no node holds a BandBook, no pass sizes against usable() (touches order sizing); signing of a wire band is undecided. docs/adr/README.md needs the 0662 index row (orchestrator's), so the documentation guard test every_decision_record_is_listed_in_the_index fails until it is added.",
+   "tests": [
+    "backend/crates/edge/qip-edge/tests/band.rs::bands_are_reserved_against_the_share_and_the_sum_holds",
+    "backend/crates/edge/qip-edge/tests/band.rs::a_replayed_epoch_is_refused_and_a_newer_one_replaces_the_side",
+    "backend/crates/edge/qip-edge/tests/band.rs::bands_are_usable_only_while_the_mesh_is_degraded_and_only_for_this_cell"
+   ],
+   "test_command": "cargo test -p qip-edge --test band",
+   "mutations": [
+    "band.rs share check disabled: band.rs:25 failed",
+    "band.rs epoch check relaxed to <: band.rs:37 failed",
+    "band.rs usable forced true: band.rs:58 failed"
+   ],
+   "commit": "dac93864"
+  },
+  {
+   "id": "R12-RES-7097",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Hypothesis::withdraw_origin removes a quarantined origin's evidence and recomputes confidence (rejecting a thesis left with no support), and downweight_origin holds a stale origin at the stricter factor; both roll back if validate fails.",
+   "remains": "Platform holds predictions, not Hypothesis objects, so assess_sources has no caller for these; episodic memory not re-scored; default-path env variable is a protected-path change.",
+   "tests": [
+    "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::withdrawing_a_quarantined_origin_lowers_confidence_to_what_the_rest_implies",
+    "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_hypothesis_left_with_no_support_is_rejected_not_left_standing",
+    "backend/crates/services/qip-reasoning-engine/tests/reasoning.rs::a_stale_origin_is_held_down_and_a_second_report_cannot_raise_it_back"
+   ],
+   "test_command": "cargo test -p qip-reasoning-engine --no-fail-fast",
+   "mutations": [
+    "withdraw keeps every item: reasoning.rs:2071 and :2100 failed",
+    "downweight takes new factor over held: reasoning.rs:2125 failed",
+    "no-support rejection skipped: one test failed"
+   ],
+   "commit": "4c622636"
+  },
+  {
+   "id": "R12-RES-7099",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The cell now keeps the CustodyWatch (CellConfig::with_custody_watch) and reads it at the pass instant; run_pass records the simulated venue's per-pass statement and main.rs arms it via arm_custody_watch at PASS_INTERVAL. A quiet venue ages custody to stale then unavailable, narrowing sizing.",
+   "remains": "The custody reading is not carried in the replay pass marker; main.rs's call to arm_custody_watch has no test of its own; the statement is the per-pass answer, not the journaled CustodyStatement entry.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/custody_watch.rs::a_node_armed_for_custody_reads_it_from_the_venues_statement_and_ages_it_when_the_venue_goes_quiet",
+    "backend/crates/apps/qip-edge-node/tests/custody_watch.rs::a_node_not_armed_for_custody_records_no_custody_row"
+   ],
+   "test_command": "cargo test -p qip-edge -p qip-edge-node --no-fail-fast",
+   "mutations": [
+    "pass.rs, keeps_custody_watch guard forced false: custody_watch.rs:72 'a pass did not hand the cell the venue's custody statement'",
+    "cell.rs narrowing, watch.freshness(now) forced Fresh: custody_watch.rs:57 'a cell armed for custody read nothing before any statement' (left Some(Fresh), right Some(Unavailable))"
+   ],
+   "commit": "863a9376"
+  },
+  {
+   "id": "R12-RES-7102",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "qip-world-model FeatureStore gains quarantine_subject, lift_quarantine and FeatureLookup::Quarantined: reads in an unreliable span are withheld, history() omits them, and after the lift no read reaches back across the span.",
+   "remains": "No kernel caller marks a subject from a cell report; kernel feature store untouched; outbox window lift and env-gated tick desk unchanged.",
+   "tests": [
+    "backend/crates/services/qip-world-model/tests/feature_quarantine.rs::a_quarantined_subject_reads_as_quarantined_and_another_subject_is_untouched",
+    "backend/crates/services/qip-world-model/tests/feature_quarantine.rs::a_lifted_quarantine_keeps_the_contaminated_window_out_and_never_reaches_back_across_it",
+    "backend/crates/services/qip-world-model/tests/feature_quarantine.rs::a_second_report_keeps_the_first_instant_and_a_lift_before_the_start_is_refused"
+   ],
+   "test_command": "cargo test -p qip-world-model --no-fail-fast",
+   "mutations": [
+    "Quarantined early return removed: feature_quarantine.rs:37 failed",
+    "between-span check removed: :71 failed",
+    "history filter removed: :64 failed"
+   ],
+   "commit": "141fa8ac"
+  },
+  {
+   "id": "R12-RES-7103",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "No code. The tree has no replay-promotion path other than the deep brain tick desk (only qip-deepbrain/src/tick_desk.rs reads lake history and calls build_examples), so there is nothing else to gate by ClockPrecision.",
+   "remains": "CaptureStream is untouched by the widened uncertainty at construction; tick desk still runs only when QIP_DEEPBRAIN_TICK_EVERY is set (environment files are protected).",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ],
+ "guard_suites": "documentation, manifest_wiring, order_placement_paths, event_fabric_wire_format, event_fabric_contracting, event_fabric_infrastructure, lane0_tick_lake, api_boundary all ok when run before the ADR was added; documentation then fails only every_decision_record_is_listed_in_the_index for ADR 0662 (index row is the orchestrator's)."
+}

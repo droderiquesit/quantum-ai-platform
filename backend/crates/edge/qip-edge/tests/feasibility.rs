@@ -589,6 +589,15 @@ fn edge_cell(
     config: impl FnOnce(CellConfig) -> Result<CellConfig>,
     strategies: &[(&str, Option<f64>)],
 ) -> Result<Cell> {
+    edge_cell_on(book()?, metrics, config, strategies)
+}
+
+fn edge_cell_on(
+    tracked: VenueState,
+    metrics: &Arc<Metrics>,
+    config: impl FnOnce(CellConfig) -> Result<CellConfig>,
+    strategies: &[(&str, Option<f64>)],
+) -> Result<Cell> {
     let model = VenueModel::new(
         VenueClass::Exchange,
         Granularity::new(dec!("1"), dec!("0.01"), Decimal::ZERO)?,
@@ -604,7 +613,7 @@ fn edge_cell(
     let mut cell = Cell::new(config, features)?.with_metrics(Arc::clone(metrics));
     let fresh = fresh_payload(1, t(5)).signed(POLICY_KEY)?;
     cell.apply_policy(VerifiedPolicy::verify(fresh, POLICY_KEY, CELL, t(5))?, t(5))?;
-    cell.track(book()?);
+    cell.track(tracked);
     for (id, edge) in strategies {
         let (compiled, program) = edge_strategy(id, *edge)?;
         cell.deploy_with_pricing(
@@ -725,4 +734,23 @@ fn a_negative_net_edge_margin_is_refused_because_it_would_admit_an_edge_below_it
         .unwrap_err()
         .to_string();
     assert!(refused.contains("negative"), "{refused}");
+}
+
+/// The decided margin (25 bp) is what the roots arm: fixed cost ~10 bp plus 25
+/// puts the bar near 35, so a 30 bp edge is refused and a 60 bp edge trades.
+#[test]
+fn the_decided_margin_refuses_a_thirty_basis_point_edge_and_admits_sixty() -> Result<()> {
+    assert_eq!(qip_edge::cell::NET_EDGE_MARGIN_BP, dec!("25"));
+    let metrics = Arc::new(Metrics::new("qip-edge-node"));
+    let mut cell = edge_cell(
+        &metrics,
+        |c| c.with_net_edge_margin_bp(qip_edge::cell::NET_EDGE_MARGIN_BP),
+        &[("marginal", Some(30.0)), ("rich", Some(60.0))],
+    )?;
+    let report = work(&mut cell)?;
+    let refused = refusals_under(&report, "net_edge");
+    assert_eq!(refused.len(), 1, "{report:?}");
+    assert!(refused[0].contains("marginal"), "{}", refused[0]);
+    assert_eq!(contributors(&report), BTreeSet::from(["rich".to_string()]));
+    Ok(())
 }

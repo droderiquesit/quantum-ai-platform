@@ -1,0 +1,70 @@
+{
+ "lane": "44",
+ "note": "Nothing was compiled, built, tested or linted (owner instruction 2026-11-15). Every row built_unverified. ADRs 0688 and 0689.",
+ "rows": [
+  {
+   "id": "R12-GOV-6118",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Not built. qip-edge-node cannot depend on qip-compliance (reaches qip-ai; architecture.rs forbids it for edge crates).",
+   "remains": "Split the eligibility register into a lib without a qip-ai edge, then load the seed at the node root. See ADR 0689 item 2.",
+   "tests": [],
+   "test_command": "not run: nothing was compiled",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-GOV-6126",
+   "outcome": "NEEDS_FIGURE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Not built. Marking the close, momentum ignition and quote stuffing need windows and thresholds nobody gave.",
+   "remains": "The figures; a production caller of OrderManager::cancel. See ADR 0689 item 3.",
+   "tests": [],
+   "test_command": "not run: nothing was compiled",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-MESH-5062",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Not built. Bounding the saga grant by RegionTable capital needs a cell-to-wire-thread port that ADR 0116 restricts.",
+   "remains": "A design for that port. See ADR 0689 item 4.",
+   "tests": [],
+   "test_command": "not run: nothing was compiled",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-REASON-3054",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "SymbolicDerivation::veto and veto_rules now read the knowledge graph's outlived_by_claim entailment as a restrictive hard stop. Written, not compiled.",
+   "remains": "Physical delivery-state source; ontology loaded from a governed store.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/symbolic_stage.rs::tests::an_approved_hypothesis_the_knowledge_graph_entails_is_outlived_by_its_contract_is_vetoed"
+   ],
+   "test_command": "not run: nothing was compiled",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "36185586"
+  },
+  {
+   "id": "R12-REFLEX-7061",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Not built. Refusing past valid_for contradicts qip-edge/tests/telemetry.rs (orphaned cell must still order at t=500 on a t=100 payload) and ADR 0008; a lane may not weaken a test.",
+   "remains": "A decision on that test and ADR 0008. See ADR 0689 item 1.",
+   "tests": [],
+   "test_command": "not run: nothing was compiled",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}

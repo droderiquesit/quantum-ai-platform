@@ -49,6 +49,7 @@ pub mod ledger_operation;
 pub mod market_event;
 pub mod market_state;
 pub mod message;
+pub mod model_activation;
 pub mod policy;
 pub mod quantum;
 pub mod reflex;

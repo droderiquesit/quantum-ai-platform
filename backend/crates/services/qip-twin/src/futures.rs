@@ -824,13 +824,19 @@ impl FutureTree {
         self.log_score += log_score;
         self.observations += 1;
         let mut pruned = Vec::new();
-        for (id, likelihood) in &likelihoods {
-            if let Some(branch) = self.branches.get_mut(id) {
-                branch.probability = if evidence > 0.0 {
-                    branch.probability * likelihood / evidence
-                } else {
-                    0.0
-                };
+        // An observation every live branch finds impossible (each likelihood
+        // underflowed to zero) carries no information about which branch is
+        // right. Reweighting by it zeroed every probability and pruned the
+        // whole tree silently, leaving a dead tree standing until the driver
+        // set changed; the weights are kept instead, the penalty stays in
+        // `log_score`, and reality being outside every branch is exactly what
+        // the split below is for.
+        let informative = evidence > 0.0;
+        if informative {
+            for (id, likelihood) in &likelihoods {
+                if let Some(branch) = self.branches.get_mut(id) {
+                    branch.probability = branch.probability * likelihood / evidence;
+                }
             }
         }
         for branch in self.branches.values_mut() {

@@ -393,6 +393,39 @@ pub fn research_queue_depth() -> Slo {
     )
 }
 
+/// The name of the calibration/drift objective.
+pub const CALIBRATION_DRIFT: &str = "calibration-drift";
+
+/// The calibration/drift objective (R12-OBS-9164): the fraction of judged
+/// horizon-cycles whose direction-call Brier score stayed under the bound
+/// the lattice stage already gates on. The 0.95 target is borrowed from the
+/// quantum-job objective beside it; no owner has stated one, and the report
+/// of the lane that added it says so.
+pub fn calibration_drift() -> Slo {
+    Slo::availability(CALIBRATION_DRIFT, "kernel", 0.95, SloWindow::Week)
+}
+
+/// The name of the quantum/classical benchmark-delta objective.
+pub const QUANTUM_CLASSICAL_DELTA: &str = "quantum-classical-delta";
+
+/// The quantum/classical benchmark-delta objective (R12-OBS-9164): the
+/// fraction of quantum answers that were not worse than the classical
+/// baseline computed beside them (ADR 0006). Target borrowed as for
+/// [`calibration_drift`].
+pub fn quantum_classical_delta() -> Slo {
+    Slo::availability(QUANTUM_CLASSICAL_DELTA, "deepbrain", 0.95, SloWindow::Week)
+}
+
+/// The name of the agent tool-failure objective.
+pub const AGENT_TOOL_FAILURE: &str = "agent-tool-failure";
+
+/// The agent tool-failure objective (R12-OBS-9164): the fraction of tool
+/// calls that did not fail. Declared with no source, see
+/// `critical_paths::ai_objectives`.
+pub fn agent_tool_failure() -> Slo {
+    Slo::availability(AGENT_TOOL_FAILURE, "agents", 0.99, SloWindow::Day)
+}
+
 /// The names of §49.1 objectives that **cannot** be measured without a
 /// deployed, running system, and the reason each cannot.
 ///

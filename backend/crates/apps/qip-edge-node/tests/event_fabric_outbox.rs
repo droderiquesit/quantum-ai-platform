@@ -179,6 +179,7 @@ fn two_batches() -> [Vec<Decision>; 2] {
                 equalised: false,
                 grants: Vec::new(),
                 grounds: Vec::new(),
+                cycle_id: None,
             },
             refused(),
             Decision::HaltChanged {

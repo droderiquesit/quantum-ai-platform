@@ -192,15 +192,6 @@ impl FinancialObject {
         if self.price.is_negative() {
             issues.push(format!("price {} is negative", self.price));
         }
-        // ADR 0658: an event contract is a payoff bounded to one unit, so a
-        // price above one is a payoff the contract cannot make; refused, not
-        // clamped.
-        if self.instrument_type == InstrumentType::EventContract && self.price > Decimal::ONE {
-            issues.push(format!(
-                "event contract price {} exceeds its one-unit payoff bound",
-                self.price
-            ));
-        }
         if !self.lot_size.is_positive() {
             issues.push("lot size must be positive".into());
         }

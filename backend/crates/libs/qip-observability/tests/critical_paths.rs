@@ -65,10 +65,13 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
     source.count(names::QUANTUM_JOBS, labels([("outcome", "failed")]));
     let statuses = evaluate(&source.snapshot());
     // The eight critical paths, the service objectives and the reflex
-    // objectives beside them.
+    // objectives beside them, and the six data-plane objectives (ADR 0683).
     assert_eq!(
         statuses.len(),
-        critical_path_slos().len() + service_objectives().len() + reflex_objectives().len()
+        critical_path_slos().len()
+            + service_objectives().len()
+            + reflex_objectives().len()
+            + qip_observability::data_plane::data_plane_objectives().len()
     );
 
     let sink = Metrics::new("sink");
@@ -78,6 +81,7 @@ fn recording_writes_observations_for_every_objective_and_a_budget_only_for_a_mea
         .into_iter()
         .chain(service_objectives())
         .chain(reflex_objectives())
+        .chain(qip_observability::data_plane::data_plane_objectives())
     {
         assert!(
             snapshot
@@ -455,4 +459,43 @@ fn the_unbuilt_fabric_objectives_read_unmeasured_whatever_the_registry_holds() {
             "{name} publishes a budget with nothing to measure it"
         );
     }
+}
+
+/// R12-OBS-9164: the three AI objectives beyond freshness and the queue.
+/// Failure prevented: an objective declared with a target and a series that
+/// nothing reads, so it evaluates met on zero observations.
+#[test]
+fn the_ai_objectives_read_unmeasured_until_their_series_is_recorded_and_agent_tool_failure_stays_unmeasured()
+ {
+    use qip_observability::critical_paths::{ai_objectives, evaluate_ai};
+    let metrics = Metrics::new("test");
+    let before = evaluate_ai(&metrics.snapshot());
+    assert_eq!(before.len(), ai_objectives().len());
+    assert!(before.iter().all(|s| !s.is_observed()), "premise");
+
+    metrics.increment(
+        names::CALIBRATION_CHECKS,
+        labels([("outcome", "within")]),
+        3,
+    );
+    metrics.count(names::CALIBRATION_CHECKS, labels([("outcome", "breached")]));
+    metrics.count(
+        names::QUANTUM_CLASSICAL_CHECKS,
+        labels([("outcome", "worse")]),
+    );
+    metrics.increment(
+        names::QUANTUM_CLASSICAL_CHECKS,
+        labels([("outcome", "not_worse")]),
+        3,
+    );
+
+    let after = evaluate_ai(&metrics.snapshot());
+    let calibration = status_of(&after, "calibration-drift");
+    assert_eq!(calibration.observations, 4);
+    assert!((calibration.achieved - 0.75).abs() < 1e-12);
+    assert!(!calibration.is_met);
+    let delta = status_of(&after, "quantum-classical-delta");
+    assert_eq!(delta.observations, 4);
+    assert!((delta.achieved - 0.75).abs() < 1e-12);
+    assert!(!status_of(&after, "agent-tool-failure").is_observed());
 }

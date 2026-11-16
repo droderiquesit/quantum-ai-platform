@@ -63,6 +63,8 @@ pub enum Origin {
     CrossDomainSynthesis,
     /// A cell halted on reconciliation breaks (R12-EXPAND-6066).
     ReconciliationBreak,
+    /// A multileg saga that ended without completing (R12-EXPAND-6066).
+    FailedSaga,
 }
 
 impl Origin {
@@ -84,6 +86,7 @@ impl Origin {
             Self::TheoryContradiction => "detector:theory_contradiction",
             Self::CrossDomainSynthesis => "detector:cross_domain_synthesis",
             Self::ReconciliationBreak => "detector:reconciliation_break",
+            Self::FailedSaga => "detector:failed_saga",
         }
     }
 }
@@ -768,6 +771,39 @@ pub fn reconciliation_breaks(breaks: &[(String, String)]) -> Vec<Observation> {
         .collect()
 }
 
+/// One execution gap per venue where a multileg saga failed
+/// (R12-EXPAND-6066): `sagas` is `(venue, record id)` for every saga record
+/// read this sweep. Several failed groups at one venue are one question about
+/// that venue's fills, and the gap cites every record. Adverse selection has
+/// no detector: nothing measures it (ADR 0193 decision 3).
+pub fn failed_sagas(sagas: &[(String, String)]) -> Vec<Observation> {
+    let mut by_venue: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (venue, record) in sagas {
+        by_venue.entry(venue).or_default().push(record);
+    }
+    by_venue
+        .into_iter()
+        .map(|(venue, records)| {
+            observe(
+                Origin::FailedSaga,
+                GapTrigger::UnexplainedPnl,
+                Wanting::Execution,
+                format!(
+                    "venue `{venue}` ended {} multileg saga(s) without completing: a leg did \
+                     not fill and the group was reversed, abandoned or escalated",
+                    records.len()
+                ),
+                "execution",
+                records
+                    .iter()
+                    .map(|record| format!("saga_outcome:{record}"))
+                    .collect(),
+                1.0,
+            )
+        })
+        .collect()
+}
+
 /// How many theory deltas against one rule make the finding fully severe.
 /// One contradiction is a finding; three against the same rule is a theory
 /// in question. A ratio, so the severity is the share of that bar reached
@@ -802,11 +838,22 @@ pub fn theory_contradictions(deltas: &[TheoryDelta]) -> Vec<Observation> {
                 Origin::TheoryContradiction,
                 GapTrigger::Contradiction,
                 Wanting::Model,
-                format!(
-                    "`{rule}` of `{pack}` v{version} refused {} thesis(es) the grader then \
-                     credited; the rule's bound is in question and is not moved",
-                    deltas.len()
-                ),
+                {
+                    let admitted = deltas
+                        .iter()
+                        .filter(|d| {
+                            d.contradicting_evidence
+                                .iter()
+                                .any(|e| e == "direction:admitted_then_failed")
+                        })
+                        .count();
+                    let refused = deltas.len() - admitted;
+                    format!(
+                        "`{rule}` of `{pack}` v{version} refused {refused} thesis(es) the grader \
+                         then credited and admitted {admitted} the grader then marked wrong; \
+                         the rule's bound is in question and is not moved"
+                    )
+                },
                 "reasoning",
                 evidence,
                 (deltas.len() as f64 / THEORY_CONTRADICTIONS_FOR_FULL_SEVERITY as f64).min(1.0),

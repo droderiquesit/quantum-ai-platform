@@ -1576,6 +1576,7 @@ fn approved_grant_outside_the_plane(
         requested_by: "research.desk".to_string(),
         exposure: envelope.exposure().cloned(),
         drawdown: envelope.drawdown().cloned(),
+        authority: envelope.bounds().cloned(),
     };
     let mut chain = ApprovalChain::new(Decimal::ZERO, key.clone())?;
     let approved = chain.grant(&request, &approval, &credentials(now)?, now)?;
@@ -6951,6 +6952,7 @@ fn two_operators_present_together_issue_a_grant_through_the_platforms_intent_and
         requested_by: grant.requested_by.clone(),
         exposure: envelope.exposure().cloned(),
         drawdown: envelope.drawdown().cloned(),
+        authority: envelope.bounds().cloned(),
     };
     assert_eq!(grant.subject, request.subject());
     assert_eq!(
@@ -10469,5 +10471,141 @@ fn the_microstructure_model_is_rebuilt_from_the_log_on_a_restart() -> Result<()>
         "a re-sent delta was folded again"
     );
     let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+/// R12-CAPITAL-10122: a wider forecast disagreement emits a smaller grant, a
+/// spread outside [0, 1] is refused rather than clamped, and no disagreement
+/// leaves the allocator's line alone.
+///
+/// Mutation: replace `1 - spread` with `1 + spread` in
+/// `society::narrow_for_disagreement` (or drop the call in `allocate`) and the
+/// narrower line is not smaller than the wider's.
+#[test]
+fn wider_forecast_disagreement_reduces_the_emitted_grant() -> Result<()> {
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    let line = |plane: &mut CentralPlane| -> Result<qip_core::Decimal> {
+        Ok(plane
+            .allocate(0.0, start())?
+            .allocations
+            .iter()
+            .find(|a| a.strategy == id)
+            .map(|a| a.notional)
+            .expect("premise: the piloted strategy holds a line"))
+    };
+    let agreed = line(&mut plane)?;
+    assert!(agreed.is_positive(), "premise: the line is sized");
+
+    plane.set_forecast_spread(Some(qip_core::Decimal::ZERO))?;
+    assert_eq!(line(&mut plane)?, agreed, "no disagreement narrows nothing");
+
+    let quarter = qip_core::Decimal::from_raw(250_000_000);
+    let half = qip_core::Decimal::from_raw(500_000_000);
+    plane.set_forecast_spread(Some(quarter))?;
+    let narrow = line(&mut plane)?;
+    plane.set_forecast_spread(Some(half))?;
+    let wide = line(&mut plane)?;
+    assert!(narrow < agreed, "a quarter spread did not narrow the grant");
+    assert!(
+        wide < narrow,
+        "a wider spread did not narrow the grant further"
+    );
+
+    let refused = plane.set_forecast_spread(Some(qip_core::Decimal::from_raw(1_500_000_000)));
+    assert!(refused.is_err(), "a spread above one was admitted");
+    assert_eq!(
+        line(&mut plane)?,
+        wide,
+        "a refused spread replaced the good one"
+    );
+
+    plane.set_forecast_spread(None)?;
+    assert_eq!(
+        line(&mut plane)?,
+        agreed,
+        "withdrawing the reading restores the line"
+    );
+    Ok(())
+}
+
+/// R12-CAPITAL-3020: the plane records what the last allocation granted beside
+/// the allocator's own total, so the desk can report what narrowing took off.
+///
+/// Mutation: record `plan.allocated()` for `granted_total` in
+/// `CentralPlane::allocate` and the narrowed total equals the allocator's.
+#[test]
+fn the_plane_records_the_grant_beside_the_allocators_total() -> Result<()> {
+    let mut plane = plane()?;
+    let id = strategy();
+    register(&mut plane, &id, CELL)?;
+    walk_to(&mut plane, &id, GateStage::Pilot)?;
+    assert!(
+        plane.last_grants().is_none(),
+        "premise: nothing allocated yet"
+    );
+    plane.allocate(0.0, start())?;
+    let open = plane.last_grants().expect("an allocation ran");
+    assert_eq!(open.allocator_total, open.granted_total);
+    assert!(
+        open.granted_total.is_positive(),
+        "premise: a grant was made"
+    );
+
+    plane.set_forecast_spread(Some(qip_core::Decimal::from_raw(500_000_000)))?;
+    plane.allocate(0.0, start())?;
+    let narrowed = plane.last_grants().expect("an allocation ran");
+    assert_eq!(narrowed.allocator_total, open.allocator_total);
+    assert!(narrowed.granted_total < narrowed.allocator_total);
+    assert_eq!(
+        narrowed
+            .by_cell
+            .values()
+            .copied()
+            .sum::<qip_core::Decimal>(),
+        narrowed.granted_total,
+        "the per-cell grants do not sum to the granted total"
+    );
+    Ok(())
+}
+
+/// R12-GOV-6120, ADR 0155 section 6 step one: a plane configured with an
+/// authority block states it on the envelope it signs, and the approval
+/// chain's own record carries the same block — the payload comparison inside
+/// `issue_narrowed` passed, so the claim is covered by both signatures. An
+/// unconfigured plane states none, so nothing arms by accident.
+#[test]
+fn a_plane_configured_with_an_authority_block_states_it_on_the_grant_it_issues() -> Result<()> {
+    use qip_contracts::capital::AuthorityBounds;
+    let id = strategy();
+
+    let mut plain = plane()?;
+    register(&mut plain, &id, CELL)?;
+    walk_to(&mut plain, &id, GateStage::Pilot)?;
+    let unstated = issue(&mut plain, &id, CELL, start())?;
+    assert!(
+        unstated.envelope().bounds().is_none(),
+        "premise: an unconfigured plane states no block"
+    );
+
+    let mut stating = plane()?;
+    let leverage = unstated
+        .envelope()
+        .exposure()
+        .map(|e| e.max_leverage)
+        .ok_or_else(|| qip_core::Error::not_found("the exposure bounds"))?;
+    let bounds = AuthorityBounds::new(
+        leverage,
+        vec!["equity".to_string()],
+        vec!["agency".to_string()],
+    )?;
+    stating.set_authority_bounds(Some(bounds.clone()));
+    register(&mut stating, &id, CELL)?;
+    walk_to(&mut stating, &id, GateStage::Pilot)?;
+    let stated = issue(&mut stating, &id, CELL, start())?;
+    assert_eq!(stated.envelope().bounds(), Some(&bounds));
+    assert_eq!(stated.approved().envelope().bounds(), Some(&bounds));
     Ok(())
 }

@@ -261,6 +261,38 @@ impl Agent for RiskControl {
                 &["risk_state"],
             ));
         }
+        // Grants and placement (R12-CAPITAL-3020): what the capital plane last
+        // granted, how much the society and the forecast disagreement took off
+        // the allocator's figure, and how many cells hold a grant. Read from
+        // the plane's record, absent before the first allocation.
+        if let Some(grants) = &risk.grants {
+            builder = builder
+                .fact(computed(
+                    ctx,
+                    "capital_granted",
+                    grants.granted_total.to_f64(),
+                    "currency",
+                    &["risk_state"],
+                ))
+                .fact(computed(
+                    ctx,
+                    "capital_narrowed_by_society",
+                    (grants.allocator_total - grants.granted_total).to_f64(),
+                    "currency",
+                    &["risk_state"],
+                ))
+                .fact(computed(
+                    ctx,
+                    "capital_cells_funded",
+                    grants
+                        .by_cell
+                        .values()
+                        .filter(|grant| grant.is_positive())
+                        .count() as f64,
+                    "count",
+                    &["risk_state"],
+                ));
+        }
 
         if direction == Direction::Negative {
             builder = builder.falsifiers(vec![

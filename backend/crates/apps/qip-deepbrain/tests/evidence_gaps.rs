@@ -525,3 +525,89 @@ fn a_cell_halted_by_two_reconciliation_breaks_yields_one_execution_item_naming_b
         .unwrap();
     assert_eq!(again.reconciliation_breaks, 0, "a record was read twice");
 }
+
+/// R12-EXPAND-6066: two multileg sagas that ended without completing at one
+/// venue are one execution item naming both records, read once. The kernel
+/// journals each failed group; the sweep reads them off the log.
+///
+/// Mutations: remove the journal write in `record_saga_outcome` (zero
+/// records), or the sweep's `saga_outcome_records` call (zero items).
+#[test]
+fn two_failed_sagas_at_one_venue_yield_one_execution_item_naming_both_records() {
+    use qip_core::Decimal;
+    use qip_core::ids::{ObjectId, OrderId};
+    use qip_execution_engine::multileg::LegGroup;
+    use qip_execution_engine::order::{Order, OrderType, Side};
+    let mut platform = platform();
+    let order = |id: &str, side: Side| {
+        Order::new(
+            OrderId::from_string(id),
+            ObjectId::from_string("obj-A"),
+            side,
+            Decimal::from_int(10),
+            OrderType::Market,
+            Decimal::from_int(100),
+            "prop",
+            vec!["hyp".to_string()],
+            "platform",
+            at(0),
+        )
+    };
+    for id in ["g1", "g2"] {
+        let mut group = LegGroup::new(
+            id,
+            vec![
+                order(&format!("{id}-1"), Side::Buy),
+                order(&format!("{id}-2"), Side::Sell),
+            ],
+            at(5),
+            Decimal::from_int(1_000_000),
+        )
+        .unwrap();
+        let verdict = group.assess(at(6));
+        group.settle(&verdict, &[], at(6)).unwrap();
+        assert!(
+            platform.record_saga_outcome("XNYS", &group, at(7)).unwrap(),
+            "premise: the failed group was journaled"
+        );
+    }
+    let records = platform.saga_outcome_records().unwrap();
+    assert_eq!(records.len(), 2, "{records:?}");
+
+    let mut loop_ = deployed();
+    let (sources, jurisdictions) = deployed_bounds();
+    let round = loop_
+        .sweep(&platform, at(60), &sources, &jurisdictions)
+        .unwrap();
+    assert_eq!(round.failed_sagas, 2, "{round:?}");
+    let execution: Vec<RaisedGap> = loop_
+        .desk()
+        .queue()
+        .ranked()
+        .iter()
+        .filter(|entry| entry.item().research_question.starts_with("Execution gap:"))
+        .filter_map(|entry| entry.origin().cloned())
+        .filter(|g| g.signal.gap_class == GapClass::Execution)
+        .filter(|g| {
+            g.signal
+                .evidence
+                .iter()
+                .any(|e| e == "detector:failed_saga")
+        })
+        .collect();
+    assert_eq!(execution.len(), 1, "{execution:#?}");
+    for record in &records {
+        assert!(
+            execution[0]
+                .signal
+                .evidence
+                .contains(&format!("saga_outcome:{}", record.record_id)),
+            "{:?}",
+            execution[0].signal.evidence
+        );
+    }
+    let again = loop_
+        .sweep(&platform, at(120), &sources, &jurisdictions)
+        .unwrap();
+    assert_eq!(again.failed_sagas, 0, "a record was read twice");
+}

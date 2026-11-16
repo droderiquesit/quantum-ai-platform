@@ -119,6 +119,7 @@ fn order(id: &str, grants: Vec<(String, String)>) -> Decision {
         equalised: false,
         grants,
         grounds: Vec::new(),
+        cycle_id: None,
     }
 }
 

@@ -80,6 +80,11 @@ fn path_safe(value: &str) -> String {
 pub struct TickLakeWriter {
     store: Arc<dyn BlobStore>,
     policy: BTreeMap<String, RetentionRight>,
+    /// Rights read per venue (R12-DATA-1039). A venue's own terms are more
+    /// specific than its licensing class's, so an entry here decides for that
+    /// venue's events whichever way it points, and a venue with no entry
+    /// falls back to its class.
+    venue_policy: BTreeMap<String, RetentionRight>,
     batch: usize,
     max_buffered: usize,
     buffers: BTreeMap<Partition, Vec<CapturedMarketEvent>>,
@@ -106,12 +111,23 @@ impl TickLakeWriter {
         Ok(Self {
             store,
             policy,
+            venue_policy: BTreeMap::new(),
             batch,
             max_buffered,
             buffers: BTreeMap::new(),
             buffered: 0,
             refused: 0,
         })
+    }
+
+    /// Add per-venue rights. A venue named here is decided by its own entry:
+    /// a right that keeps nothing refuses that venue's events even where its
+    /// licensing class would have kept them, because a class is a coarse
+    /// reading and one venue's terms may be narrower.
+    #[must_use]
+    pub fn with_venue_rights(mut self, venues: BTreeMap<String, RetentionRight>) -> Self {
+        self.venue_policy = venues;
+        self
     }
 
     /// Events refused because their entitlement's right did not allow them.
@@ -130,7 +146,12 @@ impl TickLakeWriter {
     /// right that permits no retention; the latter two are counted.
     pub fn capture(&mut self, event: CapturedMarketEvent) -> Result<Vec<SegmentRecord>> {
         event.validate()?;
-        let Some(right) = self.policy.get(&event.entitlement).copied() else {
+        let Some(right) = self
+            .venue_policy
+            .get(&event.venue)
+            .or_else(|| self.policy.get(&event.entitlement))
+            .copied()
+        else {
             self.refused = self.refused.saturating_add(1);
             return Err(Error::denied(format!(
                 "entitlement `{}` has no retention right in this writer's policy; nothing is \

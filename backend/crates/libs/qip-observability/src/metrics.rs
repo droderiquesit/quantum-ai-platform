@@ -695,14 +695,26 @@ pub mod names {
     /// evaluated on. Recorded in `Platform::count_lineage`.
     pub const DATA_LINEAGE_RECORDS: &str = "qip_data_lineage_records_total";
     /// Delay in minutes between when an archive was written to GCS and when
-    /// the platform became aware of it. A histogram recording the observed lag
-    /// for each archive. Recorded when archive ingestion completes.
+    /// the platform became aware of it. A histogram of the observed lag for
+    /// each archive. **Nothing in the tree records it**: no process ingests a
+    /// GCS archive, so `data_plane::ARCHIVE_DELAY_OBJECTIVE` is bound to no
+    /// series and reads unmeasured (ADR 0683). This said "Recorded when
+    /// archive ingestion completes" until 2026-11-15, and no such ingestion
+    /// exists.
     pub const DATA_ARCHIVE_DELAY_MINUTES: &str = "qip_data_archive_delay_minutes";
     /// Source re-fetch health, per source on each re-fetch pass that asked for
     /// anything: the share of the extents re-requested that the source still
     /// served, from 1 (all served) to 0 (none). Recorded by
     /// `Platform::record_refetch_health`.
     pub const DATA_REFETCH_HEALTH: &str = "qip_data_refetch_health";
+    /// Extents a re-fetch pass asked a source for, by `outcome`: `served`
+    /// when the source still held it, `withdrawn` when it did not. The
+    /// counter the `data-refetch-health` objective is evaluated on, because
+    /// [`DATA_REFETCH_HEALTH`] is a gauge and carries no good/total split.
+    /// Unlabelled by source on purpose: an objective is one figure for the
+    /// plane, and the per-source reading stays on the gauge. Recorded beside
+    /// it in `Platform::record_refetch_health`.
+    pub const DATA_REFETCH_CHECKS: &str = "qip_data_refetch_checks_total";
 
     // Discovery and reasoning. The funnel from "something looked odd" to "a
     // hypothesis the platform will act on", recorded where each fact becomes
@@ -997,6 +1009,14 @@ pub mod names {
     /// The degradation table's sizing multiplier currently in force. A cell
     /// sizing at the 0.375 floor is an operator-visible fact.
     pub const EDGE_SIZING_MULTIPLIER: &str = "qip_edge_sizing_multiplier";
+    /// The uncertainty, in seconds, the clock discipline put on the most
+    /// recent tick it normalized, by `venue` and `feed` (R12-TICK-2052). An
+    /// offset nobody bounded is a fake lead/lag signal, so the bound is a
+    /// series an operator can chart and alert on rather than a field found
+    /// only by reading lake lines. Absent until a tick has been normalized,
+    /// and not updated by a tick the discipline refused: a stale bound is
+    /// shown as stale, never replaced by a zero that reads as perfect.
+    pub const EDGE_CLOCK_UNCERTAINTY: &str = "qip_edge_clock_uncertainty";
     /// The sequence of the policy payload this cell has applied, for
     /// correlation against what the central plane believes it published.
     pub const EDGE_POLICY_SEQUENCE: &str = "qip_edge_policy_sequence";
@@ -1106,6 +1126,11 @@ pub mod names {
     /// Declined paths that were due for pricing and left for a later cycle because
     /// the per-cycle cap was reached. Counted rather than silently truncated.
     pub const COUNTERFACTUALS_DEFERRED: &str = "qip_counterfactuals_deferred_total";
+    /// Opportunities the platform saw and could not grade, by `reason`
+    /// (ADR 0148 decision 2): `expired_unworked`, `no_mechanism`,
+    /// `undirected_claim`. Counted, never zeroed: a figure nobody computed
+    /// would read as a miss that cost nothing. The label set is closed.
+    pub const OPPORTUNITIES_UNPRICED: &str = "qip_opportunities_unpriced_total";
     /// Declined paths that will never be priced, by `reason` — the working set was
     /// full, or the twin refused the evaluation. Since the LEARN stage also
     /// prices the orders a venue *filled*, `reason="fill_capacity"` counts a
@@ -1424,6 +1449,9 @@ pub mod names {
     pub const EDGE_JOURNAL_SPOOL_BYTES: &str = "qip_edge_journal_spool_bytes";
     pub const EDGE_JOURNAL_SPOOL_UNARCHIVED_BYTES: &str = "qip_edge_journal_spool_unarchived_bytes";
     pub const EDGE_JOURNAL_PRESSURE: &str = "qip_edge_journal_pressure";
+    /// Which rung of the fabric bootstrap ladder supplied the endpoint, by
+    /// `source` (`srv`, `cached`, `configured`): `1` on the one in force.
+    pub const FABRIC_ADDRESS_SOURCE: &str = "qip_fabric_address_source";
 
     // Edge event fabric metrics (edge-node)
     pub const EDGE_EVENT_FABRIC_DRAIN: &str = "qip_edge_event_fabric_drain_total";
@@ -1576,4 +1604,13 @@ pub mod names {
     /// Each sweep's reading of the research queue's depth against the
     /// queue-depth objective's ceiling, by outcome (`within`, `over`).
     pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
+    /// Each cycle's reading of a horizon's calibration against the
+    /// calibration objective's Brier bound, by outcome (`within`,
+    /// `breached`). Counted only once the horizon has enough resolutions to
+    /// be judged, so an unjudged horizon adds nothing (R12-OBS-9164).
+    pub const CALIBRATION_CHECKS: &str = "qip_calibration_checks_total";
+    /// Each quantum answer that was judged and ran, read against the
+    /// classical baseline the router always solves (ADR 0006), by outcome
+    /// (`not_worse`, `worse`) (R12-OBS-9164).
+    pub const QUANTUM_CLASSICAL_CHECKS: &str = "qip_quantum_classical_checks_total";
 }

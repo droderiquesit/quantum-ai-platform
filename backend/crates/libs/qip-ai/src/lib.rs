@@ -26,6 +26,7 @@ pub mod memory;
 pub mod registry;
 pub mod retrieval;
 pub mod serving;
+pub mod state_embedding;
 
 pub use embedding::{Embedder, Embedding, HashingEmbedder};
 pub use evaluation::{Calibration, DriftReport, PredictionOutcome};

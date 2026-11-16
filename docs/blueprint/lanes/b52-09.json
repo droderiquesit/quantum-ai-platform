@@ -1,0 +1,70 @@
+{
+ "lane": "09",
+ "rows": [
+  {
+   "id": "R12-FABRIC-8098",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added Route::ClusterMap (bounded, duplicate-refusing wire type), a grant-scoped broker/service arm backed by observed lease holders and advertised addresses (QIP_EVENT_FABRIC_ADVERTISE), and qip-transport ClusterClient/LeaderFollowingTransport that fetch the map before producing and follow one leader change. Proven through two real qip-fabricd instances: leader killed, same client acked at epoch 2.",
+   "remains": "No composition root builds a ClusterClient from a SrvResolver and fabric_srv_owner; the SRV lookup is only exercised in qip-transport tests, and no deployed binary uses LeaderFollowingTransport. Producer breaker is keyed per partition, not per authority. Module still not instantiated in Terraform.",
+   "tests": [
+    "backend/crates/apps/qip-fabricd/tests/cluster_map.rs::a_client_fetches_the_map_before_producing_and_follows_a_leader_change",
+    "backend/crates/libs/qip-transport/tests/event_fabric_protocol.rs::a_cluster_map_refuses_a_partition_named_twice_and_a_list_past_its_bound",
+    "backend/crates/apps/qip-fabricd/src/config.rs::config::tests::advertised_addresses_must_name_this_instance_and_only_its_set"
+   ],
+   "test_command": "cargo test -p qip-transport -p qip-streaming -p qip-fabricd --no-fail-fast",
+   "mutations": [
+    "service.rs ClusterMap arm leader forced None: 'the follower never named the leader'",
+    "cluster.rs refresh-after-failure dropped: 'the client never followed the leader change'",
+    "protocol.rs duplicate check disabled: 'called Result::unwrap_err() on an Ok value'",
+    "protocol.rs bound > to >=: 'the bound itself is allowed'",
+    "config.rs ADVERTISE self-check removed: 'not this instance: fabricd-ew2-b=10.0.0.2:7100'"
+   ],
+   "commit": "87c13b51"
+  },
+  {
+   "id": "R12-FABRIC-8102",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not started: partition move needs a sole-writer batch-chain transfer with leader-epoch handoff across fabricd, storage and transport, and RF1 consensus is blocked on C2.",
+   "remains": "Everything: move tooling and an add-a-broker integration test with zero lost records. Needs an ADR for the handoff protocol first.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-6113",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not started: closing needs a default-on production caller in deepbrain or kernel that constructs and decodes ComputePlan, with a test through the binary.",
+   "remains": "Caller and binary-level test; plan_for still only issues plans for QPU-granted bids.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7064",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "Not started: draft-pack writing, the ModelPack to ModelSetVersion rename and an environment setting QIP_MODEL_PACKS_PATH span deepbrain, kernel and protected environments paths; signing needs per-person credentials reserved by ADR 0110/0121.",
+   "remains": "All three gaps; environments/** is protected so the path setting needs a person.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7066",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "Not started: adding owner/mandate, collateral class, leverage and drawdown/liquidity fields to the signed CapitalEnvelope needs a contract and signing change plus an issuer and cell decode in the capital domain, or a requirement amendment to an envelope-plus-ledger split.",
+   "remains": "Decision between the two routes, then the cross-crate build; leverage and drawdown fields may also need figures nobody has given.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}

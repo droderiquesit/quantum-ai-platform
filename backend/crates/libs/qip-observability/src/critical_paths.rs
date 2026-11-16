@@ -286,6 +286,49 @@ pub fn critical_path_slos() -> Vec<CriticalPath> {
     ]
 }
 
+/// Why the agent tool-failure objective has no source series.
+pub const AGENT_TOOL_FAILURE_UNBUILT: &str = "no agent tool invocation exists to record: \
+     qip-agents holds a ToolRegistry of declared tools and a BudgetLedger, and nothing \
+     calls a tool and sees it fail";
+
+/// The AI objectives the requirement names beyond model freshness and the
+/// research queue (R12-OBS-9164): calibration/drift, the quantum/classical
+/// delta and agent tool failure. Declared beside the critical paths, not
+/// among them, because tests hold `critical_path_slos` at a fixed length.
+/// Evaluated by the deep brain with [`evaluate_ai`].
+pub fn ai_objectives() -> Vec<CriticalPath> {
+    vec![
+        CriticalPath {
+            slo: crate::slo::calibration_drift(),
+            source_series: names::CALIBRATION_CHECKS,
+            rule: SourceRule::CounterOutcome { good: "within" },
+        },
+        CriticalPath {
+            slo: crate::slo::quantum_classical_delta(),
+            source_series: names::QUANTUM_CLASSICAL_CHECKS,
+            rule: SourceRule::CounterOutcome { good: "not_worse" },
+        },
+        CriticalPath {
+            slo: crate::slo::agent_tool_failure(),
+            source_series: NO_SOURCE_SERIES,
+            rule: SourceRule::Unbuilt {
+                why: AGENT_TOOL_FAILURE_UNBUILT,
+            },
+        },
+    ]
+}
+
+/// [`ai_objectives`] evaluated against one snapshot, in declaration order.
+pub fn evaluate_ai(snapshot: &Snapshot) -> Vec<SloStatus> {
+    ai_objectives()
+        .iter()
+        .map(|path| {
+            let (good, total) = path.counts(snapshot);
+            path.evaluate(good, total)
+        })
+        .collect()
+}
+
 /// The name of the service request-latency objective.
 pub const SERVICE_LATENCY_OBJECTIVE: &str = "service-request-latency";
 /// The name of the service error-rate objective.
@@ -655,7 +698,7 @@ pub fn reflex_objectives() -> Vec<CriticalPath> {
 /// The service name `slo::default_slos` declares the reflex objectives under.
 pub const REFLEX_SERVICE: &str = "reflex";
 
-/// Every critical path, then every service and reflex objective, evaluated against one
+/// Every critical path, then every service, reflex and data-plane objective, evaluated against one
 /// snapshot, in catalogue order.
 pub fn evaluate(snapshot: &Snapshot) -> Vec<SloStatus> {
     evaluate_where(snapshot, |_| true)
@@ -669,6 +712,7 @@ pub fn evaluate_where(snapshot: &Snapshot, keep: impl Fn(&CriticalPath) -> bool)
         .iter()
         .chain(service_objectives().iter())
         .chain(reflex_objectives().iter())
+        .chain(crate::data_plane::data_plane_objectives().iter())
         .filter(|path| keep(path))
         .map(|path| {
             let (good, total) = path.counts(snapshot);

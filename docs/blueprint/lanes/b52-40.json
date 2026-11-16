@@ -1,0 +1,90 @@
+{
+ "lane": "40",
+ "built_unverified_note": "NOTHING WAS COMPILED, TESTED, LINTED OR FORMATTED. cargo fmt/clippy/test/check-secrets were not run, by owner instruction of 2026-11-15. Every new test carries 'mutation: not run'. Compile errors are possible. ADRs: 0680 (also holds the decisions for rows 4 and 5) and 0681; 0681 used for row 2 only. No protected path, live-order path, dependency or test was touched.",
+ "rows": [
+  {
+   "id": "R12-WORLD-7023",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Added world_snapshot::cite, which returns the highest snapshot version not later than a decision instant, with one test in platform.rs. Nothing was compiled.",
+   "remains": "No decision record calls cite. Per-brain origin deferred (ADR 0680). Features, entities, contradictions and episodic memory unsnapshotted. Graphs still not rebuilt from the log.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/platform.rs::a_world_model_version_is_cited_as_of_the_decision_instant_and_never_later"
+   ],
+   "test_command": "cd backend && cargo test -p qip-kernel --lib a_world_model_version_is_cited",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "e5cbf7fa"
+  },
+  {
+   "id": "R12-MESH-5055",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "Added measured_borrow::with_measured_borrow in qip-edge-node, which charges the higher of the stated and measured borrow and refuses a measured rate of 1 or more. Nothing was compiled.",
+   "remains": "Not called from the desk refresh or graph build; which conversion leg is the borrowed instrument is undecided. Carry stays the 5% constant. Unit of FundingRate (fraction) is a provisional choice (ADR 0681).",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/src/measured_borrow.rs::the_higher_of_the_stated_and_the_measured_borrow_is_charged",
+    "backend/crates/apps/qip-edge-node/src/measured_borrow.rs::a_measured_rate_that_reads_as_a_percentage_is_refused"
+   ],
+   "test_command": "cd backend && cargo test -p qip-edge-node --lib measured_borrow",
+   "mutations": [
+    "mutation: not run",
+    "mutation: not run"
+   ],
+   "commit": "bbc39cb4"
+  },
+  {
+   "id": "R12-WORLD-3086",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "platform.rs now reads signals_from_world from the world model and calls lattice.set_signals immediately before lattice.run each UNDERSTAND pass. Nothing was compiled.",
+   "remains": "No test of the call site. Options, company and hedge-demand specialists absent; ReactionEpisode history has no holder; nothing gates on PromotionTarget. The earlier revert was for a_closed_position_is_priced_as_the_unhedged_hold...: unconfirmed whether this change avoids it; the pipeline must run qip-kernel tests.",
+   "tests": [],
+   "test_command": "cd backend && cargo test -p qip-kernel --test lattice_specialists && cargo test -p qip-kernel --lib",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "d4b7b9e8"
+  },
+  {
+   "id": "R12-MODEL-6004",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "New module path_counterfactual prices the alternative to a hedge (unhedged hold) and an unwind (hold to horizon) as one signed regret behind a bounded queue. Nothing was compiled.",
+   "remains": "Not wired into Platform or LEARN, so the cycle produces no hedged or unwound counterfactual set. Queue bound 256 is provisional (ADR 0680). Hedges still need a declared hedge policy (owner decision 7).",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/path_counterfactual.rs::an_unwind_is_regretted_when_the_hold_would_have_gained_and_protective_when_it_would_not",
+    "backend/crates/runtime/qip-kernel/src/path_counterfactual.rs::a_hedge_is_protective_when_it_paid_and_expensive_when_it_cost",
+    "backend/crates/runtime/qip-kernel/src/path_counterfactual.rs::the_queue_prices_a_path_once_after_its_horizon_and_refuses_duplicates_and_overflow"
+   ],
+   "test_command": "cd backend && cargo test -p qip-kernel --lib path_counterfactual",
+   "mutations": [
+    "mutation: not run",
+    "mutation: not run",
+    "mutation: not run"
+   ],
+   "commit": "18c81ae7"
+  },
+  {
+   "id": "R12-MODEL-10123",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "built_unverified": true,
+   "what": "The routing reputation book is rebuilt at Platform construction from RoutingScored records via routing_score::resume_book. Nothing was compiled.",
+   "remains": "Hedges unscored; capital plans unscored; book not read back; in-flight judgements still dropped on restart; two score_routings branches untested; no restart test over a file-backed log.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/src/routing_score.rs::a_book_rebuilt_from_scored_routings_holds_each_rungs_record"
+   ],
+   "test_command": "cd backend && cargo test -p qip-kernel --lib routing_score",
+   "mutations": [
+    "mutation: not run"
+   ],
+   "commit": "0a72361e"
+  }
+ ]
+}
