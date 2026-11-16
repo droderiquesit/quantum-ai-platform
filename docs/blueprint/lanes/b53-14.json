@@ -1,0 +1,55 @@
+{
+ "lane": "b53-14",
+ "rows": [
+  {
+   "id": "R12-AMBIENT-9029",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Clause 'multimodal reasoning' needs a multimodal model, i.e. a vendor and a credential; no model or provider for it is in the tree and ADR 0718 gives agent sessions no per-run credential. Clause 'Fabric tasks/results' needs a Fabric task topic with a consumer; none of the specialist solvers consumes one (see R12-WORLD-10091). Clause 'knowledge APIs' has no named backing store (ADR 0707/0708 decline the catalogue stores). Verification bar (granted tools only, outputs journaled) is already met by ADR 0456; building a slice would not move the row.",
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7072",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Contract, carriage and producer are built (ADR 0428 decisions 1-4); the open clause is decision 5, the consumer. qip_kernel::fusion::fuse has no production caller (grep of qip-kernel/src finds none; callers are tests/fusion.rs only), so a weight-removal added there would be called only by its own tests. Routing reflex.feature_digested to the deep brain needs a cross-plane fabric subscription that qip-deepbrain does not have and a deployed fabricd/edge node (execution_nodes empty everywhere). ADR 0723 decision 3a makes the lake route an owner choice and keeps the tick desk off until then. The verification check itself (refuse missing field, round trip) is already met by qip-contracts/tests/market_state.rs.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EVID-2030",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Register gap says the remainder is a decision before it is code: carry the fabric belief weight into Platform::observe and detectors, or hold a world claim until independent_origins >= 2 (which withholds every record today's single-origin connectors produce on all three roots). The first arm is four seams (no claim id on SensedRecord, event weight not read by the catalyst detector, observation_history has no per-point weight, plus the test). I may only write a Proposed ADR; the choice is the owner's and no accepted ADR 0703-0723 decides it. Nothing built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-10091",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Clause 'via Fabric task contracts' needs a Fabric task topic plus a consumer in each solver kind (agent, world model, simulator); none consumes ForecastTask and the fabric lock, binding and consumer survey would grow a topic nothing reads. Clause 'microsecond horizon' is placed in the cell by accepted ADR 0008, so routing it from the centre reverses a standing decision. The row's verification check (router produces per-horizon tasks from a state vector) already holds via lattice_stage::tasks_for. Remaining known defect: lane-guard mutant survives.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-10187",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "No deployment blocker, but closing needs design choices, not code alone: 'model disagreement' on a thesis forecast needs a second independent return estimator (today single-model, stated unmeasurable); 'calibration score' needs a chosen source from LEARN outcomes (today Uncalibrated); DemandForecast and ForecastLattice must become, not convert to, a Forecast; and the [-0.5,0.5] median clamp contradicts refuse-not-clamp. Which estimator and which calibration source is an ADR (Proposed 0742/0743 would be the most I may write). Verification check (type refuses construction without each field) is already met. Nothing built.",
+   "commit": ""
+  }
+ ]
+}
