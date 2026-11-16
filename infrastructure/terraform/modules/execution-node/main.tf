@@ -265,63 +265,6 @@ resource "google_storage_bucket_iam_member" "evidence" {
   member = "serviceAccount:${google_service_account.node.email}"
 }
 
-# --- the cross-zone fencing lease (ADR 0137) ---------------------------------
-#
-# Created only when `fencing_lease_path` is a gs:// object, and only with a
-# node, because this module is only instantiated when execution nodes are
-# enabled. Versioning is off on purpose: the object's generation is the
-# lease's version, and a noncurrent copy would be a second history of who
-# held. One identity reads and writes it — the pair shares `node` — and only
-# with the three permissions the keeper uses, never delete or list.
-locals {
-  lease_gcs    = can(regex("^gs://", var.fencing_lease_path))
-  lease_bucket = local.lease_gcs ? split("/", trimprefix(var.fencing_lease_path, "gs://"))[0] : ""
-  lease_object = local.lease_gcs ? join("/", slice(split("/", trimprefix(var.fencing_lease_path, "gs://")), 1, length(split("/", trimprefix(var.fencing_lease_path, "gs://"))))) : ""
-}
-
-resource "google_storage_bucket" "lease" {
-  count = local.lease_gcs ? 1 : 0
-
-  project  = var.project_id
-  name     = local.lease_bucket
-  location = var.region
-  labels   = var.labels
-
-  uniform_bucket_level_access = true
-  public_access_prevention    = "enforced"
-
-  versioning {
-    enabled = false
-  }
-}
-
-resource "google_project_iam_custom_role" "lease_holder" {
-  count = local.lease_gcs ? 1 : 0
-
-  project     = var.project_id
-  role_id     = "qipLeaseHolder_${replace(var.environment, "-", "_")}_${replace(var.node_id, "-", "_")}"
-  title       = "qip fencing lease holder (${var.node_id}, ${var.environment})"
-  description = "Read, create and overwrite the fencing lease object. No delete, no list."
-  permissions = [
-    "storage.objects.get",
-    "storage.objects.create",
-    "storage.objects.update",
-  ]
-}
-
-resource "google_storage_bucket_iam_member" "lease" {
-  count = local.lease_gcs ? 1 : 0
-
-  bucket = google_storage_bucket.lease[0].name
-  role   = google_project_iam_custom_role.lease_holder[0].id
-  member = "serviceAccount:${google_service_account.node.email}"
-
-  condition {
-    title      = "only-the-lease-object"
-    expression = "resource.name == \"projects/_/buckets/${local.lease_bucket}/objects/${local.lease_object}\""
-  }
-}
-
 # Deliberately no Artifact Registry grant. §41.4 says no container runtime, so
 # there is no image to pull at run time — the binary arrives in `boot_image`.
 # A registry reader role here would be a permission held for a fetch that never

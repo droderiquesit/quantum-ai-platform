@@ -120,10 +120,8 @@ pub mod survival {
 }
 mod survival_limit;
 pub mod symbolic_stage;
-pub mod synthetic_worlds;
 pub mod tactical_lane;
 pub mod tail;
-pub mod tape_attestation;
 pub mod theory_revision;
 #[cfg(test)]
 pub(crate) mod thesis_fixture;
