@@ -2229,9 +2229,42 @@ pub struct StressReport {
     /// book and the shock it was made from and no seed, because neither
     /// generator draws. The stage journals each, so a scenario the book was
     /// stressed against is on the record as generated rather than observed.
-    /// The tail worlds are not here: they are not `Scenario`s and their
-    /// generated pair is seeded by the cycle, which is recorded on them.
+    /// The tail worlds drawn from the cycle's seed (`synthetic-1`,
+    /// `synthetic-2`, `synthetic-joint`) are here under `MonteCarlo`, with
+    /// that seed; the tail worlds a measured excursion fixes draw nothing and
+    /// are not.
     pub episodes: Vec<qip_contracts::expansion::SyntheticEpisode>,
+}
+
+/// The episode of one capacity probe: the agent simulation
+/// `MarketSimulator::synthetic(.., seed).with_agents(..)` ran, named for the
+/// instrument it probed, digested over everything that shaped the run (the
+/// last price, the estimated volatility and drift, the size and the feed
+/// delay, as bits) and seeded with the seed the simulator drew from.
+fn capacity_probe_episode(
+    subject: &str,
+    initial: f64,
+    volatility: f64,
+    drift: f64,
+    quantity: Decimal,
+    feed_delay: Duration,
+    seed: u64,
+) -> Option<qip_contracts::expansion::SyntheticEpisode> {
+    let canonical = format!(
+        "{}:{subject}|seed|{seed}|initial|{}|vol|{}|drift|{}|qty|{quantity}|delay|{}",
+        subject.len(),
+        initial.to_bits(),
+        volatility.to_bits(),
+        drift.to_bits(),
+        feed_delay.as_nanos()
+    );
+    qip_contracts::expansion::SyntheticEpisode::new(
+        format!("capacity-probe:{subject}"),
+        qip_contracts::expansion::SyntheticGenerator::MonteCarlo,
+        qip_core::sha256_hex(canonical.as_bytes()),
+        Some(seed),
+    )
+    .ok()
 }
 
 /// One synthetic episode as the log holds it (R12-EXPAND-6033): the contract
@@ -2307,6 +2340,68 @@ fn scenario_input_digest(
     }
     canonical.push_str(&format!("|equity|{}", equity.to_bits()));
     qip_core::sha256_hex(canonical.as_bytes())
+}
+
+/// The SHA-256 of a generated world and what it was drawn against: its name,
+/// the seed that fixed its draw, the book it was charged to (every object and
+/// notional as bits), the equity, and the loss it came to as bits. The seed
+/// is in the digest as well as on the episode so that two worlds of one name
+/// under two seeds cannot share a digest, which the idempotency key would
+/// otherwise collapse into one record.
+fn generated_world_digest(
+    world: &crate::tail::TailWorld,
+    book: &[crate::tail::TailPosition],
+    equity: f64,
+    seed: u64,
+) -> String {
+    let text = |value: &str| format!("{}:{value}", value.len());
+    let mut canonical = format!("{}|seed|{seed}", text(&world.scenario));
+    for position in book {
+        canonical.push_str(&format!(
+            "|book|{}|{}",
+            text(&position.object),
+            position.notional.to_bits()
+        ));
+    }
+    for name in &world.unmeasured {
+        canonical.push_str(&format!("|unmeasured|{}", text(name)));
+    }
+    canonical.push_str(&format!(
+        "|equity|{}|loss|{}",
+        equity.to_bits(),
+        world.loss.to_bits()
+    ));
+    qip_core::sha256_hex(canonical.as_bytes())
+}
+
+/// The Monte Carlo episodes of the worlds a cycle drew beyond the book's own
+/// history (R12-EXPAND-6033): `synthetic-1`, `synthetic-2` and, advisory or
+/// applied, `synthetic-joint`. Each draws from the cycle's seed, so each owes
+/// a seed on its record or a replay cannot regenerate it; a world a library
+/// entry or a measured excursion fixed (the other tail worlds) draws nothing
+/// and is not an episode. `None` for a world the contract refuses, which the
+/// caller counts rather than hides.
+fn generated_world_episodes<'a>(
+    worlds: impl Iterator<Item = &'a crate::tail::TailWorld>,
+    book: &[crate::tail::TailPosition],
+    equity: f64,
+    seed: u64,
+) -> Vec<qip_contracts::expansion::SyntheticEpisode> {
+    worlds
+        .filter(|world| {
+            crate::tail::SYNTHETIC_WORLDS.contains(&world.scenario.as_str())
+                || world.scenario == crate::tail::SYNTHETIC_JOINT
+        })
+        .filter_map(|world| {
+            qip_contracts::expansion::SyntheticEpisode::new(
+                world.scenario.clone(),
+                qip_contracts::expansion::SyntheticGenerator::MonteCarlo,
+                generated_world_digest(world, book, equity, seed),
+                Some(seed),
+            )
+            .ok()
+        })
+        .collect()
 }
 
 impl StressReport {
@@ -21767,6 +21862,10 @@ struct CapacityProbeResult {
     /// where the platform's own slowness shows as cost.
     latency: Duration,
     shortfall_bps: Option<f64>,
+    /// The probe's own seeded draw as a synthetic episode (R12-EXPAND-6033):
+    /// `MarketSimulator::synthetic` draws its agents' flow from the cycle's
+    /// seed, so the run is a Monte Carlo path and owes the seed on its record.
+    episode: Option<qip_contracts::expansion::SyntheticEpisode>,
     /// The conditions the simulator reports it applied to the probe's
     /// arrival, by name — read off the run rather than off the schedule, so
     /// the detail states what the fill saw and not what was requested.
@@ -21857,6 +21956,21 @@ impl Platform {
                 labels([("instrument", probe.subject.as_str())]),
                 probe.adversity_bps,
             );
+            if let Some(episode) = probe.episode.clone() {
+                let cycle = self.cycle;
+                if self
+                    .journal_record(
+                        SyntheticEpisodeRecord { episode, cycle },
+                        SYNTHETIC_EPISODE_ORIGIN,
+                        now,
+                    )
+                    .is_err()
+                {
+                    detail.push_str(
+                        "; the capacity probe's synthetic episode was refused by the log",
+                    );
+                }
+            }
         }
 
         // Until this call existed the stage counted its own history and did
@@ -22122,6 +22236,15 @@ impl Platform {
             feed_delay,
             latency: report.latency,
             shortfall_bps,
+            episode: capacity_probe_episode(
+                subject,
+                initial,
+                volatility,
+                drift,
+                quantity,
+                feed_delay,
+                self.config.seed,
+            ),
             conditions: report.conditions.clone(),
         })
     }
@@ -22355,6 +22478,13 @@ impl Platform {
                 ));
             }
         }
+
+        episodes.extend(generated_world_episodes(
+            tail_worlds.iter().chain(&advisory_worlds),
+            &positions,
+            equity.to_f64(),
+            self.cycle,
+        ));
 
         let decomposition = self.decompose_risk(&market, &assets, &betas, &specific, &mut problems);
         (
@@ -36386,8 +36516,13 @@ mod simulate_tests {
             report.episodes.len(),
             report.scenarios.len()
         );
+        // The capacity probe's episode is journaled by the stage beside the
+        // report's own, so it is the one record the report does not carry.
         assert_eq!(
-            records.len(),
+            records
+                .iter()
+                .filter(|record| !record.episode.scenario().starts_with("capacity-probe:"))
+                .count(),
             report.episodes.len(),
             "every episode the pass generated is on the log"
         );
@@ -36400,10 +36535,16 @@ mod simulate_tests {
                 result.scenario
             );
         }
-        for record in &records {
+        for record in records
+            .iter()
+            .filter(|record| record.episode.generator() != SyntheticGenerator::MonteCarlo)
+        {
             assert_eq!(record.cycle, 0, "{record:?}");
-            assert_eq!(record.episode.generator(), SyntheticGenerator::Library);
-            assert_eq!(record.episode.seed(), None, "a library entry draws nothing");
+            assert_eq!(
+                record.episode.seed(),
+                None,
+                "a deterministic entry draws nothing"
+            );
             let digest = record.episode.input_digest();
             assert_eq!(digest.len(), 64, "{digest}");
             assert!(
@@ -36449,6 +36590,117 @@ mod simulate_tests {
                 "the book is in the digest: {scenario} digests alike held as one name and as two"
             );
         }
+    }
+
+    fn journaled_episodes(platform: &Platform) -> Vec<SyntheticEpisodeRecord> {
+        platform
+            .event_log()
+            .by_topic(Topic::ScenarioEvaluated)
+            .into_iter()
+            .filter(|frame| {
+                frame
+                    .idempotency_key
+                    .as_deref()
+                    .is_some_and(|key| key.starts_with(SYNTHETIC_EPISODE_PREFIX))
+            })
+            .map(|frame| {
+                StreamEnvelope::from_frame(frame)
+                    .and_then(|envelope| envelope.decode::<SyntheticEpisodeRecord>())
+                    .expect("a synthetic episode record decodes")
+                    .body
+            })
+            .collect()
+    }
+
+    /// R12-EXPAND-6033: the worlds SIMULATE drew from a seed are on the log as
+    /// Monte Carlo episodes carrying that seed, and both signs of a causal
+    /// driver's shock are on it as Conditional episodes carrying none. Before
+    /// this, `SyntheticGenerator::MonteCarlo` had no producer and the seed
+    /// field ADR 0149 d18 built had no writer, so the draws behind
+    /// `synthetic-1`, `synthetic-2`, `synthetic-joint` and the capacity
+    /// probe's agent flow could not be replayed from the log.
+    ///
+    /// Mutations: delete the `episodes.extend(generated_world_episodes(..))`
+    /// line in `stress_the_book` and the three tail-world assertions fail;
+    /// delete the `probe.episode` journal in `stage_simulate` and the
+    /// capacity-probe assertion fails; delete the `episodes.push` after the
+    /// Conditional episode in `stress_through_the_graph` and the two-sign
+    /// assertion fails; pass `None` for the seed in `generated_world_episodes`
+    /// and the contract refuses the episode, so the seed assertion fails.
+    #[test]
+    fn simulate_journals_its_seeded_worlds_as_monte_carlo_and_both_causal_signs_as_conditional() {
+        use qip_contracts::expansion::SyntheticGenerator;
+
+        let mut platform = platform();
+        feed_history(&mut platform, "AAPL", 80);
+        for (object, quantity) in [("AAPL", 100), ("SUPPLIER", 1_000)] {
+            platform.capital.positions.insert(
+                object.to_string(),
+                PositionLot {
+                    quantity: Decimal::from_int(quantity),
+                    average_price: Decimal::from_int(100),
+                },
+            );
+        }
+        claim(&platform, "AAPL", "SUPPLIER");
+        assert!(
+            journaled_episodes(&platform).is_empty(),
+            "premise: nothing journaled before the stage ran"
+        );
+        let seed = platform.config.seed;
+        let outcome = platform.stage_simulate(start());
+        assert!(
+            outcome.detail.contains("capacity probe"),
+            "premise: the probe ran: {}",
+            outcome.detail
+        );
+        let records = journaled_episodes(&platform);
+        let of = |scenario: &str| -> Vec<&SyntheticEpisodeRecord> {
+            records
+                .iter()
+                .filter(|r| r.episode.scenario() == scenario)
+                .collect()
+        };
+
+        // The cycle's draws, seeded by the cycle number (0 here).
+        for world in ["synthetic-1", "synthetic-2", "synthetic-joint"] {
+            let found = of(world);
+            assert_eq!(found.len(), 1, "{world}: {records:?}");
+            assert_eq!(found[0].episode.generator(), SyntheticGenerator::MonteCarlo);
+            assert_eq!(
+                found[0].episode.seed(),
+                Some(platform.cycle),
+                "{world} is drawn from the cycle's seed and the record names it"
+            );
+        }
+        // The probe's agent flow is drawn from the configuration's seed.
+        let probe = of("capacity-probe:AAPL");
+        assert_eq!(probe.len(), 1, "{records:?}");
+        assert_eq!(probe[0].episode.generator(), SyntheticGenerator::MonteCarlo);
+        assert_eq!(probe[0].episode.seed(), Some(seed));
+
+        // Both signs of the one driver, deterministic, so seedless.
+        let conditional: Vec<_> = records
+            .iter()
+            .filter(|r| r.episode.generator() == SyntheticGenerator::Conditional)
+            .collect();
+        assert_eq!(
+            conditional.len(),
+            2,
+            "both signs of the one driver's shock: {conditional:?}"
+        );
+        assert!(
+            conditional
+                .iter()
+                .all(|r| r.episode.seed().is_none()
+                    && r.episode.scenario().starts_with("causal:AAPL")),
+            "{conditional:?}"
+        );
+        assert_ne!(
+            conditional[0].episode.input_digest(),
+            conditional[1].episode.input_digest(),
+            "the two signs are two inputs"
+        );
     }
 
     /// Seat one claim in the world model's graph, as the UNDERSTAND stage's
