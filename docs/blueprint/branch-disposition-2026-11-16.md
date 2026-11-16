@@ -52,8 +52,10 @@ where the summary block names the failing test.
 Classic branch protection on `main`: the twenty-four `ci` jobs a pull request
 runs are required checks, branches must be up to date before merging, and the
 rule binds administrators. Force pushes and deletion of `main` are refused. A
-direct commit to `main` is now refused outright: this note reached `main` as a
-pull request because the first attempt to write it directly was rejected.
+direct commit is refused outright as well: the first attempt to write this
+section on `main` was rejected, and it arrived as pull request #282, which is
+what proved the gate — the same merge was refused while checks were pending and
+allowed once all twenty-four passed.
 
 `sast` is deliberately **not** on the list. It is the one job the workflow only
 runs on a push to `main` (`if: github.event_name == 'push' && github.ref ==
@@ -62,10 +64,30 @@ required check never passes: requiring it would block every merge for ever. It
 remains a post-merge check. The other job with an `if:` is `rule-citation`,
 which runs on pull requests only and is therefore required.
 
-The required-check list is pinned to job names in `.github/workflows/ci.yml`. A
-job renamed there must be renamed here in the same change, or merges wait on a
-check that will never report — the acceptance partition's matrix names are the
-ones to re-read first, because they carry their package lists.
+### The three long test names are truncated, and that is not cosmetic
+
+GitHub stores a check-run name up to 100 characters and cuts the rest, leaving
+a literal `...`. The three matrix jobs whose name carries its package list are
+longer than that, so what a pull request reports — and all that the UI or the
+API will show — is
+
+```
+test (runtime, -p qip-kernel -p qip-cli -p qip-web -p qip-deepbrain -p qip-contracts -p qip-marke...
+test (nodes, -p qip-api -p qip-edge-node -p qip-fabricd -p qip-ledgerd -p qip-edge -p qip-world-m...
+test (core, --workspace --exclude qip-acceptance --exclude qip-fastbrain --exclude qip-kernel --e...
+```
+
+exactly one hundred characters each, ending in three dots. Requiring the
+untruncated name the workflow file implies does not fail loudly. The check is
+simply never satisfied, `isRequired` reads false for it, and the merge stays
+blocked with every check displaying green — which is what happened on
+2026-11-16 until the three were copied from a rendered check list instead of
+from `ci.yml`. The four partition names in the protection rule are therefore
+the two short ones verbatim and these three truncated ones.
+
+The rest of the list is pinned to job names in `.github/workflows/ci.yml`: a job
+renamed there must be renamed here in the same change, or merges wait on a
+check that will never report.
 
 ## Refuted by a reader, not merged (4) — branches retained
 
