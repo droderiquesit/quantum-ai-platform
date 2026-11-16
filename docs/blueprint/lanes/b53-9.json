@@ -1,0 +1,77 @@
+{
+ "lane": "b53-9",
+ "rows": [
+  {
+   "id": "R12-GCP-8106",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Envelope clause: a capital/central envelope is issued only by CentralPlane::issue with a human Approval and operator credentials (plane.rs doc: a cycle stage must not be that caller), so the deployed composition cannot produce one in code. Check clause names a GKE pool, which ADR 0114 refuses (Amendment 1 reading is the owner's). The extraction the register asks for already exists: qip-deepbrain/src/assembly.rs (called by main.rs) and tests/assembly.rs::the_assembled_node_stresses_the_book_it_holds (5c51d5a8); the register gap text is stale.",
+   "commit": ""
+  },
+  {
+   "id": "R12-MODEL-4021",
+   "outcome": "PARTIAL",
+   "clauses": [
+    {
+     "clause": "candidate is attacked before acceptance and refused beyond tolerance (structural, not a caller convention)",
+     "code": "backend/crates/runtime/qip-kernel/src/central/models.rs::run_promotion_tests",
+     "caller": "backend/crates/apps/qip-deepbrain/src/learning.rs::promote_candidate (test_model_for_promotion, then promote_model_from -> ModelRegistry::promote_artifact via PROMOTION_TESTS)",
+     "test": "backend/crates/runtime/qip-kernel/tests/promotion_tests.rs::a_model_that_flips_inside_the_window_fails_its_adversarial_test_and_is_not_admitted"
+    }
+   ],
+   "test_command": "cd backend && cargo test -p qip-kernel --test promotion_tests",
+   "result_lines": [
+    "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+    "qip-ai+qip-kernel+qip-training --no-fail-fast: 1611 passed, 0 failed; qip-deepbrain: 449 passed, 0 failed; qip-api mesh: 26 passed"
+   ],
+   "mutations": [
+    "central/models.rs: Some(why) => record(ADVERSARIAL_TEST, true, why); failed promotion_tests.rs:536 'a step inside the data must fail: a nudge of feature 0 alone moves 7 of 200 probe row(s)...'; restored by cp, cmp clean, green"
+   ],
+   "remains": "Attack is coordinate-wise, so a joint-feature fragility passes. Not claimed COMPLETE.",
+   "commit": "bcd19586"
+  },
+  {
+   "id": "R12-RES-10130",
+   "outcome": "PARTIAL",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted this lane run. Register: owner ruling 2026-10-31 wants an ADR (claim 0732/0733) that REASON convenes no panel while the platform is lost; also open are a package installed via StrategyInstaller across a centre drop, and the edge centre existing only behind QIP_MESH_PEER, which no committed environment sets (infrastructure/environments is protected).",
+   "commit": ""
+  },
+  {
+   "id": "R12-RES-7097",
+   "outcome": "PARTIAL",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted. Register: default-path source assessment needs QIP_DEEPBRAIN_SOURCE_CANDIDATES_PATH which no committed environment sets, plus a candidate and egress route per source; held hypotheses/episodic entries have no revision path. Not verified as closable.",
+   "commit": ""
+  },
+  {
+   "id": "R12-RES-7106",
+   "outcome": "PARTIAL",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted. Register: seven named tests must be green first, four still red and parked (needs-sizing band question for an_uncertain_sized_decision..., two qip-fastbrain tapes, one position_record fixture); work held as unapplied patch docs/blueprint/lanes/l6-res-7106-decision25-wip.patch; owner ruling requires an ADR first.",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-10121",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted. ADR 0723 keeps the tick desk off until the deep brain reads a real lake and a superseding ADR for ADR 0151 exists, so feeding the desk the book would add no production-reachable path; counterparty propagation is absent. Owner chooses the lake route (ADR 0723 3a).",
+   "commit": ""
+  }
+ ]
+}
