@@ -316,20 +316,58 @@ fn classes_named(classes: &BTreeSet<AssetClass>) -> String {
 /// stays unmeasured where it does not.
 fn is_linear(kind: qip_financial::asset_class::InstrumentType) -> bool {
     use qip_financial::asset_class::InstrumentType as T;
-    matches!(
-        kind,
+    // Every variant is named, with no wildcard: a new instrument type must be
+    // classified here before it compiles. `EventContract` is a digital payoff
+    // with real gamma and vega at its barrier, so it is not linear (ADR 0658).
+    match kind {
         T::CommonStock
-            | T::PreferredStock
-            | T::DepositaryReceipt
-            | T::ExchangeTradedFund
-            | T::Index
-            | T::Future
-            | T::Forward
-            | T::FxSpot
-            | T::FxForward
-            | T::CommoditySpot
-            | T::CommodityFuture
-    )
+        | T::PreferredStock
+        | T::DepositaryReceipt
+        | T::ExchangeTradedFund
+        | T::Index
+        | T::Future
+        | T::Forward
+        | T::FxSpot
+        | T::FxForward
+        | T::CommoditySpot
+        | T::CommodityFuture => true,
+        T::GovernmentBond
+        | T::CorporateBond
+        | T::MunicipalBond
+        | T::InflationLinkedBond
+        | T::ConvertibleBond
+        | T::Loan
+        | T::PrivateCredit
+        | T::StructuredCredit
+        | T::MortgageBackedSecurity
+        | T::AssetBackedSecurity
+        | T::CreditDefaultSwap
+        | T::InterestRateSwap
+        | T::OvernightIndexSwap
+        | T::ForwardRateAgreement
+        | T::YieldCurvePoint
+        | T::Repo
+        | T::FxSwap
+        | T::CommoditySwap
+        | T::PerpetualFuture
+        | T::Option
+        | T::VarianceSwap
+        | T::VolatilityIndexFuture
+        | T::Cryptocurrency
+        | T::TokenizedSecurity
+        | T::MutualFund
+        | T::HedgeFund
+        | T::PrivateEquityFund
+        | T::VentureCapitalFund
+        | T::InfrastructureFund
+        | T::Secondary
+        | T::RealEstate
+        | T::Cash
+        | T::MoneyMarketInstrument
+        | T::StructuredNote
+        | T::SyntheticBasket
+        | T::EventContract => false,
+    }
 }
 
 /// One catalogue record's gamma and vega per unit of signed notional, or
@@ -1077,6 +1115,7 @@ mod tests {
             InstrumentType::VolatilityIndexFuture,
             InstrumentType::ConvertibleBond,
             InstrumentType::HedgeFund,
+            InstrumentType::EventContract,
         ] {
             assert!(!is_linear(convex), "{convex:?} is not known to be linear");
         }

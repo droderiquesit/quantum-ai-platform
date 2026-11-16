@@ -763,3 +763,41 @@ fn a_pass_that_tested_nothing_still_describes_itself() {
         "a pass that tested one claim describes itself as idle"
     );
 }
+
+/// R12-TICK-2084: a proposed hypothesis is charged to its family's trial
+/// budget, and a family at its budget is refused without being charged.
+///
+/// Mutation: delete the `+= 1` in `TrialLedger::charge_proposal` — `spent`
+/// stays 0 and the first assertion fails, and the budget is never reached.
+#[test]
+fn a_proposal_is_charged_to_its_familys_trial_budget_and_refused_at_the_budget() -> Result<()> {
+    use qip_world_model::falsification::ProposalCharge;
+    let mut ledger = TrialLedger::with_bounds(2, 4)?;
+    assert_eq!(ledger.spent("rv"), 0, "premise: nothing spent");
+    assert_eq!(
+        ledger.charge_proposal("rv")?,
+        ProposalCharge::Charged {
+            spent: 1,
+            budget: 2
+        }
+    );
+    assert_eq!(ledger.spent("rv"), 1, "the proposal was not charged");
+    assert_eq!(
+        ledger.charge_proposal("rv")?,
+        ProposalCharge::Charged {
+            spent: 2,
+            budget: 2
+        }
+    );
+    assert_eq!(
+        ledger.charge_proposal("rv")?,
+        ProposalCharge::BudgetExhausted {
+            spent: 2,
+            budget: 2
+        }
+    );
+    assert_eq!(ledger.spent("rv"), 2, "a refused proposal was charged");
+    assert_eq!(ledger.spent("other"), 0, "another family was charged");
+    assert!(ledger.charge_proposal("  ").is_err(), "an unnamed family");
+    Ok(())
+}
