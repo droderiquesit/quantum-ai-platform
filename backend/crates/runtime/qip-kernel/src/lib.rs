@@ -60,7 +60,6 @@ pub mod cycle;
 pub mod decision_record;
 pub mod desk_fabric;
 pub mod desk_ledger;
-pub mod digest;
 pub mod event_markets;
 pub mod evidence_intake;
 pub mod executable_scope;
@@ -97,7 +96,6 @@ pub mod references;
 pub mod regime_allocation;
 pub mod regime_transition;
 pub mod replay_divergence;
-pub mod replay_shard;
 pub mod routing_score;
 pub mod rule_review;
 pub mod scout_record;
@@ -109,7 +107,6 @@ pub mod source_alpha_record;
 pub mod source_decision_attribution;
 pub mod source_discovery;
 pub mod source_lifecycle;
-pub mod venue_outage;
 /// The survival kernel, moved to `qip-survival` (ADR 0464) and re-exported so
 /// `qip_kernel::survival` paths keep compiling, beside the survival limit the
 /// kernel installs because it composes the Capital and Risk Brains.

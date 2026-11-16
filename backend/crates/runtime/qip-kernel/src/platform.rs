@@ -6812,6 +6812,8 @@ impl Platform {
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
+        let (falsification_resumed, mismatch_sequence_resumed) =
+            crate::mismatch::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
         // One activity row per limit, before the set moves into the checker
@@ -6850,8 +6852,8 @@ impl Platform {
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
-            falsification: crate::falsification::Book::new(),
-            mismatch_proposal_sequence: 0,
+            falsification: falsification_resumed,
+            mismatch_proposal_sequence: mismatch_sequence_resumed,
             evaluations: Vec::new(),
             last_calibration: None,
             self_model,

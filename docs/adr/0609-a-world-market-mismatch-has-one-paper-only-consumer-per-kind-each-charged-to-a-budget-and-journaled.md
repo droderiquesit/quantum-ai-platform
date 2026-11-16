@@ -37,14 +37,23 @@ raised nothing.
 4. Every change to the proposal working set is **journaled**
    (`MismatchProposalJournal` under `Topic::HypothesisCreated`, key prefix
    `mismatch-proposal:`): an admission, an eviction, a refusal on budget.
-   `mismatch::replay` rebuilds the working set and the family's spent count
-   from the journal alone.
+   `mismatch::resume`, called at `Platform::new` beside the other `resume`
+   steps, rebuilds the book from the log: the working set, the family's spent
+   trials (a restart does not hand the budget back) and the eviction and
+   refusal counts. The journal sequence continues from the highest the log
+   holds, so the key `mismatch-proposal:{sequence}` is never reused by a later
+   process over the same log.
 5. The working set holds `PROPOSED_CAPACITY = 32` proposals. **Provisional**:
    no figure was given, so it is chosen in the restrictive direction, half the
    family budget of 64, which also makes eviction reachable. The oldest is
    evicted when full; evictions and budget refusals are counted
    (`proposals_evicted`, `proposals_refused_on_budget`) and journaled.
-6. `mismatch::route` returns every mismatch somewhere: the routed total equals
+6. The research loop holds at most `MAX_MISMATCH_CANDIDATES = 16` mismatch
+   candidates between sweeps (candidates are cleared only when a sweep
+   launches). **Provisional**, chosen small in the restrictive direction; a
+   candidate over the bound is counted (`mismatch_candidates_dropped`), not
+   queued.
+7. `mismatch::route` returns every mismatch somewhere: the routed total equals
    `FusedState::mismatches().len()`.
 
 ## What it costs
@@ -57,7 +66,10 @@ raised nothing.
   exists yet).
 - Acquisition budget: each launched mismatch scout job spends what any scout
   job spends, and displaces a lower-ranked candidate when the budget is short.
-- One log record per admission, eviction and refusal.
+- One log record per admission, eviction and refusal, and a pass over the
+  proposal records at every start-up.
+- Up to 16 queued candidates' memory between sweeps; any beyond are lost to
+  the sweep (counted), which is the cost of the bound.
 - A `ResearchLoop` is needed to offer candidates; without one the
   investigations and challenges are not offered anywhere.
 

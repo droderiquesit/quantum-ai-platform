@@ -222,6 +222,26 @@ impl Book {
         })
     }
 
+    /// A book with the proposal working set the log holds
+    /// ([`crate::mismatch::resume`]): the proposals, the trials spent on the
+    /// proposal family, and the eviction and budget-refusal counts. The log,
+    /// not memory, is the record, so a restart does not hand the family a
+    /// fresh budget.
+    pub fn restored(
+        proposed: Vec<crate::mismatch::ProposedHypothesis>,
+        spent: usize,
+        evicted: u64,
+        refused_on_budget: u64,
+    ) -> Result<Self, qip_core::error::Error> {
+        let mut book = Self::new();
+        book.ledger
+            .restore_spent(crate::mismatch::PROPOSAL_FAMILY, spent)?;
+        book.proposed = proposed;
+        book.evicted = evicted;
+        book.refused_on_budget = refused_on_budget;
+        Ok(book)
+    }
+
     /// The most proposals the working set holds before it evicts the oldest.
     pub const fn proposed_capacity(&self) -> usize {
         self.proposed_capacity

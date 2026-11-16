@@ -1389,7 +1389,15 @@ pub struct MismatchCandidates {
     pub unviable: usize,
     /// A figure outside `[0, 1]` or a request the contract refused.
     pub refused: usize,
+    /// Over [`MAX_MISMATCH_CANDIDATES`] pending; counted, not queued.
+    pub dropped: usize,
 }
+
+/// Mismatch candidates that may wait for the next sweep's ranked launch.
+/// **Provisional**: no figure was given; chosen small, in the restrictive
+/// direction, so a noisy tick feed cannot crowd the queue. Drops are counted
+/// ([`ResearchLoop::mismatch_candidates_dropped`]).
+pub const MAX_MISMATCH_CANDIDATES: usize = 16;
 
 /// A launched information request as a scout job: what to find evidence
 /// about, and the rank it was launched at.
@@ -1805,6 +1813,8 @@ pub struct ResearchLoop {
     /// (`launch_ranked`), which a re-acquisition is charged to (ADR 0158
     /// decision 11).
     acquisition_left_bp: u32,
+    /// Mismatch candidates refused over [`MAX_MISMATCH_CANDIDATES`] (ADR 0609).
+    mismatch_candidates_dropped: u64,
     /// The entities each launched request's gap named, kept so a
     /// re-acquisition scouts the same subjects. Bounded by [`RETAINED`].
     launched_entities: BTreeMap<String, Vec<String>>,
@@ -2043,6 +2053,7 @@ impl ResearchLoop {
             candidates: Vec::new(),
             candidate_entities: BTreeMap::new(),
             acquisition_left_bp: 0,
+            mismatch_candidates_dropped: 0,
             launched_entities: BTreeMap::new(),
             meta: MetaIntelligence::new(MetaPolicy::default())?,
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
@@ -3644,6 +3655,11 @@ impl ResearchLoop {
         Ok(())
     }
 
+    /// Mismatch candidates refused because the queue was at its bound.
+    pub const fn mismatch_candidates_dropped(&self) -> u64 {
+        self.mismatch_candidates_dropped
+    }
+
     /// Offer the investigations and evidence challenges a tick round's
     /// mismatches raised as acquisition candidates (R12-TICK-2084, ADR 0609).
     ///
@@ -3693,6 +3709,20 @@ impl ResearchLoop {
                 || self.candidates.iter().any(|(r, _)| r.id() == id);
             if held {
                 out.held += 1;
+                continue;
+            }
+            // Bounded: candidates are cleared only when a sweep launches, so
+            // a tick feed that mismatches every round would otherwise grow the
+            // queue between sweeps without limit. A candidate over the bound
+            // is counted, not silently lost.
+            let pending = self
+                .candidates
+                .iter()
+                .filter(|(r, _)| r.id().starts_with("mismatch-"))
+                .count();
+            if pending >= MAX_MISMATCH_CANDIDATES {
+                out.dropped += 1;
+                self.mismatch_candidates_dropped += 1;
                 continue;
             }
             let Ok(bp) = basis_points(figure) else {
@@ -5786,6 +5816,32 @@ mod tests {
         assert_eq!(raised.len(), 2, "premise: both gates repeat: {raised:?}");
         assert_eq!(value_of("tight-gate"), Some(Decimal::from_int(150)));
         assert_eq!(value_of("idle-gate"), Some(Decimal::ZERO));
+    }
+
+    /// R12-TICK-2084: the queue of mismatch candidates is bounded and counts
+    /// what it refuses. Mutation: delete the `pending >= MAX_MISMATCH_CANDIDATES`
+    /// check — all 20 are queued and the dropped count is 0.
+    #[test]
+    fn the_mismatch_candidate_queue_is_bounded_and_counts_what_it_refuses() {
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let at = Timestamp::from_secs(1_800_000_000);
+        let challenges: Vec<_> = (0..MAX_MISMATCH_CANDIDATES + 4)
+            .map(|n| qip_kernel::mismatch::EvidenceChallenge {
+                event: format!("evt-{n}"),
+                evidence_quality: 0.05,
+                reason: "weak".to_string(),
+                instruments: vec![format!("inst-{n}")],
+            })
+            .collect();
+        let offered = research.admit_mismatch_candidates(&[], &challenges, at);
+        assert_eq!(
+            offered.queued, MAX_MISMATCH_CANDIDATES,
+            "premise: the first {MAX_MISMATCH_CANDIDATES} are viable: {offered:?}"
+        );
+        assert_eq!(offered.dropped, 4, "{offered:?}");
+        assert_eq!(research.mismatch_candidates_dropped(), 4);
+        assert_eq!(research.candidates.len(), MAX_MISMATCH_CANDIDATES);
     }
 
     /// R12-TICK-2084, ADR 0609: the scout jobs a mismatch raises are charged

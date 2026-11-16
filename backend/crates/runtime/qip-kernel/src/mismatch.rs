@@ -238,27 +238,43 @@ pub struct MismatchAdmission {
 }
 
 /// Every proposal event the log holds, oldest first. A frame under the
-/// proposal prefix that does not decode is an error, so a reader counts the
+/// proposal origin that does not decode is an error, so a reader counts the
 /// refusal rather than sweeping over a shorter list.
-pub fn journaled(
-    platform: &crate::platform::Platform,
+pub fn from_log(
+    log: &qip_events::EventLog,
 ) -> qip_core::error::Result<Vec<MismatchProposalJournal>> {
     use qip_streaming::envelope::StreamEnvelope;
-    platform
-        .event_log()
-        .by_topic(qip_events::Topic::HypothesisCreated)
-        .into_iter()
+    log.events()
         .filter(|frame| {
-            frame
-                .idempotency_key
-                .as_deref()
-                .is_some_and(|key| key.starts_with("mismatch-proposal:"))
+            frame.topic == <MismatchProposalJournal as qip_events::EventBody>::TOPIC
+                && frame.lineage.producer == PROPOSAL_ORIGIN
         })
         .map(|frame| {
             let envelope = StreamEnvelope::from_frame(frame)?;
             Ok(envelope.decode::<MismatchProposalJournal>()?.body)
         })
         .collect()
+}
+
+/// The falsification book and the next journal sequence, rebuilt from the log
+/// at assembly (R12-TICK-2084). The book gets the working set and the trials
+/// spent that [`replay`] derives; the sequence continues from the highest the
+/// log holds, so a key `mismatch-proposal:{sequence}` is never reused by a
+/// later process over the same log.
+pub fn resume(
+    log: &qip_events::EventLog,
+) -> qip_core::error::Result<(crate::falsification::Book, u64)> {
+    let entries = from_log(log)?;
+    let (live, spent) = replay(&entries);
+    let count = |a: ProposalAction| entries.iter().filter(|e| e.action == a).count() as u64;
+    let sequence = entries.iter().map(|e| e.sequence).max().unwrap_or(0);
+    let book = crate::falsification::Book::restored(
+        live,
+        spent,
+        count(ProposalAction::Evicted),
+        count(ProposalAction::RefusedOnBudget),
+    )?;
+    Ok((book, sequence))
 }
 
 #[cfg(test)]
@@ -313,7 +329,7 @@ mod tests {
             .expect("admits");
         assert_eq!((admission.admitted, admission.duplicates), (1, 1));
         assert_eq!(ledger_spent(&platform), 1, "the proposal was not charged");
-        let log = journaled(&platform).expect("decodes");
+        let log = from_log(platform.event_log()).expect("decodes");
         assert_eq!(
             log.len(),
             1,
@@ -346,7 +362,7 @@ mod tests {
             budget - PROPOSED_CAPACITY
         );
         assert_eq!(book.proposed().len(), PROPOSED_CAPACITY);
-        let log = journaled(&platform).expect("decodes");
+        let log = from_log(platform.event_log()).expect("decodes");
         let count = |a: ProposalAction| log.iter().filter(|e| e.action == a).count();
         assert_eq!(count(ProposalAction::Admitted), budget);
         assert_eq!(count(ProposalAction::Evicted), budget - PROPOSED_CAPACITY);
@@ -358,5 +374,72 @@ mod tests {
             "the log does not rebuild the working set"
         );
         assert_eq!(spent, budget);
+    }
+
+    /// A restarted platform over the same log has the book the first one
+    /// had: the working set, the trials spent (the budget is not handed back
+    /// by a restart) and a journal sequence that continues, so no key repeats.
+    ///
+    /// Mutations: replace `resume`'s `restored` call with `Book::new()` — the
+    /// working-set assertion fails; make `resume` return sequence 0 — the
+    /// "no key repeated" assertion fails; skip `restore_spent` — the budget
+    /// assertion fails.
+    #[test]
+    fn a_restart_rebuilds_the_book_from_the_log_keeps_the_spend_and_continues_the_sequence() {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-kernel-mismatch-resume-{}-{}",
+            std::process::id(),
+            at().as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        let make = || -> Platform {
+            let config = PlatformConfig::default().with_event_log_file(&path);
+            let (context, _clock) = Context::deterministic(at(), config.seed);
+            Platform::new(
+                config,
+                context,
+                Telemetry::silent(),
+                Universe::new(),
+                LimitSet::conservative_default(),
+            )
+            .expect("the platform assembles")
+        };
+        let budget = {
+            let mut first = make();
+            let budget = first.falsification().ledger().budget();
+            let admission = first
+                .admit_proposed_hypotheses((0..budget).map(proposal).collect(), at())
+                .expect("admits");
+            assert_eq!(admission.admitted, budget, "premise: the budget was spent");
+            budget
+        };
+        let mut second = make();
+        let book = second.falsification();
+        assert_eq!(
+            book.ledger().spent(PROPOSAL_FAMILY),
+            budget,
+            "a restart handed the family a fresh budget"
+        );
+        assert_eq!(
+            book.proposed().len(),
+            PROPOSED_CAPACITY,
+            "the working set was not rebuilt from the log"
+        );
+        assert_eq!(
+            book.proposals_evicted() as usize,
+            budget - PROPOSED_CAPACITY
+        );
+        let again = second
+            .admit_proposed_hypotheses(vec![proposal(budget + 1)], at())
+            .expect("admits");
+        assert_eq!(again.refused_on_budget, 1, "the spent budget was forgotten");
+        let log = from_log(second.event_log()).expect("decodes");
+        let mut sequences: Vec<u64> = log.iter().map(|e| e.sequence).collect();
+        let before = sequences.len();
+        sequences.sort_unstable();
+        sequences.dedup();
+        assert_eq!(sequences.len(), before, "a journal key was repeated");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 }

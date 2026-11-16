@@ -971,6 +971,24 @@ impl TrialLedger {
         })
     }
 
+    /// Put back the trials a family had spent before a restart, as the log
+    /// recorded them (R12-TICK-2084). Refuses a count above the budget: a log
+    /// that says more was spent than the budget allows is a log this ledger
+    /// was not the writer of, and adopting it would hide that.
+    pub fn restore_spent(&mut self, family: &str, spent: usize) -> Result<()> {
+        let key = self.admissible_family(family)?;
+        if spent > self.budget {
+            return Err(Error::invalid(format!(
+                "the log says {spent} trial(s) were spent on {key}, more than the budget of {}",
+                self.budget
+            )));
+        }
+        if spent > 0 {
+            self.spent.insert(key, spent);
+        }
+        Ok(())
+    }
+
     /// The family key, or why it is not one.
     ///
     /// Fails closed at the bound: a family the ledger cannot track is a family
