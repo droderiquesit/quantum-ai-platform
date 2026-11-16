@@ -2060,3 +2060,73 @@ fn an_approved_verdict_on_quantum_exploration_alone_is_refused_when_applied() {
     grounded.apply_review(&review("hyp-1")).unwrap();
     assert_eq!(grounded.status(), HypothesisStatus::Approved);
 }
+
+// --- R12-RES-7097: a quarantined or stale source's evidence leaves the belief
+
+#[test]
+fn withdrawing_a_quarantined_origin_lowers_confidence_to_what_the_rest_implies() -> Result<()> {
+    let mut hypothesis = Hypothesis::form(draft(well_supported(), sound_chain()))?;
+    let before = hypothesis.confidence;
+    let outcome = hypothesis.withdraw_origin("exchange")?;
+    assert_eq!(
+        outcome,
+        qip_reasoning_engine::hypothesis::OriginRevision::Withdrawn { removed: 1 }
+    );
+    assert!(
+        hypothesis.confidence < before,
+        "withdrawing support did not lower confidence"
+    );
+    assert!(hypothesis.evidence.iter().all(|e| e.origin != "exchange"));
+    // validate holds: the stated confidence is the one the remaining evidence implies.
+    hypothesis.validate()?;
+    assert_eq!(
+        hypothesis.withdraw_origin("exchange")?,
+        qip_reasoning_engine::hypothesis::OriginRevision::Unaffected
+    );
+    Ok(())
+}
+
+#[test]
+fn a_hypothesis_left_with_no_support_is_rejected_not_left_standing() -> Result<()> {
+    let single = EvidenceSet::from_items(vec![evidence(
+        "e1",
+        EvidenceKind::Filing,
+        Stance::Supports,
+        "sec-edgar",
+        0.95,
+        0.8,
+    )]);
+    let mut hypothesis = Hypothesis::form(draft(single, sound_chain()))?;
+    assert_eq!(
+        hypothesis.withdraw_origin("sec-edgar")?,
+        qip_reasoning_engine::hypothesis::OriginRevision::Invalidated
+    );
+    assert_eq!(
+        hypothesis.status(),
+        qip_reasoning_engine::hypothesis::HypothesisStatus::Rejected
+    );
+    assert_eq!(
+        hypothesis.evidence.iter().count(),
+        1,
+        "the record of what it stood on was dropped"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_stale_origin_is_held_down_and_a_second_report_cannot_raise_it_back() -> Result<()> {
+    let mut hypothesis = Hypothesis::form(draft(well_supported(), sound_chain()))?;
+    let before = hypothesis.confidence;
+    assert!(hypothesis.downweight_origin("exchange", 0.5)?);
+    let held = hypothesis.confidence;
+    assert!(held < before, "a stale source did not lower confidence");
+    hypothesis.validate()?;
+    assert!(hypothesis.downweight_origin("exchange", 0.9)?);
+    assert!(
+        (hypothesis.confidence - held).abs() < 1e-12,
+        "a milder second report raised the held confidence"
+    );
+    assert!(!hypothesis.downweight_origin("nobody", 0.5)?);
+    assert!(hypothesis.downweight_origin("exchange", 1.5).is_err());
+    Ok(())
+}

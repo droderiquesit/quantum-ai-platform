@@ -348,6 +348,12 @@ fn select_members(board: &Scoreboard, regime: &str) -> Vec<(ModelFamily, f64)> {
 /// asks for an interval that covers nine in ten realised returns.
 const CONFORMAL_ALPHA: f64 = 0.1;
 
+/// How many subjects' held-out tails the desk keeps past their round. Provisional
+/// and restrictive: the deep brain rotates through a handful of subjects, and a
+/// subject evicted at the bound is the oldest fitted, whose models then wait
+/// for their next round as they did before the tails were kept.
+const MAX_EARLIER_TAILS: usize = 16;
+
 /// The dataset name a round on `subject` fits under.
 fn dataset_name(subject: &ObjectId) -> String {
     format!("{DATASET_PREFIX}{}", subject.as_str())
@@ -976,6 +982,16 @@ pub struct LearningDesk {
     /// the crossing (R12-MODEL-10096). Replaced by every round that fits and
     /// cleared by every round that does not, exactly as `candidate` is.
     renewal_rows: Option<(String, TrainingDataset)>,
+    /// The held-out tail of each subject an earlier round fitted, replaced
+    /// when the subject is fitted again and bounded by
+    /// [`MAX_EARLIER_TAILS`], so a subject the deep brain has rotated away
+    /// from is still judged when it crosses a regime boundary
+    /// (R12-MODEL-10096, remainder 3: only the round's own subject was
+    /// examined, and a production model on any other subject kept its
+    /// authority however its regime moved).
+    earlier_tails: BTreeMap<String, (u64, TrainingDataset)>,
+    /// Counts tails retained, so the oldest can be evicted at the bound.
+    tail_clock: u64,
     /// Per subject, the model in shadow, if any. One at a time: a subject
     /// with a model in shadow scores that model on each new window and
     /// fits nothing new into production until it is decided.
@@ -1101,6 +1117,8 @@ impl LearningDesk {
             registry: ModelRegistry::new(),
             candidate: None,
             renewal_rows: None,
+            earlier_tails: BTreeMap::new(),
+            tail_clock: 0,
             shadowing: BTreeMap::new(),
             promoted_artifacts: BTreeMap::new(),
             displaced_artifacts: BTreeMap::new(),
@@ -2161,14 +2179,62 @@ impl LearningDesk {
         due: impl Fn(&Platform, &ModelCard) -> Option<Timestamp>,
         now: Timestamp,
     ) -> Result<Vec<Reverification>> {
-        let Some((subject, holdout)) = self.renewal_rows.clone() else {
-            return Ok(Vec::new());
-        };
+        let mut outcomes = Vec::new();
+        if let Some((subject, holdout)) = self.renewal_rows.clone() {
+            outcomes.extend(self.reverify_subject(platform, &due, now, &subject, &holdout)?);
+        }
+        // Every other subject whose tail is retained, in name order so the
+        // round's outcomes are reproducible.
+        let others: Vec<(String, TrainingDataset)> = self
+            .earlier_tails
+            .iter()
+            .filter(|(subject, _)| {
+                self.renewal_rows
+                    .as_ref()
+                    .is_none_or(|(current, _)| current != *subject)
+            })
+            .map(|(subject, (_, tail))| (subject.clone(), tail.clone()))
+            .collect();
+        for (subject, holdout) in others {
+            outcomes.extend(self.reverify_subject(platform, &due, now, &subject, &holdout)?);
+        }
+        Ok(outcomes)
+    }
+
+    /// Move the newest round's tail into the retained set, evicting the
+    /// oldest at the bound, before a round replaces or clears it.
+    fn retire_renewal_rows(&mut self) {
+        if let Some((subject, tail)) = self.renewal_rows.take() {
+            self.tail_clock += 1;
+            self.earlier_tails.insert(subject, (self.tail_clock, tail));
+            while self.earlier_tails.len() > MAX_EARLIER_TAILS {
+                let oldest = self
+                    .earlier_tails
+                    .iter()
+                    .min_by_key(|(_, (clock, _))| *clock)
+                    .map(|(subject, _)| subject.clone());
+                match oldest {
+                    Some(subject) => self.earlier_tails.remove(&subject),
+                    None => break,
+                };
+            }
+        }
+    }
+
+    /// One subject's production models, judged on `holdout`.
+    fn reverify_subject(
+        &mut self,
+        platform: &mut Platform,
+        due: &impl Fn(&Platform, &ModelCard) -> Option<Timestamp>,
+        now: Timestamp,
+        subject: &str,
+        holdout: &TrainingDataset,
+    ) -> Result<Vec<Reverification>> {
         let mut pending: std::collections::VecDeque<(String, Timestamp)> = self
             .registry
             .iter()
             .filter(|card| card.stage == ModelStage::Production)
-            .filter(|card| card_subject(card) == Some(subject.as_str()))
+            .filter(|card| card_subject(card) == Some(subject))
             .filter_map(|card| due(platform, card).map(|crossing| (card.reference(), crossing)))
             .collect();
         // Each reference is judged at most once a round. A rollback retires
@@ -2264,7 +2330,7 @@ impl LearningDesk {
                     // on a regime it was never evaluated in, which is the
                     // stale authority this re-verification exists to end.
                     if let Some(card) = self.registry.get(&reactivated)
-                        && card_subject(card) == Some(subject.as_str())
+                        && card_subject(card) == Some(subject)
                         && let Some(crossing) = due(platform, card)
                     {
                         pending.push_back((reactivated.clone(), crossing));
@@ -2520,7 +2586,7 @@ impl LearningDesk {
                     // engine's promote step cannot promote the previous
                     // window's fit against this one.
                     self.candidate = None;
-                    self.renewal_rows = None;
+                    self.retire_renewal_rows();
                     return Ok(LearningRound {
                         subject: subject.as_str().to_string(),
                         registration: None,
@@ -2916,6 +2982,7 @@ impl LearningDesk {
         // candidate: there are no rows to rescore an incumbent on, and a
         // promotion decided on nothing is the thing this stage exists to
         // refuse.
+        self.retire_renewal_rows();
         self.renewal_rows = probe
             .as_ref()
             .ok()
@@ -4019,6 +4086,72 @@ mod tests {
         assert!(
             desk.reverify_after_crossing(&mut platform, now)?.is_empty(),
             "a model evaluated after the crossing was reverified again"
+        );
+        Ok(())
+    }
+
+    /// A production model on a subject the deep brain has rotated away from is
+    /// still judged after its subject crosses, on the held-out tail its last
+    /// round kept (R12-MODEL-10096, remainder 3). Before the tails were kept
+    /// only the newest round's subject was examined, so a model on any other
+    /// subject kept its authority however its regime moved.
+    ///
+    /// Mutation: drop the loop over `earlier_tails` in `reverify_against` and
+    /// the outcomes are empty; this fails on the `Survived` match.
+    #[test]
+    fn a_production_model_on_a_subject_the_desk_has_rotated_away_from_is_still_judged() -> Result<()>
+    {
+        let bbb = ObjectId::from_string("obj-BBB");
+        let ccc = ObjectId::from_string("obj-CCC");
+        let mut desk = learning_desk();
+        let mut platform = regime_platform()?;
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&bbb, &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        let reference = round
+            .registration
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a registration"))?
+            .reference
+            .clone();
+        let promoted = through_shadow_for(
+            &mut desk,
+            &mut platform,
+            &bbb,
+            |step| super::tests_support::learnable(400 + step)[step..].to_vec(),
+            1,
+            at(),
+        )?;
+        assert!(
+            matches!(promoted, Some(PromotionOutcome::Promoted { .. })),
+            "premise: the model reached production: {promoted:?}"
+        );
+        let crossing = at().saturating_add(qip_core::Duration::from_mins(10));
+        platform.observe(vec![spread_quote(crossing, 300.0)]);
+        platform.run_cycle(crossing);
+
+        let now = at().saturating_add(qip_core::Duration::from_days(2));
+        let later = super::tests_support::learnable(1_000)[600..].to_vec();
+        desk.maybe_learn(&bbb, &later, REGIME, 9, now)?;
+        // The desk moves on to another subject; BBB's tail is no longer the
+        // newest round's.
+        desk.maybe_learn(&ccc, &later, REGIME, 10, now)?;
+        assert_eq!(
+            desk.renewal_rows
+                .as_ref()
+                .map(|(subject, _)| subject.as_str()),
+            Some("obj-CCC"),
+            "premise: the newest round is on another subject"
+        );
+
+        let outcomes = desk.reverify_after_crossing(&mut platform, now)?;
+        assert!(
+            outcomes.iter().any(|outcome| matches!(
+                outcome,
+                Reverification::Survived { reference: judged, .. } if *judged == reference
+            )),
+            "{outcomes:?}"
         );
         Ok(())
     }

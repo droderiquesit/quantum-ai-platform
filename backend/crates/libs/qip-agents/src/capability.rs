@@ -34,6 +34,9 @@ pub enum Capability {
     ReadExecutionHistory,
     /// The model cards and forecaster records the platform scores (R12-REASON-3023).
     ReadModelRegistry,
+    /// The BigQuery evidence warehouse, through the `EvidenceStore` port
+    /// (R12-AMBIENT-9001). Read-only: there is no write capability for it.
+    ReadEvidence,
 
     // --- computation: expensive but side-effect free ---
     CallLanguageModel,
@@ -72,6 +75,7 @@ impl Capability {
             Self::ReadRiskState => "read_risk_state",
             Self::ReadExecutionHistory => "read_execution_history",
             Self::ReadModelRegistry => "read_model_registry",
+            Self::ReadEvidence => "read_evidence",
             Self::CallLanguageModel => "call_language_model",
             Self::RunBacktest => "run_backtest",
             Self::RunSimulation => "run_simulation",
@@ -112,6 +116,7 @@ impl Capability {
             Self::ReadRiskState,
             Self::ReadExecutionHistory,
             Self::ReadModelRegistry,
+            Self::ReadEvidence,
             Self::CallLanguageModel,
             Self::RunBacktest,
             Self::RunSimulation,
@@ -144,7 +149,8 @@ impl Capability {
             | Self::ReadPortfolio
             | Self::ReadRiskState
             | Self::ReadExecutionHistory
-            | Self::ReadModelRegistry => 0,
+            | Self::ReadModelRegistry
+            | Self::ReadEvidence => 0,
             Self::CallLanguageModel
             | Self::RunBacktest
             | Self::RunSimulation

@@ -2623,6 +2623,41 @@ that narrows a security scanner, whatever the owner has delegated.
       it. None is a limit; each stays unbuilt in the register until it has a
       caller.
 
+    *The third batch (lanes 19, 21, 22, 31 and 34), and the waiting patches.*
+    The same reading was given to the two new records.
+
+    - Kept with a named defect. Record 0638's evidence port
+      (`qip-agents/src/evidence.rs`) has no caller and no store implements
+      it, so its row cap and its knowable-instant refusal cannot fire yet;
+      its capability is in the read-only set every research agent is given,
+      so the gate will distinguish nobody until a manifest review exists; and
+      a query's `subject` is trimmed, not refused. Record 0662's directional
+      band (`qip-edge/src/band.rs`) has no caller outside its tests and takes
+      the cell's share from whoever constructs it, not from the cell's
+      ledger. Neither touches a limit that exists, an order path or a guard.
+      Both rows stay unbuilt until the code has a caller.
+    - Lane 22 added the two required headings to record 0644 after it had
+      landed on main with them. The landed record is kept as main has it.
+    - Patches held for the owner: `cicd-9107-protected.patch` (the deploy
+      job publishes the commit's source and deployment bundle, owner
+      decision 36) and `t5-04-R12-REASON-7203.patch` (the two-person publish
+      signs a reflex package, ADR 0535). Both were applied, both lint and the
+      workflow suites pass with them, and both were then taken back out of
+      the batch: they edit `.github/**`, and the agent-boundary check asks for
+      a person's approval of exactly that ("an agent-authored change touches
+      protected paths and no person has approved commit"). That check is the
+      oversight this decision does not override; the two patches go up as a
+      pull request of their own for the owner to approve.
+    - Patches not applied. `l8-sast-barrier.patch` narrows a scanner.
+      `l5-edge-GOV-9075.patch` edits `.claude/**`, which the permission layer
+      refuses. `l6-ncc-hubs-parked.patch` declares hubs a guard forbids
+      before the second region. `L4-quant-research-families-adr0150.patch`
+      builds quantum families that ADR 0150, accepted on the owner's explicit
+      approval, keeps unbuilt without a committed benefit case; it lints and
+      its tests pass, and that is not the entry condition the record sets.
+      `l6-cicd-9083-lane-manifest.patch` is superseded. The first two are the
+      owner's to apply by hand if he wants them.
+
     No register row is regraded by this decision. A decision removes a wait;
     a row closes only when what it names is built, the pipeline has passed
     with it, and two independent readers have failed to refute it.

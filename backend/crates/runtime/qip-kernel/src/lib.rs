@@ -101,6 +101,7 @@ pub mod regime_transition;
 pub mod replay_divergence;
 pub mod routing_score;
 pub mod rule_review;
+pub mod saga_outcomes;
 pub mod scout_record;
 pub mod self_watch;
 pub mod session_replay;
