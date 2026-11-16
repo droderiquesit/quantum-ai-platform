@@ -2658,6 +2658,19 @@ that narrows a security scanner, whatever the owner has delegated.
       `l6-cicd-9083-lane-manifest.patch` is superseded. The first two are the
       owner's to apply by hand if he wants them.
 
+    *The rows that waited on a decision record (2026-11-16).* Sixty open rows
+    needed a decision before their code and no record named them. Records
+    0703 to 0723 decide all sixty, one numbered decision per row: 10 to build
+    a stated way, 25 declined with the reason, 17 left to the owner because
+    they need money, a licence, a vendor, a credential or a choice only he can
+    make, and 8 that need a figure nobody has given (none is chosen). Fifteen
+    records are accepted under this decision. Six stay Proposed for the owner,
+    because a decision in each touches billed infrastructure, a risk limit, an
+    identity grant, or amends an accepted record: 0709, 0713, 0719, 0720,
+    0721, 0722. The fifteen quantum rows are declined under ADR 0150, which
+    keeps every family but the portfolio QUBO unbuilt until a committed
+    benefit case exists.
+
     No register row is regraded by this decision. A decision removes a wait;
     a row closes only when what it names is built, the pipeline has passed
     with it, and two independent readers have failed to refute it.
