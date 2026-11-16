@@ -776,6 +776,15 @@ pub const FAMILY_LIMIT: usize = 256;
 /// The longest a family key may be.
 const FAMILY_KEY_CHARS: usize = 128;
 
+/// What [`TrialLedger::charge_proposal`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProposalCharge {
+    /// One trial was charged; `spent` is the family's total afterwards.
+    Charged { spent: usize, budget: usize },
+    /// The family had no budget left; nothing was charged.
+    BudgetExhausted { spent: usize, budget: usize },
+}
+
 /// Cumulative trials and refutations, per family.
 ///
 /// §14.3's last row — "Refuted or retired: recorded permanently. A refuted
@@ -935,6 +944,49 @@ impl TrialLedger {
             });
         }
         Ok(Verdict::Survived { observations })
+    }
+
+    /// Charge one trial to `family` for a hypothesis that was **proposed**,
+    /// not yet evaluated (R12-TICK-2084, ADR 0609).
+    ///
+    /// A proposal draws on the same cumulative budget as an evaluation, so a
+    /// source that proposes without limit cannot arrive at the evaluation
+    /// stage with a family's budget already spent on nothing it tested, and a
+    /// family cannot be flooded into the ledger's bound by proposals alone.
+    /// Refuses an unnamed or untrackable family exactly as [`Self::test`]
+    /// does; a family at its budget is reported, not charged.
+    pub fn charge_proposal(&mut self, family: &str) -> Result<ProposalCharge> {
+        let key = self.admissible_family(family)?;
+        let spent = self.spent(&key);
+        if spent >= self.budget {
+            return Ok(ProposalCharge::BudgetExhausted {
+                spent,
+                budget: self.budget,
+            });
+        }
+        *self.spent.entry(key).or_insert(0) += 1;
+        Ok(ProposalCharge::Charged {
+            spent: spent + 1,
+            budget: self.budget,
+        })
+    }
+
+    /// Put back the trials a family had spent before a restart, as the log
+    /// recorded them (R12-TICK-2084). Refuses a count above the budget: a log
+    /// that says more was spent than the budget allows is a log this ledger
+    /// was not the writer of, and adopting it would hide that.
+    pub fn restore_spent(&mut self, family: &str, spent: usize) -> Result<()> {
+        let key = self.admissible_family(family)?;
+        if spent > self.budget {
+            return Err(Error::invalid(format!(
+                "the log says {spent} trial(s) were spent on {key}, more than the budget of {}",
+                self.budget
+            )));
+        }
+        if spent > 0 {
+            self.spent.insert(key, spent);
+        }
+        Ok(())
     }
 
     /// The family key, or why it is not one.

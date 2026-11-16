@@ -1,0 +1,65 @@
+{
+ "lane": "b53-17",
+ "rows": [
+  {
+   "id": "R12-COVERAGE-7181",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "not run",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Verification check requires every constituent obligation COMPLETE. Constituents in the REASON domain are PARTIAL in the register: R12-REASON-1132, 1133, 1134, 1136, 1138, 1179, 9005, 3054, 3055, 3058, 3063. Code in this repository cannot make other rows COMPLETE and a register edit is forbidden. Planning reasoner (search over constraint goals) does not exist, and refusing a conclusion without a complete trace is a sizing decision the symbolic_stage header reserves for an ADR. Building a composite acceptance suite over rows that are not complete would assert a function against itself.",
+   "commit": ""
+  },
+  {
+   "id": "R12-MODEL-4012",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "a validated symbolic predicate compiles to a bounded program",
+     "code": "not built",
+     "caller": "none",
+     "test": "none"
+    },
+    {
+     "clause": "the cell installs it",
+     "code": "qip-edge-node/src/strategies.rs::StrategyInstaller (reads StrategyPlan file, digest-checked against the signed payload's compiled_plan slot, Cell::deploy_with_pricing at :618)",
+     "caller": "node side only",
+     "test": "none for predicates"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "The node half exists, but the centre half does not: grep for compiled_plan in non-test sources outside qip-cli, qip-edge and libs finds only qip-edge-node. No composition root (qip-api, qip-fastbrain, qip-deepbrain, qip-kernel) produces the compiled_plan slot or the plan file; only qip-cli event_fabric/grant.rs fixtures do. A predicate-to-StrategySpec compiler would have no production caller. Also no node is deployed (execution_nodes empty or disabled in every committed tfvars) and delivery of the plan file to a node is deployment work. The Cond/Op/Value to Expr/Type/feature mapping and bounds contract still needs an ADR, a Proposed 0748 could be written but would not close the row.",
+   "commit": ""
+  },
+  {
+   "id": "R12-COVERAGE-7186",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "simulate against competing world models",
+     "code": "qip-agency/src/engine.rs::counterfactually_supported",
+     "caller": "qip-cli agency.rs::run_governed_with (qip-cli, not deployed)",
+     "test": "qip-agency/tests/agency.rs::authority_is_used_only_over_a_plan_every_competing_model_agrees_helps"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Check requires every constituent obligation COMPLETE; AGENCY constituents are PARTIAL or BLOCKED in the register (R12-AGENCY-1006, 1025, 1183, 1184, 1199, 3028, 6078, 6108, 7027, 9062 BLOCKED among them). The only caller of the competing-model simulation named in the register is qip-cli, which is not deployed; the deep brain's AmbientAgency is shadow plus internal outbox and was not shown to consult declared structural models. A qip-acceptance suite over the qip agency path would prove a path that no deployed binary takes.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-1156",
+   "outcome": "PARTIAL",
+   "clauses": [],
+   "test_command": "not run",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted as code; no slice built. Findings for the next reader: (1) scope_inspections.rs FINANCIAL_AGI_CORE 'tool use' names qip-agents ToolRegistry, which is registry bookkeeping; the deployed tool invocation is the deep brain's ambient door, qip-agency DRAFT_TOOL ('outbox-draft') through the action guard, reached from qip-deepbrain main.rs AmbientAgency::open. The seam row should point there with a deepbrain test, and nothing else in the cycle invokes a registered tool. (2) Planning is the same shadow plus outbox path, by design under the paper boundary. (3) Closing needs a behavioural reachability proof per item across ten seams (kernel, deepbrain, qip-api desk, edge agents), each mutation-verified; scope_inspections is presence-only and a grep-for-symbol upgrade would not be proof. Too large to carry to COMPLETE in this lane without leaving a slice.",
+   "commit": ""
+  }
+ ]
+}

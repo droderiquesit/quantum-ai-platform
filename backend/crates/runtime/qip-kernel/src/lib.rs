@@ -48,6 +48,7 @@ pub mod class_exposure;
 pub mod commerce_ledger_journal;
 pub mod commerce_research;
 pub mod compute_routing;
+pub mod event_contract_gate;
 /// Moved to `qip-survival` (ADR 0464); re-exported so `qip_kernel::confidence`
 /// paths keep compiling.
 pub use qip_survival::confidence;
@@ -81,6 +82,7 @@ pub mod limit_narrowing;
 pub mod market_factory_stage;
 pub mod microstructure_model;
 pub mod microstructure_training;
+pub mod mismatch;
 pub mod model_serving;
 pub mod model_tournament;
 pub mod model_trust;

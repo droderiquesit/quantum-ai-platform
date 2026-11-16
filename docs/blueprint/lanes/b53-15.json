@@ -1,0 +1,124 @@
+{
+ "lane": "b53-15",
+ "rows": [
+  {
+   "id": "R12-ARCH-1191",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "liquidity maps, execution-quality refresh, bounded tactical intervention on a minute cadence",
+     "code": "backend/crates/runtime/qip-kernel/src/tactical_lane.rs::refresh",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::run_cycle (Lane 2 step)",
+     "test": "already landed 2026-10-25 (lane L6); not re-run in this lane"
+    },
+    {
+     "clause": "treasury moves; cross-region inventory rebalancing",
+     "code": "none",
+     "caller": "none",
+     "test": "none"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [
+    "no build or test run for this row"
+   ],
+   "mutations": [],
+   "remains": "Treasury moves and cross-region inventory rebalancing move cash and inventory between custodial accounts and regions. That needs a venue/custody integration and a deployed execution node (execution_nodes is empty in test, stage and prod; dev has execution_nodes_enabled = false), so code in this repository cannot meet those clauses. The maps and quality reaching a cell also need a new policy slot, which the row's own gap notes. I did not check market-making regime shifts, event repricing or short-horizon fusion individually, because the two clauses above already block the row. No slice built, per the lane rule.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EXEC-1067",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "cross-cell wash made impossible: BookOwnership slot, cell refusal gate, stale-slot reduce-only, withdrawal on loss, centre overlap check (ADR 0136)",
+     "code": "not built",
+     "caller": "not built",
+     "test": "not built"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [
+    "no build or test run for this row"
+   ],
+   "mutations": [],
+   "remains": "ADR 0136 decision 3 says a cell whose books slot is unproduced or stale places on no book it does not already hold. Applied literally, that refuses every placement on every applied payload that lacks the slot. 35 test files call apply_policy, and qip-acceptance suites among them (order_placement_paths and others in this lane's gate). Their fixtures would all need a books slot. On the shipped path, qip-api's payload producer (apps/qip-api/src/mesh.rs) has no source for who owns which book. That source would be an operator-declared assignment, and declaring it in a deployment needs infrastructure/environments or variables.tf, both protected. Without it the default paper path would stop trading. Decision needed from a person: what the producer emits when no assignment is declared (all books to the one cell, or the ADR's fail-closed stop), and whether the fixture fallout is accepted. I built nothing, so no half-wired gate that fires nowhere.",
+   "commit": ""
+  },
+  {
+   "id": "R12-GOV-6126",
+   "outcome": "NEEDS_FIGURE",
+   "clauses": [
+    {
+     "clause": "marking the close, momentum ignition and quote stuffing refused before any adapter",
+     "code": "not built",
+     "caller": "not built",
+     "test": "not built"
+    },
+    {
+     "clause": "OrderManager::cancel has a production caller so the desk's place-and-cancel watch can fire on the default path",
+     "code": "not built",
+     "caller": "none found",
+     "test": "none"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [
+    "no build or test run for this row"
+   ],
+   "mutations": [],
+   "remains": "Each pattern needs numbers nobody has supplied: a close window per venue and a share threshold for marking the close, a price-move and volume threshold and window for momentum ignition, and a message-rate threshold for quote stuffing. Writing them would be inventing figures. A coordinated-pattern detector (gap 4) needs the same. Please supply the figures or the source for them.",
+   "commit": ""
+  },
+  {
+   "id": "R12-MESH-5059",
+   "outcome": "NEEDS_FIGURE",
+   "clauses": [
+    {
+     "clause": "centre publishes a cycle whitelist from discovery; stopping discovery empties it",
+     "code": "backend/crates/runtime/qip-kernel/src/central/whitelist.rs (cycle_whitelist_for, issued by Platform::issue_cycle_whitelist)",
+     "caller": "backend/crates/apps/qip-api/src/mesh.rs (payload.cycle_whitelist)",
+     "test": "exists from the 2026-11-14 draft; its mutation was not run in this lane"
+    },
+    {
+     "clause": "inventory targets for the regions it names",
+     "code": "not built",
+     "caller": "none (no producer of PolicyPayload.inventory_targets outside tests)",
+     "test": "none"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [
+    "no build or test run for this row"
+   ],
+   "mutations": [],
+   "remains": "The whitelist half exists. The inventory-target half has no honest source of quantities. whitelist.rs (module doc, the inventory-targets paragraph) records that the centre's book is not a cell's inventory and a leg's quantity is a delta. The owner ruling (an inventory target may only be lowered) needs a signed operator ceiling per instrument and region to lower from, and no such figure exists in the repository. Needs: that ceiling, or the rule that derives it. The decision record the ruling asks for (0744) is not written because it would decide the figure's source, which is the person's call.",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2062",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "Events within combined uncertainty are reported unordered",
+     "code": "backend/crates/edge/qip-sequencing/src/align.rs::align",
+     "caller": "backend/crates/edge/qip-feature-dag/src/features.rs::LeadLagCorrelation::compute",
+     "test": "backend/crates/edge/qip-feature-dag/tests/feature_dag.rs::cross_instrument_samples_within_combined_clock_uncertainty_yield_no_aligned_pair (landed 2026-10-31; not re-run here)"
+    },
+    {
+     "clause": "a shipped path computes the cross-instrument features with the clock discipline's half-width",
+     "code": "not built",
+     "caller": "none (qip-edge-node registers standard_suite only; Placed::from_disciplined is called only in qip-sequencing capture.rs)",
+     "test": "none"
+    }
+   ],
+   "test_command": "not run",
+   "result_lines": [
+    "no build or test run for this row"
+   ],
+   "mutations": [],
+   "remains": "The shipped feed is simulated only (any other QIP_VENUE_FEED stops the process, ADR 0003), and venue_time on it is the gateway's own now. So the doubt on any shipped path is zero by construction, and no code here can make it nonzero without a real venue feed (a vendor and deployment). The feature registration also needs pair, window and lag choices, and ClockDiscipline needs window, min_samples and max_uncertainty values. Those are figures nobody supplied, so choosing them would be inventing them. Aligning RollingCorrelation and CrossVenueSpread and threading the bound through rebuild could be coded, but the lane rule says not to build a slice of a row whose clause cannot close.",
+   "commit": ""
+  }
+ ]
+}
