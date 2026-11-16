@@ -881,6 +881,9 @@ fn episode(n: u64, correct: bool, at: Timestamp) -> Episode {
 fn a_lesson_learned_tomorrow_cannot_inform_a_decision_today() {
     let mut memory = ResearchMemory::new();
     let later = now().saturating_add(Duration::from_days(10));
+    for n in 1..=4 {
+        memory.record_episode(episode(n, true, now()));
+    }
     // R12-EXPAND-6023: `promote` is the only way a lesson enters memory.
     memory
         .promote(
@@ -904,6 +907,9 @@ fn a_lesson_learned_tomorrow_cannot_inform_a_decision_today() {
 #[test]
 fn a_superseded_lesson_stays_readable_for_the_dates_it_governed() {
     let mut memory = ResearchMemory::new();
+    for n in 1..=4 {
+        memory.record_episode(episode(n, true, now()));
+    }
     let id = LessonId::from_string("lesson-1");
     memory
         .promote(
@@ -964,6 +970,77 @@ fn smoothing_stops_a_perfect_short_record_looking_like_certainty() {
     };
     assert!((three_for_three.support() - 1.0).abs() < 1e-12);
     assert!((three_for_three.smoothed_support() - 0.8).abs() < 1e-12);
+}
+
+/// R12-EXPAND-6023: promotion counts episodes the memory holds. A lesson
+/// citing run ids nobody recorded cleared the policy's floor on strings alone
+/// (ADR 0198 left this door open because the kernel's LEARN cited claim
+/// resolution ids rather than run ids). A held episode resolves a cited id
+/// either as its own run id or as the evidence it names, which is how the
+/// kernel's analyst episodes carry the resolution they came from.
+///
+/// Mutation: delete the held-episode loop in `ResearchMemory::promote` — the
+/// first `unwrap_err` below panics because the invented ids are promoted.
+#[test]
+fn a_lesson_citing_episodes_the_memory_does_not_hold_is_refused() {
+    let lesson = |cited: Vec<AgentRunId>| Lesson {
+        lesson_id: LessonId::from_string("lesson-cited"),
+        learned_at: now(),
+        learned_by: "learning-engine".to_string(),
+        applies_when: String::new(),
+        statement: "spreads lead".to_string(),
+        supporting_episodes: cited,
+        contradicting_episodes: Vec::new(),
+        superseded_at: None,
+    };
+    let mut memory = ResearchMemory::new();
+    // Premise: the policy's floor is cleared by count alone, so the refusal
+    // below can only be the resolution check.
+    let invented: Vec<AgentRunId> = (1..=4).map(run_id).collect();
+    assert!(invented.len() >= PromotionPolicy::default().minimum_support());
+    let refusal = memory
+        .promote(lesson(invented), PromotionPolicy::default())
+        .unwrap_err();
+    assert!(refusal.contains("not held"), "{refusal}");
+    assert_eq!(memory.lesson_count(), 0);
+
+    // One held run among three invented ones is still refused.
+    memory.record_episode(episode(1, true, now()));
+    let mixed: Vec<AgentRunId> = (1..=4).map(run_id).collect();
+    assert!(
+        memory
+            .promote(lesson(mixed), PromotionPolicy::default())
+            .is_err()
+    );
+
+    // Held by run id: promoted.
+    for n in 2..=4 {
+        memory.record_episode(episode(n, true, now()));
+    }
+    let held: Vec<AgentRunId> = (1..=4).map(run_id).collect();
+    assert!(
+        memory
+            .promote(lesson(held), PromotionPolicy::default())
+            .is_ok()
+    );
+
+    // Held by the evidence an episode names (the kernel's shape): the cited
+    // id is a resolution id, the held run ids are `<resolution>:<agent>`.
+    let mut by_evidence = ResearchMemory::new();
+    let resolutions: Vec<AgentRunId> = (1..=4)
+        .map(|n| AgentRunId::from_string(format!("resolution-{n}")))
+        .collect();
+    for (n, resolution) in resolutions.iter().enumerate() {
+        let mut held = episode(n as u64 + 1, true, now());
+        held.run_id = AgentRunId::from_string(format!("{resolution}:macro"));
+        held.evidence = vec![resolution.to_string()];
+        by_evidence.record_episode(held);
+    }
+    assert!(
+        by_evidence
+            .promote(lesson(resolutions), PromotionPolicy::default())
+            .is_ok()
+    );
 }
 
 /// RM-P9-05: promotion is the step that consolidates episodic memory into

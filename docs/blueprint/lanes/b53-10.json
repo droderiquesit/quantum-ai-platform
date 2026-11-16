@@ -1,0 +1,78 @@
+{
+  "lane": "b53-10",
+  "rows": [
+    {
+      "id": "R12-TICK-1122",
+      "outcome": "NOT_CLOSABLE",
+      "clauses": [],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "A replay digest that consumes the disciplined clock needs a platform replay path with a production caller. The only consumer is the deep brain tick desk, which stays off until the deep brain reads a real lake (ADR 0151, ADR 0723 decision 3a: the lake route is the owner's choice). A digest function only its own test calls does not count, so no slice was built. The lake_clock.rs digest tests already exist and were not re-claimed.",
+      "commit": ""
+    },
+    {
+      "id": "R12-AGENCY-1069",
+      "outcome": "NOT_CLOSABLE",
+      "clauses": [],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Owner ruling 2026-10-31 and ADR 0146 decision 5 hold rumour structural and decline the sentence-to-citation binder; RUMOUR_PHRASES stays a vocabulary floor with a named paraphrase miss. Closing the miss means reopening an existing ADR (protected).",
+      "commit": ""
+    },
+    {
+      "id": "R12-AMBIENT-3104",
+      "outcome": "NEEDS_FIGURE",
+      "clauses": [],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "ADR 0712 decisions 3 and 8: the per-world payoff of a decision and the conviction level counted as high uncertainty are risk-desk figures, none chosen. Decision 6: enabling the discovery desk (every_cycles above zero) is an owner config and budget choice, so no observation can execute from code alone.",
+      "commit": ""
+    },
+    {
+      "id": "R12-DATA-1036",
+      "outcome": "NOT_CLOSABLE",
+      "clauses": [],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Not attempted. Embeddings, novelty, entities, relationships, summaries and episodes need a representation and a persistence design (event log vs blob store) no decision record settles, and a restart test across them. No ADR 0703-0723 decides this row. A slice was not built.",
+      "commit": ""
+    },
+    {
+      "id": "R12-EXEC-5071",
+      "outcome": "NOT_CLOSABLE",
+      "clauses": [],
+      "test_command": "",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "ADR 0155 decision 20 meets the declaration clause with a truthfully empty extension. A production caller of submit_native would be a new order-placement path whose use of post_only is a trading-policy choice, guarded by the order_placement_paths suite; no decision record makes that choice. No DEX adapter exists.",
+      "commit": ""
+    },
+    {
+      "id": "R12-EXPAND-6023",
+      "outcome": "PARTIAL",
+      "clauses": [
+        {
+          "clause": "memory kind: ResearchMemory::promote cites held episodes only (ADR 0198 open item)",
+          "code": "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::promote",
+          "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::write_research_memory",
+          "test": "backend/crates/libs/qip-agents/tests/agents.rs::a_lesson_citing_episodes_the_memory_does_not_hold_is_refused; kernel: platform::episodic_slot_tests::resolved_claims_charge_the_analysts_and_promote_then_retire_a_lesson_the_desk_reads"
+        }
+      ],
+      "test_command": "cd backend && cargo test --no-fail-fast -p qip-agents -p qip-kernel",
+      "result_lines": [
+        "qip-agents agents.rs: test result: ok. 56 passed; 0 failed",
+        "qip-kernel: test result: ok. 518 passed; 0 failed; 111 passed; 0 failed",
+        "fmt --all --check ok; clippy -D warnings clean on qip-agents and qip-kernel; qip-acceptance nine suites 0 failed; check-secrets: nothing found"
+      ],
+      "mutations": [
+        "memory.rs ResearchMemory::promote: `if !held` -> `if false && !held`; a_lesson_citing_episodes_the_memory_does_not_hold_is_refused failed: called `Result::unwrap_err()` on an `Ok` value: lsn:lesson-cited; restored from copy, cmp identical, green"
+      ],
+      "remains": "Register gap text is stale on ResearchRegistry::record (already refuses a non-Open verdict). Not shown: a door for the statement's 'knowledge' kind (ADR 0198's table names none), the ontology candidate cites a gap and is admitted at version one only (ADR 0198 decision 3 treats that as the start state), and no skeptic round has run. Not claimed complete.",
+      "commit": "370ce42a"
+    }
+  ]
+}
