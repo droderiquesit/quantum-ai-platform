@@ -169,6 +169,11 @@ pub enum InstrumentType {
     // Composite
     StructuredNote,
     SyntheticBasket,
+    // Prediction
+    /// A fully-funded payoff bounded to one unit (ADR 0658): it pays one
+    /// unit if its declared outcome occurs and nothing otherwise, so its
+    /// price is a probability and can never leave `[0, 1]`.
+    EventContract,
 }
 
 impl InstrumentType {
@@ -227,6 +232,8 @@ impl InstrumentType {
             Self::Cash | Self::MoneyMarketInstrument => AssetClass::Cash,
 
             Self::StructuredNote | Self::SyntheticBasket => AssetClass::StructuredProduct,
+
+            Self::EventContract => AssetClass::Prediction,
         }
     }
 
@@ -278,63 +285,119 @@ impl InstrumentType {
             Self::MoneyMarketInstrument => "money_market_instrument",
             Self::StructuredNote => "structured_note",
             Self::SyntheticBasket => "synthetic_basket",
+            Self::EventContract => "event_contract",
         }
     }
 
     /// Whether the instrument derives its value from another object, which is
     /// what makes an `underlying` mandatory on the object.
     pub fn is_derivative(&self) -> bool {
-        matches!(
-            self,
-            Self::Option
-                | Self::Future
-                | Self::PerpetualFuture
-                | Self::Forward
-                | Self::CommodityFuture
-                | Self::VarianceSwap
-                | Self::VolatilityIndexFuture
-                | Self::CreditDefaultSwap
-                | Self::InterestRateSwap
-                | Self::OvernightIndexSwap
-                | Self::ForwardRateAgreement
-                | Self::FxForward
-                | Self::FxSwap
-                | Self::CommoditySwap
-                | Self::ConvertibleBond
-        )
+        // Every variant is named, with no wildcard: a new instrument type
+        // must be classified here before it compiles (ADR 0658).
+        match self {
+            Self::ConvertibleBond
+            | Self::CreditDefaultSwap
+            | Self::InterestRateSwap
+            | Self::OvernightIndexSwap
+            | Self::ForwardRateAgreement
+            | Self::FxForward
+            | Self::FxSwap
+            | Self::CommodityFuture
+            | Self::CommoditySwap
+            | Self::Future
+            | Self::PerpetualFuture
+            | Self::Forward
+            | Self::Option
+            | Self::VarianceSwap
+            | Self::VolatilityIndexFuture => true,
+            Self::CommonStock
+            | Self::PreferredStock
+            | Self::DepositaryReceipt
+            | Self::ExchangeTradedFund
+            | Self::Index
+            | Self::GovernmentBond
+            | Self::CorporateBond
+            | Self::MunicipalBond
+            | Self::InflationLinkedBond
+            | Self::Loan
+            | Self::PrivateCredit
+            | Self::StructuredCredit
+            | Self::MortgageBackedSecurity
+            | Self::AssetBackedSecurity
+            | Self::YieldCurvePoint
+            | Self::Repo
+            | Self::FxSpot
+            | Self::CommoditySpot
+            | Self::Cryptocurrency
+            | Self::TokenizedSecurity
+            | Self::MutualFund
+            | Self::HedgeFund
+            | Self::PrivateEquityFund
+            | Self::VentureCapitalFund
+            | Self::InfrastructureFund
+            | Self::Secondary
+            | Self::RealEstate
+            | Self::Cash
+            | Self::MoneyMarketInstrument
+            | Self::StructuredNote
+            | Self::SyntheticBasket
+            | Self::EventContract => false,
+        }
     }
 
     /// Whether the instrument has a contractual redemption date.
     pub fn has_maturity(&self) -> bool {
-        matches!(
-            self,
+        // Every variant is named, with no wildcard: a new instrument type
+        // must be classified here before it compiles (ADR 0658).
+        match self {
             Self::GovernmentBond
-                | Self::CorporateBond
-                | Self::MunicipalBond
-                | Self::InflationLinkedBond
-                | Self::ConvertibleBond
-                | Self::Loan
-                | Self::PrivateCredit
-                | Self::StructuredCredit
-                | Self::MortgageBackedSecurity
-                | Self::AssetBackedSecurity
-                | Self::CreditDefaultSwap
-                | Self::InterestRateSwap
-                | Self::OvernightIndexSwap
-                | Self::ForwardRateAgreement
-                | Self::Repo
-                | Self::FxForward
-                | Self::FxSwap
-                | Self::Future
-                | Self::Forward
-                | Self::Option
-                | Self::CommodityFuture
-                | Self::CommoditySwap
-                | Self::VarianceSwap
-                | Self::VolatilityIndexFuture
-                | Self::StructuredNote
-                | Self::MoneyMarketInstrument
-        )
+            | Self::CorporateBond
+            | Self::MunicipalBond
+            | Self::InflationLinkedBond
+            | Self::ConvertibleBond
+            | Self::Loan
+            | Self::PrivateCredit
+            | Self::StructuredCredit
+            | Self::MortgageBackedSecurity
+            | Self::AssetBackedSecurity
+            | Self::CreditDefaultSwap
+            | Self::InterestRateSwap
+            | Self::OvernightIndexSwap
+            | Self::ForwardRateAgreement
+            | Self::Repo
+            | Self::FxForward
+            | Self::FxSwap
+            | Self::CommodityFuture
+            | Self::CommoditySwap
+            | Self::Future
+            | Self::Forward
+            | Self::Option
+            | Self::VarianceSwap
+            | Self::VolatilityIndexFuture
+            | Self::MoneyMarketInstrument
+            | Self::StructuredNote => true,
+            Self::CommonStock
+            | Self::PreferredStock
+            | Self::DepositaryReceipt
+            | Self::ExchangeTradedFund
+            | Self::Index
+            | Self::YieldCurvePoint
+            | Self::FxSpot
+            | Self::CommoditySpot
+            | Self::PerpetualFuture
+            | Self::Cryptocurrency
+            | Self::TokenizedSecurity
+            | Self::MutualFund
+            | Self::HedgeFund
+            | Self::PrivateEquityFund
+            | Self::VentureCapitalFund
+            | Self::InfrastructureFund
+            | Self::Secondary
+            | Self::RealEstate
+            | Self::Cash
+            | Self::SyntheticBasket
+            | Self::EventContract => false,
+        }
     }
 }
 
