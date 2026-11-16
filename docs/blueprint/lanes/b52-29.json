@@ -24,7 +24,7 @@
    "claims_requirement_met": false,
    "built_unverified": false,
    "what": "Added InstrumentType::EventContract (Prediction class), price above one refused at validate; is_derivative and has_maturity are now exhaustive matches naming every variant; event_contract_gate refuses, before an order exists, a sell beyond the held position, a holding past one unit, a price outside [0,1] and an unfunded premium, at order_for and submit_released. ADR 0658 (Proposed). Compiled, tested, mutation-verified. Round 3: hedge.rs is_linear is an exhaustive match naming EventContract (non-linear); financing.rs has an explicit EventContract arm; the funding, one-unit and short checks count earlier admissions (order_for reservations, cleared each cycle) and open OMS orders, with cash pooled across event contracts.",
-   "remains": "Pricing only from a simulated-exchange print and settlement on an operator-declared dated outcome (ADR decisions 3 and 4) are not built. The docs/adr/README.md index row for 0658 is owed by the orchestrator, so qip-acceptance documentation::every_decision_record_is_listed_in_the_index fails until it is added.",
+   "remains": "Pricing only from a simulated-exchange print and settlement on an operator-declared dated outcome (ADR decisions 3 and 4) are not built. On the merged tree documentation passes 28/28 (ADR 0658 index row restored by the revert of fdeb1febd).",
    "tests": [
     "backend/crates/runtime/qip-kernel/tests/asset_classes.rs::an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit",
     "backend/crates/runtime/qip-kernel/src/event_contract_gate.rs::tests::a_buy_the_cash_does_not_cover_is_refused_as_not_fully_funded",
@@ -44,7 +44,7 @@
     "event_contract_gate.rs cash sum zeroed: same failing assertion",
     "hedge.rs is_linear EventContract => true: a_linear_book_... FAILED"
    ],
-   "commit": "ecf1c506, 430fd255, 116ead9c"
+   "commit": "ecf1c506, 430fd255, 116ead9c, merge d10d72edb, revert 3fddfb257"
   },
   {
    "id": "R12-COVERAGE-7163",
