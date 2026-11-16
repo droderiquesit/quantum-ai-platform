@@ -1,0 +1,147 @@
+{
+ "lane": "b53-16",
+ "rows": [
+  {
+   "id": "R12-EVID-2033",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "From a belief, walking the graph reaches every source document hash it rests on; fails if any edge is missing",
+     "code": "backend/crates/libs/qip-evidence/src/fabric.rs::ProvenanceGraph::trace_belief",
+     "caller": "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::bind_now_beliefs (called from platform.rs after each NOW pass)",
+     "test": "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_now_belief_walks_to_every_source_document_hash_it_rests_on"
+    }
+   ],
+   "test_command": "not run this wave",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Walk and binder exist (earlier lane 251a7577) but production NOW manifests name in-process sources (kernel/bar-history, cycle-N) that are not evidence ids, so on the default path no belief binds to a claim. Binding them means deciding what claim and source document an in-process bar history is, which depends on the in-flight record-to-evidence seam (R12-EVID-1200) and evidence.admitted journal (R12-EVID-2032). The connector-derived evidence that can bind has its arm off in every committed infrastructure/environments/** tfvars, a protected path. Not built, to avoid a resolver that invents edges.",
+   "commit": "none"
+  },
+  {
+   "id": "R12-QUANT-4044",
+   "outcome": "CLAIMS_COMPLETE",
+   "clauses": [
+    {
+     "clause": "No quantum result is treated as causal proof: a causal claim cannot cite a quantum branch-selection result as evidence",
+     "code": "backend/crates/services/qip-world-model/src/causal.rs::refuse_quantum_evidence (CausalEdge::validate, CausalGraph::add, reestimate); backend/crates/libs/qip-contracts/src/quantum.rs::SolverResult::evidence_id",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::discover_temporal_precedence (world.claim_causal)",
+     "test": "backend/crates/services/qip-world-model/tests/quantum_causal_refusal.rs::a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path"
+    }
+   ],
+   "test_command": "cd backend && cargo test -p qip-world-model --test quantum_causal_refusal",
+   "result_lines": [
+    "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out (run before and after the mutation)"
+   ],
+   "mutations": [
+    "causal.rs refuse_quantum_evidence: .find(|id| id.starts_with(QUANTUM_EVIDENCE_PREFIX)) -> starts_with(\"never-matches:\"); 4 of 6 tests FAILED, e.g. a_causal_edge_citing_quantum_evidence_is_refused_on_every_insertion_path panicked at quantum_causal_refusal.rs:195:65; restored from a saved copy, cmp identical, 6 passed"
+   ],
+   "remains": "No code changed this wave. Grader note, not part of the statement or the check: the kernel does not read CausalGraph::refused into a distinct quantum-citation count, and no production path cites a quantum result as causal evidence (no branch-selection producer exists), so the refusal fires only in tests; a counter fed by a path that cannot occur would not count as built, so none was written.",
+   "commit": "none (no code change)"
+  },
+  {
+   "id": "R12-SEC-9065",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "Ingested content has no code path to tool invocation or secret reads, including through a model completion over fetched content",
+     "code": "backend/crates/libs/qip-ai/src/language.rs::LanguageModel::complete_over_untrusted",
+     "caller": "none: no production code builds a model request over fetched content",
+     "test": "backend/crates/libs/qip-agents/tests/untrusted_completion.rs"
+    }
+   ],
+   "test_command": "not run this wave",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Gap (1) needs a production model path over fetched content, and the hosted model is declined (owner-decisions-2026-10-25 decision 6), so it needs a vendor and credential. Gap (3), RawEvent.body to Untrusted with a per-connector validator (about 62 body reads in qip-market-ingestion), is code-only but would not close the row while (1) is open, and the wave asks for no slices. Gap (2) was closed by b52-35 (f6bdd8c4).",
+   "commit": "none"
+  },
+  {
+   "id": "R12-RISK-3022",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "Hard limits are enforced by deterministic gates that never route to a model, including the kernel-side gates (PreTradeChecker::check, MinLiquidity at submit, sign-off and release gating, kill-switch path, survival waterfall)",
+     "code": "backend/crates/services/qip-cost-router/src/router.rs::Router::determine",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order",
+     "test": "backend/crates/runtime/qip-kernel/tests/pretrade_determinism.rs::an_accepted_order_was_guarded_by_a_deterministic_routing_that_names_no_model"
+    }
+   ],
+   "test_command": "not run this wave",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "The Required arm and the DeterministicGate witness on RiskMonitor::observe are built (ADR 0430). Making the remaining kernel gates demand a witness is a signature change across roughly thirty call sites and, for the survival waterfall, depends on the extraction owned by R12-CAPITAL-7204 / ADR 0127; qip-kernel cannot become model-free from this row alone. A guard-suite table (architecture.rs, protected) would likely need an entry, which is NEEDS_PERSON, not mine to edit. Not started, to avoid a slice.",
+   "commit": "none"
+  },
+  {
+   "id": "R12-RISK-4094",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "The Risk Brain uses AI models (not only deterministic aggregation) to discover hidden concentration and emerging risk, as advice that never replaces the gate",
+     "code": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::discover_risk (deterministic only)",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::run_cycle",
+     "test": "backend/crates/runtime/qip-kernel/tests/central.rs::a_cycle_reports_both_the_crowded_name_three_cells_hold_and_the_shared_cause_the_book_leans_on"
+    }
+   ],
+   "test_command": "not run this wave",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "The AI-model half needs a model rung through qip-cost-router, which means a hosted model; the owner declined it (owner-decisions-2026-10-25 decision 6), and it needs a vendor and credential. A deterministic stand-in would not be an AI model. The crowded, factor, causal-driver and emerging reports are built and journaled.",
+   "commit": "none"
+  },
+  {
+   "id": "R12-RISK-4095",
+   "outcome": "CLAIMS_COMPLETE",
+   "clauses": [
+    {
+     "clause": "basis exposure has a measurement and a recorded finding",
+     "code": "backend/crates/runtime/qip-kernel/src/hedge.rs::market_exposure_findings; backend/crates/libs/qip-risk/src/market_exposure.rs::book_basis_exposure",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::discover_risk (run_cycle) via signed_position_notionals",
+     "test": "backend/crates/runtime/qip-kernel/tests/market_exposure.rs::a_cycle_reports_the_basis_of_the_hedge_leg_the_book_holds_and_no_bound_decides_it"
+    },
+    {
+     "clause": "a book holding no hedge leg measures zero basis, not an absent figure",
+     "code": "backend/crates/runtime/qip-kernel/src/hedge.rs::market_exposure_findings",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::discover_risk",
+     "test": "backend/crates/runtime/qip-kernel/tests/market_exposure.rs::a_book_holding_no_leg_against_itself_measures_a_zero_basis_not_an_absent_one"
+    },
+    {
+     "clause": "gap exposure has a measurement and a recorded finding",
+     "code": "backend/crates/runtime/qip-kernel/src/hedge.rs::market_exposure_findings; backend/crates/libs/qip-risk/src/market_exposure.rs::book_gap_exposure",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::discover_risk",
+     "test": "backend/crates/runtime/qip-kernel/tests/market_exposure.rs::a_cycle_reports_the_gap_of_the_worst_tail_world_as_a_loss_on_the_books_equity"
+    },
+    {
+     "clause": "the findings are sealed on the journal entry and replay from the log",
+     "code": "backend/crates/runtime/qip-kernel/src/cycle.rs::RiskDiscovery::market_exposure, ExposureFinding",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::run_cycle (CycleJournalEntry::risk_discovery)",
+     "test": "backend/crates/runtime/qip-kernel/tests/market_exposure.rs::the_exposure_findings_are_sealed_on_the_journal_entry_the_cycle_replays_from"
+    },
+    {
+     "clause": "price, volatility, Greeks, factor and causal-driver exposure (already built, ADR 0492 and earlier)",
+     "code": "backend/crates/libs/qip-risk/src/limits.rs MaxNetExposure/MaxVolatility/MaxBookGamma/MaxBookVega/MaxAxisWeight arms",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::submit_order",
+     "test": "backend/crates/runtime/qip-kernel/tests/market_risk_convexity.rs (not re-run this wave beyond the full qip-kernel run)"
+    }
+   ],
+   "test_command": "cd backend && cargo test --no-fail-fast -p qip-risk -p qip-kernel; cargo test -p qip-kernel --test market_exposure",
+   "result_lines": [
+    "market_exposure: test result: ok. 4 passed; 0 failed",
+    "qip-risk + qip-kernel, --no-fail-fast: 99 binaries, 1561 passed, 0 failed, 0 ignored",
+    "qip-acceptance (documentation, architecture, api_boundary, manifest_wiring, order_placement_paths, event_fabric_schema_lock, paper_boundary, security, compliance_proof): 10+59+8+28+6+27+13+5+29 passed, 0 failed",
+    "cargo fmt --all --check: clean; cargo clippy -p qip-kernel -p qip-risk --all-targets -- -D warnings: clean",
+    "./scripts/check-secrets.sh: secret scan: nothing found"
+   ],
+   "mutations": [
+    "platform.rs signed_position_notionals: -*gross -> *gross; failing line: basis 0 against 9590.28601063261 for a 59982 leg",
+    "qip-risk market_exposure.rs: BASIS_QUANTILE factor dropped; failing line: basis 4123.080830022618 against 9590.28601063261 for a 59982 leg",
+    "hedge.rs gap worlds: .iter().take(0); failing line: gap was not measured: no stress world was named, so there is no gap figure",
+    "platform.rs journal seal: risk_discovery: Some(RiskDiscovery::default()); failing line: assertion `left == right` failed (market_exposure.rs:287)",
+    "every mutant restored from a saved copy, cmp identical, 4 passed"
+   ],
+   "remains": "Grader notes, not new work: (a) the platform has no hedge-pair register, so a held leg is read as a position in a declared hedge candidate opposing the book's net notional, a stated inference; (b) both findings are 'unbounded' because no owner has stated a bound, so the row relies on the 'recorded finding' arm of the check and adds no limit (a bound would be an invented figure, NEEDS_FIGURE); (c) theta, rho, vanna and vomma remain unaggregated, as before.",
+   "commit": "842c3b5e"
+  }
+ ]
+}
