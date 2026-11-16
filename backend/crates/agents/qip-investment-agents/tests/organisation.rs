@@ -94,8 +94,9 @@ fn the_declared_organisation_passes_its_own_governance() {
     // (R12-ASSET-3019), the Crypto/On-chain Brain (R12-ASSET-3017), the
     // Private Markets Brain (R12-ASSET-3018), the Company/Fundamental Brain
     // (R12-REASON-3013), the Meta Brain (R12-AMBIENT-3024) and the World
-    // Model Arbitration Brain (R12-WORLD-3025, ADR 0488).
-    assert_eq!(roster.len(), 30, "the organisation is thirty agents");
+    // Model Arbitration Brain (R12-WORLD-3025, ADR 0488), then the Symbolic
+    // Reasoning Brain (R12-REASON-3026): thirty-one.
+    assert_eq!(roster.len(), 31, "the organisation is thirty-one agents");
     let findings = roster.validate(now()).expect("roster must validate");
     let errors: Vec<_> = findings
         .iter()
@@ -693,8 +694,9 @@ fn the_organisation_assembles_and_dispatches() -> Result<()> {
     // Twenty-nine dispatched since the Meta Brain joined as the one arbiter
     // (R12-AMBIENT-3024), the World Model Arbitration Brain joined the
     // panel (R12-WORLD-3025, ADR 0488) and the Private Markets Brain
-    // (R12-ASSET-3018) after it: twenty-eight on the panel and one after it.
-    assert_eq!(org.len(), 29);
+    // (R12-ASSET-3018) after it, then the Symbolic Reasoning Brain
+    // (R12-REASON-3026): twenty-nine on the panel and one after it.
+    assert_eq!(org.len(), 30);
 
     let report = org.dispatch(&brief(), now(), &lineage());
     assert!(!report.runs.is_empty());
@@ -2375,6 +2377,7 @@ fn the_credit_analyst_abstains_on_a_brief_about_no_instrument() -> Result<()> {
 /// The standard organisation with the agent `without` left out, under the
 /// standard roster and the same host settings [`organisation`] uses.
 fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> {
+    let desk_for_late = desk.clone();
     let agents: Vec<_> = qip_investment_agents::chief::standard_agents(
         desk.clone(),
         now(),
@@ -2390,13 +2393,19 @@ fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> 
         .into_iter()
         .filter(|arbiter| arbiter.manifest().id != without)
         .collect();
+    // The late phase too (R12-REASON-3026), left out the same way.
+    let late: Vec<_> = qip_investment_agents::chief::standard_late_agents(desk_for_late, now())
+        .into_iter()
+        .filter(|agent| agent.manifest().id != without)
+        .collect();
     Organisation::new(
         manifests::roster(now()),
         agents,
         AgentHost::new(42).with_language_model(Arc::new(DeterministicModel::new())),
         now(),
     )?
-    .with_arbiters(arbiters)
+    .with_arbiters(arbiters)?
+    .with_late_agents(late)
 }
 
 /// Dispatch `brief` to the standard organisation and to the same organisation
@@ -4969,5 +4978,169 @@ fn the_private_markets_brain_reports_an_unwritten_slot_as_no_data() -> Result<()
     assert_eq!(finding.status, qip_agents::finding::FindingStatus::NoView);
     assert!(fact_value(finding, "private_commitments").is_none());
     assert!(!report.covered_scopes().contains(&Scope::PrivateMarkets));
+    Ok(())
+}
+
+fn symbolic_finding(
+    report: &qip_investment_agents::OrganisationReport,
+) -> &qip_agents::finding::AgentFinding {
+    report
+        .findings
+        .iter()
+        .find(|f| f.agent_id == ids::SYMBOLIC_REASONING)
+        .expect("premise: the Symbolic Reasoning Brain answered the brief")
+}
+
+/// A derivation in which every reasoner concluded, the rule pack found the
+/// thesis eligible, one timeline link was refused and one assumption failed.
+fn a_symbolic_derivation() -> qip_investment_agents::desk::SymbolicView {
+    qip_investment_agents::desk::SymbolicView {
+        observed: true,
+        cycle: 9,
+        hypothesis_id: "hyp-9".into(),
+        subject: "AAPL".into(),
+        rules_eligible: Some(true),
+        rules_verified: true,
+        agrees_with_review: true,
+        timeline_links: 3,
+        timeline_links_refused: 1,
+        claim_probability: Some(0.7),
+        claim_uncertainty: Some(0.88),
+        blocking_constraints: Some(vec!["lot_cap".into(), "cash".into()]),
+        causal_explanations: Some(2),
+        causal_reach: Some(5),
+        subject_type: Some("equity".into()),
+        facts_inferred: Some(11),
+        violated_assumptions: vec!["link a -> b: refused".into()],
+        infeasible: false,
+    }
+}
+
+fn desk_with_a_symbolic_derivation(view: qip_investment_agents::desk::SymbolicView) -> Arc<Desk> {
+    Arc::new(Desk::empty(now()).with_symbolic(view))
+}
+
+/// R12-REASON-3026. The Symbolic Reasoning Brain is constructed in the
+/// production organisation (`standard_agents`, under the standard roster),
+/// emits a finding for its scope that restates what each reasoner concluded —
+/// and removing it drops symbolic reasoning from coverage.
+///
+/// Mutations: drop the `SymbolicReasoningAnalyst` from `standard_agents` (the
+/// premise finding is missing); count the refused links as held (the
+/// `timeline_links_refused` figure moves); report a refused reasoner as
+/// derived (`reasoners_derived` moves).
+#[test]
+fn removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage() -> Result<()> {
+    let desk = desk_with_a_symbolic_derivation(a_symbolic_derivation());
+    let mut org = organisation(desk.clone())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = symbolic_finding(&report);
+    assert_eq!(finding.status, FindingStatus::Complete, "{}", finding.claim);
+    assert_eq!(fact_value(finding, "reasoners_derived"), Some(6.0));
+    assert_eq!(fact_value(finding, "timeline_links_refused"), Some(1.0));
+    assert_eq!(fact_value(finding, "rules_eligible"), Some(1.0));
+    assert_eq!(fact_value(finding, "claim_probability"), Some(0.7));
+    assert_eq!(fact_value(finding, "constraints_blocking"), Some(2.0));
+    assert_eq!(fact_value(finding, "causal_explanations"), Some(2.0));
+    assert_eq!(fact_value(finding, "ontology_facts"), Some(11.0));
+    assert_eq!(fact_value(finding, "assumptions_violated"), Some(1.0));
+    // The conflict's ids are machine-readable evidence, in the solver's order,
+    // not only words in the claim.
+    assert_eq!(
+        finding.evidence,
+        vec!["blocking_constraint:lot_cap", "blocking_constraint:cash"]
+    );
+
+    let (with, without) = scopes_with_and_without(desk, &brief(), ids::SYMBOLIC_REASONING)?;
+    assert!(with.contains(&Scope::SymbolicReasoning), "{with:?}");
+    assert!(!without.contains(&Scope::SymbolicReasoning), "{without:?}");
+    Ok(())
+}
+
+/// No derivation is no data: the scope is not covered by an empty record.
+///
+/// Mutation: drop the `!view.observed` early return — the brain reports a
+/// complete finding for a cycle that never ran.
+#[test]
+fn the_symbolic_reasoning_brain_reports_an_unwritten_derivation_as_no_data() -> Result<()> {
+    let mut org = organisation(populated_desk())?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = symbolic_finding(&report);
+    assert_eq!(finding.status, FindingStatus::NoView, "{}", finding.claim);
+    assert!(fact_value(finding, "reasoners_derived").is_none());
+    assert!(!report.covered_scopes().contains(&Scope::SymbolicReasoning));
+    Ok(())
+}
+
+/// A reasoner that refused is reported as refused, not as a pass: the
+/// probability, the constraint answer, the causal and ontology figures are
+/// each absent, and `reasoners_derived` counts only the two that concluded.
+///
+/// Mutation: change `view.claim_probability.is_some()` to `true` in
+/// `reasoners_derived`; the count reads 3 and this fails.
+#[test]
+fn a_reasoner_that_refused_is_not_counted_as_derived() -> Result<()> {
+    let view = qip_investment_agents::desk::SymbolicView {
+        observed: true,
+        cycle: 9,
+        hypothesis_id: "hyp-9".into(),
+        subject: "AAPL".into(),
+        rules_eligible: Some(false),
+        agrees_with_review: false,
+        timeline_links: 1,
+        ..Default::default()
+    };
+    let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = symbolic_finding(&report);
+    // Rules and the timeline concluded; the other four refused.
+    assert_eq!(fact_value(finding, "reasoners_derived"), Some(2.0));
+    assert!(fact_value(finding, "claim_probability").is_none());
+    assert!(fact_value(finding, "constraints_blocking").is_none());
+    assert!(fact_value(finding, "causal_explanations").is_none());
+    assert!(fact_value(finding, "ontology_facts").is_none());
+    assert!(
+        finding.claim.contains("acting refused"),
+        "{}",
+        finding.claim
+    );
+    assert!(
+        finding
+            .caveats
+            .iter()
+            .any(|c| c.contains("disagrees with the review")),
+        "{:?}",
+        finding.caveats
+    );
+    Ok(())
+}
+
+/// The temporal reasoner counts as derived only when a link was held: a
+/// derivation that asked no link, or whose every link was refused, derived
+/// nothing temporal.
+///
+/// Mutation: set the temporal entry in `reasoners_derived` back to `true`;
+/// both the zero-link and the all-refused cases read one higher and fail.
+#[test]
+fn the_temporal_reasoner_is_derived_only_when_a_link_held() -> Result<()> {
+    let derived_with = |links: usize, refused: usize| -> Result<u32> {
+        let view = qip_investment_agents::desk::SymbolicView {
+            observed: true,
+            cycle: 1,
+            hypothesis_id: "h".into(),
+            subject: "AAPL".into(),
+            timeline_links: links,
+            timeline_links_refused: refused,
+            ..Default::default()
+        };
+        let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        let count = fact_value(symbolic_finding(&report), "reasoners_derived").expect("stated");
+        // A whole number of reasoners, so the conversion is exact.
+        Ok(count as u32)
+    };
+    assert_eq!(derived_with(0, 0)?, 0, "no link asked");
+    assert_eq!(derived_with(2, 2)?, 0, "every link refused");
+    assert_eq!(derived_with(2, 1)?, 1, "one link held");
     Ok(())
 }

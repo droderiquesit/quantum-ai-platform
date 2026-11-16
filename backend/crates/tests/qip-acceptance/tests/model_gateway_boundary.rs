@@ -228,8 +228,8 @@ fn a_model_is_invoked_only_through_the_agent_runtime() {
             .match_indices(".complete(")
             .any(|(at, needle)| !text[at + needle.len()..].starts_with(')'));
         // The third entry point, and the fully-qualified forms of all three.
-        // An in-lane review on 2026-10-25 put `ctx.complete_over_untrusted(…)`
-        // in an agent and `LanguageModel::complete(model, …)` is the same call
+        // An in-lane review on 2026-10-25 put `ctx.complete_over_untrusted(… )`
+        // in an agent and `LanguageModel::complete(model, … )` is the same call
         // spelled as a path; this matcher saw neither.
         let calls_untrusted = text.contains(".complete_over_untrusted(");
         let calls_qualified = ["LanguageModel::complete", "LanguageModel>::complete"]
@@ -295,15 +295,20 @@ fn the_organisation_is_convened_only_after_the_cost_router_places_the_decision()
         "premise: platform.rs was read as production source"
     );
 
+    // The convention is one event in two calls since R12-REASON-3026: the panel
+    // reasons about the derivation the kernel has not written yet, the kernel
+    // derives, and then the late agents read that derivation. Both are the same
+    // organisation convened once by the REASON stage, so the scan counts the
+    // prefix and holds every call to the same rules below.
     let dispatches: Vec<usize> = platform
-        .match_indices("self.organisation.dispatch(")
+        .match_indices("self.organisation.dispatch")
         .map(|(at, _)| at)
         .collect();
-    assert_eq!(
-        dispatches.len(),
-        1,
+    assert!(
+        matches!(dispatches.len(), 1 | 2),
         "the agent organisation — the only holder of a language model in the kernel — \
-         is convened from {} places; it is convened once, from the REASON stage",
+         is convened from {} places; it is convened once, from the REASON stage, in \
+         the panel call and in the late call that reads the derivation",
         dispatches.len()
     );
     // The REASON stage hands its queue to `reason_about_the_queue`, and that
@@ -323,22 +328,23 @@ fn the_organisation_is_convened_only_after_the_cost_router_places_the_decision()
         "the REASON stage no longer reasons through `reason_about_the_queue`"
     );
     let (stage, next) = function("reason_about_the_queue");
-    let dispatch = dispatches[0];
-    assert!(
-        (stage..next).contains(&dispatch),
-        "the organisation is convened outside `reason_about_the_queue`"
-    );
     let select = platform[stage..next]
         .find("self.cost_router.select(")
         .map(|offset| stage + offset)
         .unwrap_or_else(|| {
             panic!("`reason_about_the_queue` no longer asks the cost router to place the decision")
         });
-    assert!(
-        select < dispatch,
-        "`reason_about_the_queue` convenes the organisation before the cost router has placed the \
-         decision, so a model can be reached without the router's rationale on record"
-    );
+    for dispatch in &dispatches {
+        assert!(
+            (stage..next).contains(dispatch),
+            "the organisation is convened outside `reason_about_the_queue`"
+        );
+        assert!(
+            select < *dispatch,
+            "`reason_about_the_queue` convenes the organisation before the cost router has placed \
+             the decision, so a model can be reached without the router's rationale on record"
+        );
+    }
 }
 
 /// Words that tie a type or a wire name to one cloud vendor's model or data

@@ -1,0 +1,134 @@
+{
+ "lane": "b53-7",
+ "rows": [
+  {
+   "id": "R12-REASON-3026",
+   "outcome": "CLAIMS_COMPLETE",
+   "clauses": [
+    {
+     "clause": "A Symbolic Reasoning Brain exists as a specialist (ontology, temporal, causal, rule, probabilistic, constraint reasoning)",
+     "code": "backend/crates/agents/qip-investment-agents/src/symbolic_brain.rs::SymbolicReasoningAnalyst; manifests.rs::symbolic_reasoning_brain",
+     "caller": "backend/crates/agents/qip-investment-agents/src/chief.rs::standard_agents (called by Organisation::standard from qip-kernel platform.rs Platform assembly)",
+     "test": "backend/crates/agents/qip-investment-agents/tests/organisation.rs::removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage"
+    },
+    {
+     "clause": "explicit derivations: findings restate each reasoner's conclusion, refusals reported as refused",
+     "code": "qip-kernel/src/symbolic_stage.rs::SymbolicDerivation::desk_view; desk.rs::SymbolicView",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::reason_symbolically (REASON stage, every hypothesis)",
+     "test": "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain_reports_it; backend/crates/agents/qip-investment-agents/tests/organisation.rs::a_reasoner_that_refused_is_not_counted_as_derived"
+    },
+    {
+     "clause": "machine-checkable constraints: constraint solver conflict ids and violated assumptions carried into the finding",
+     "code": "symbolic_brain.rs::analyse (constraints_blocking, assumptions_violated)",
+     "caller": "chief.rs::standard_agents",
+     "test": "backend/crates/agents/qip-investment-agents/tests/organisation.rs::removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage"
+    },
+    {
+     "clause": "emits findings for its scope; no derivation is no data",
+     "code": "coverage.rs::Scope::SymbolicReasoning (label reasoners_derived)",
+     "caller": "chief.rs::OrganisationReport::covered_scopes",
+     "test": "backend/crates/agents/qip-investment-agents/tests/organisation.rs::the_symbolic_reasoning_brain_reports_an_unwritten_derivation_as_no_data"
+    },
+    {
+     "clause": "removing it drops its scope from coverage",
+     "code": "backend/crates/apps/qip-deepbrain/src/brains.rs::REQUIRED_SCOPES (SYMBOLIC_REASONING)",
+     "caller": "qip-deepbrain brains::standard / require_coverage",
+     "test": "backend/crates/apps/qip-deepbrain/tests/brains.rs::removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage"
+    },
+    {
+     "clause": "Brain reports the derivation of the hypothesis being reasoned in the same pass, never a previous one (decision on round-60 item 1)",
+     "code": "backend/crates/agents/qip-investment-agents/src/chief.rs::Organisation::{dispatch_panel,dispatch_late,with_late_agents}, standard_late_agents",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::reason_about_the_queue (dispatch_panel, reason_symbolically, then dispatch_late)",
+     "test": "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::the_cycles_own_panel_report_carries_a_symbolic_finding_for_the_hypothesis_just_reasoned"
+    },
+    {
+     "clause": "A scope is covered in a cycle only when a finding for it reported (decision on round-60 item 6): removing the agent drops the scope on a running platform",
+     "code": "qip-kernel platform.rs::Platform::{record_scopes_reported,scopes_reported_this_cycle}; qip-observability metrics.rs::names::ORGANISATION_SCOPE_COVERED",
+     "caller": "platform.rs::reason_about_the_queue (after dispatch_panel and after dispatch_late); gauge qip_organisation_scope_covered per Scope::ALL",
+     "test": "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs::a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported; backend/crates/runtime/qip-kernel/src/agent_journal.rs::tests::an_agent_removed_from_the_organisation_drops_its_scope_on_a_running_platform"
+    }
+   ],
+   "test_command": "cd backend && cargo test --no-fail-fast -p qip-investment-agents -p qip-deepbrain -p qip-kernel; cargo test -p qip-acceptance --test documentation --test architecture --test api_boundary --test manifest_wiring --test order_placement_paths --test event_fabric_schema_lock --test paper_boundary --test security --test compliance_proof",
+   "result_lines": [
+    "qip-investment-agents organisation: test result: ok. 90 passed; 0 failed",
+    "qip-kernel lib: test result: ok. 518 passed; 0 failed; 89 binaries, none failed",
+    "qip-acceptance documentation: test result: ok. 28 passed; 0 failed (after CARDINALS/doc count fix)",
+    "other 8 acceptance suites: 0 failed",
+    "./scripts/check-secrets.sh: secret scan: nothing found",
+    "cargo fmt --all --check clean; clippy -p qip-investment-agents -p qip-kernel -p qip-deepbrain --all-targets -D warnings: Finished, no warnings",
+    "follow-up: qip-investment-agents organisation: test result: ok. 91 passed; 0 failed",
+    "follow-up: qip-kernel --test symbolic_federation: test result: ok. 30 passed; 0 failed",
+    "follow-up: fmt --check clean; clippy -p qip-investment-agents -p qip-kernel --all-targets -D warnings: Finished, no warnings; check-secrets: nothing found",
+    "round-60 follow-up (items 1,6): qip-kernel lib: test result: ok. 519 passed; 0 failed; kernel.rs after count fix: ok. 46 passed; 0 failed; qip-deepbrain 250-test binary: ok. 250 passed; 0 failed; 132 test binaries in the four-crate run, one failure (kernel.rs agent count, fixed and rerun green)",
+    "qip-acceptance documentation, architecture, api_boundary, manifest_wiring, order_placement_paths, event_fabric_schema_lock, paper_boundary, security, compliance_proof: 9 binaries, all 0 failed (documentation 28 passed; api_boundary 8 passed)",
+    "fmt --check clean; clippy -p qip-investment-agents -p qip-kernel --all-targets -D warnings: Finished; check-secrets: nothing found"
+   ],
+   "mutations": [
+    "platform.rs reason_symbolically: slot write removed -> symbolic_federation.rs:2346 'REASON did not brief the desk'",
+    "chief.rs standard_agents: SymbolicReasoningAnalyst removed -> organisation.rs coverage test panicked",
+    "symbolic_brain.rs reasoners_derived: claim_probability.is_some() -> true -> a_reasoner_that_refused_is_not_counted_as_derived failed",
+    "symbolic_brain.rs: observed guard -> if false -> unwritten_derivation_as_no_data failed",
+    "symbolic_stage.rs desk_view: refused-link filter inverted -> symbolic_federation.rs:2387 timeline_links_refused mismatch",
+    "manifests.rs: competency renamed -> deepbrain brains.rs:180 coverage test failed",
+    "symbolic_brain.rs reasoners_derived: temporal entry -> true: the_temporal_reasoner_is_derived_only_when_a_link_held failed (organisation.rs:5133)",
+    "symbolic_brain.rs: evidence id prefix changed: removing_the_symbolic_reasoning_brain... failed (organisation.rs:5042)",
+    "symbolic_stage.rs desk_view: intervention.affected.len()+1: reason_briefs... failed (symbolic_federation.rs:2388)",
+    "platform.rs: dispatch_late moved before reason_symbolically (old order) -> symbolic_federation.rs:2528 the_cycles_own_panel_report... failed",
+    "platform.rs: record_scopes_reported after dispatch_late removed -> a_scope_is_covered_in_a_cycle... failed (symbolic_federation.rs:2580)",
+    "platform.rs: record_scopes_reported inserts SymbolicReasoning unconditionally -> an_agent_removed_from_the_organisation... failed (agent_journal.rs:382)"
+   ],
+   "remains": "Nothing in DECIDE reads the finding (advisory). The deep brain's startup registry coverage (brains::standard) is still derived from roster manifests; the per-cycle reported-scope record and qip_organisation_scope_covered gauge are the 'what reported' coverage, and no alert policy reads that gauge (workload_metrics_exist is false, nothing scrapes). Edits to existing tests, none weakened: kernel.rs the_agent_roster_validates_at_assembly now counts the late phase too; organisation.rs organisation_without also removes late agents. dispatch() still runs late agents after the arbiters for callers with no derivation (their symbolic finding is the old no-data/stale shape); only the kernel's cycle uses the split. check-dependencies.sh not run (no dependency added).",
+   "commit": "f5d302a4"
+  },
+  {
+   "id": "R12-REASON-3063",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Clause 'compiled predicates execute deterministically' needs a signed-package loader on the edge/kernel pass AND an installed PackageSigner in the deep brain (key material / trust root = credential, REASON-10099/7203). Not built; no slice.",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2041",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Owner/ADR decision needed whether the central qip_market::quote::Tick print is a raw tick (ADR 0151 decision 9 keeps it). If so SensedRecord::Tick arm must be removed/routed and Tick added to the cognitive_no_raw_ticks refused list; tick-desk fusion boundary pin and MarketStatePack consumer also undecided. Not built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2074",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Per the register's 2026-11-12 fw-f-01 note (not independently re-derived this lane): the probe's one-minute step swallows a millisecond measured latency; closing needs the probe's time scale decided (step derived from measured latency with per-step volatility rescaled), a design decision more than a slice. Not built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-1181",
+   "outcome": "NEEDS_FIGURE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "CONTRADICTION_MARGIN 0.1 is a chosen constant with no measurement; what a contradiction should do (branch, abstain, narrow, request information) and a Merge in a real pass are also open. Not built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-3044",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Clauses credit and capital structure need data sources/licensing (ADR 0157 bills the series) and no production code writes an Issues fact; financials/management-action state also unmodelled. Needs vendor/licence/data decision. Not built.",
+   "commit": ""
+  }
+ ]
+}

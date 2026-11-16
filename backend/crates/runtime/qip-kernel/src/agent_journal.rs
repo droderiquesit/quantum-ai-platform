@@ -340,4 +340,57 @@ mod tests {
         assert!(journaled(&platform).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// R12-REASON-3026, principle 6: a scope is covered in a cycle only when a
+    /// finding for it reported. An organisation built without the Symbolic
+    /// Reasoning Brain, seated on a running platform, reports every other
+    /// scope it did and not that one, and the `qip_organisation_scope_covered`
+    /// gauge for it reads 0 -- a roster-derived registry would still have
+    /// listed it, which is why coverage is read from the findings.
+    ///
+    /// Mutation: have `record_scopes_reported` insert
+    /// `Scope::SymbolicReasoning` unconditionally and both assertions fail.
+    #[test]
+    fn an_agent_removed_from_the_organisation_drops_its_scope_on_a_running_platform() {
+        use qip_investment_agents::coverage::Scope;
+        use qip_observability::metrics::{labels, names};
+
+        let mut platform = platform();
+        let desk = platform.desk().clone();
+        let agents =
+            qip_investment_agents::chief::standard_agents(desk.clone(), start(), Vec::new(), false);
+        let arbiters = qip_investment_agents::chief::standard_arbiters(desk, start());
+        let host = AgentHost::new(7).with_language_model(Arc::new(DeterministicModel::new()));
+        let organisation = Organisation::new(
+            qip_investment_agents::roster(start()),
+            agents,
+            host,
+            start(),
+        )
+        .expect("the roster validates")
+        .with_arbiters(arbiters)
+        .expect("the arbiters are rostered");
+        platform.replace_organisation(organisation);
+
+        platform.observe(tape());
+        platform.run_cycle(start());
+
+        assert!(
+            !platform.scopes_reported_this_cycle().is_empty(),
+            "premise: the panel reported some scope, so an empty record is not an idle cycle"
+        );
+        assert!(
+            !platform
+                .scopes_reported_this_cycle()
+                .contains(&Scope::SymbolicReasoning)
+        );
+        let snapshot = platform.telemetry().metrics.snapshot();
+        assert_eq!(
+            snapshot.gauge(
+                names::ORGANISATION_SCOPE_COVERED,
+                &labels([("scope", Scope::SymbolicReasoning.as_str())])
+            ),
+            Some(0.0)
+        );
+    }
 }

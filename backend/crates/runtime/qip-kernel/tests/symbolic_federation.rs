@@ -2318,3 +2318,277 @@ fn a_non_empty_proof_trace_journaled_by_the_cycle_is_accepted_on_replay_and_refu
     );
     Ok(())
 }
+
+/// R12-REASON-3026. REASON's symbolic stage briefs the desk from the very
+/// derivation it journals, and the Symbolic Reasoning Brain run over the
+/// platform's own desk restates it: the slot names the replayed derivation's
+/// cycle, hypothesis and subject, the brain's figures equal the derivation's
+/// own, and its scope is covered by the finding.
+///
+/// The failure this guards: a specialist that reads a slot the kernel never
+/// writes reports "no data" forever, so "the Symbolic Reasoning Brain emits
+/// findings for its scope" would be a fixture's claim and not the platform's.
+///
+/// Mutation: drop the `self.symbolic_view.update(..)` call in
+/// `Platform::reason_symbolically` -- the slot stays unobserved and the first
+/// assertion fails.
+#[test]
+fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain_reports_it()
+-> Result<()> {
+    use qip_agents::runtime::{Agent, AgentHost};
+    use qip_investment_agents::coverage::{Scope, covered_by};
+    use qip_investment_agents::symbolic_brain::SymbolicReasoningAnalyst;
+    use qip_investment_agents::{ids, manifests};
+
+    let (platform, derivation) = journaled_derivation()?;
+    {
+        let view = platform.desk_symbolic_view();
+        assert!(view.observed, "REASON did not brief the desk");
+        assert_eq!(view.cycle, derivation.cycle);
+        assert_eq!(view.hypothesis_id, derivation.hypothesis_id);
+        assert_eq!(view.subject, derivation.subject);
+        // Expected values computed here from the derivation's own fields, not
+        // by calling the mapping under test: a mapping that read the wrong
+        // part would otherwise equal itself.
+        let eligible = match &derivation.rules.verdict {
+            symbolic_stage::Step::Derived(v) => Some(
+                v.facts.get("eligible") == Some(&qip_reasoning_engine::rules::Value::Bool(true)),
+            ),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.rules_eligible, eligible);
+        assert_eq!(view.rules_verified, derivation.rules.verified);
+        assert_eq!(view.agrees_with_review, derivation.rules.agrees_with_review);
+        assert_eq!(view.timeline_links, derivation.temporal.links.len());
+        let probability = match &derivation.posterior {
+            symbolic_stage::Step::Derived(p) => p.get("true").copied(),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.claim_probability, probability);
+        assert_eq!(view.claim_uncertainty, derivation.uncertainty);
+        let blocking = match &derivation.acting {
+            symbolic_stage::Step::Derived(qip_reasoning_engine::constraint::Answer::Satisfied(
+                _,
+            )) => Some(Vec::new()),
+            symbolic_stage::Step::Derived(
+                qip_reasoning_engine::constraint::Answer::Unsatisfiable { conflict },
+            ) => Some(conflict.clone()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.blocking_constraints, blocking);
+        let explanations = match &derivation.abduction {
+            symbolic_stage::Step::Derived(a) => Some(a.candidates.len()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.causal_explanations, explanations);
+        let reach = match &derivation.intervention {
+            symbolic_stage::Step::Derived(i) => Some(i.affected.len()),
+            symbolic_stage::Step::Refused(_) => None,
+        };
+        assert_eq!(view.causal_reach, reach);
+        let typed = derivation
+            .subject_type
+            .as_ref()
+            .and_then(|t| match &t.typed {
+                symbolic_stage::Step::Derived(name) => Some(name.clone()),
+                symbolic_stage::Step::Refused(_) => None,
+            });
+        assert_eq!(view.subject_type, typed);
+        let inferred = derivation
+            .knowledge
+            .as_ref()
+            .and_then(|k| match &k.inference {
+                symbolic_stage::Step::Derived(i) => Some(i.facts.len()),
+                symbolic_stage::Step::Refused(_) => None,
+            });
+        assert_eq!(view.facts_inferred, inferred);
+        assert_eq!(view.violated_assumptions, derivation.violated_assumptions);
+    }
+
+    let agent = SymbolicReasoningAnalyst::new(
+        manifests::symbolic_reasoning_brain(start()),
+        platform.desk().clone(),
+    );
+    assert_eq!(agent.manifest().id, ids::SYMBOLIC_REASONING);
+    let brief = qip_agents::finding::AgentBrief::new(
+        "what did the symbolic reasoners conclude",
+        start(),
+        Duration::from_days(1),
+    );
+    let record = AgentHost::new(1).run(
+        &agent,
+        &brief,
+        start(),
+        qip_core::lineage::Lineage::root(
+            qip_core::lineage::CorrelationId::from_string("sym"),
+            "test",
+        ),
+        qip_core::ids::AgentRunId::from_string("run-sym"),
+    );
+    let finding = record.finding.expect("the specialist answered");
+    let fact = |label: &str| {
+        finding
+            .facts
+            .iter()
+            .find(|f| f.label == label)
+            .map(|f| f.value)
+    };
+    let refused_links = derivation
+        .temporal
+        .links
+        .iter()
+        .filter(|link| !matches!(link.admitted, symbolic_stage::Step::Derived(())))
+        .count();
+    assert_eq!(
+        fact("timeline_links_refused"),
+        Some(refused_links as f64),
+        "{}",
+        finding.claim
+    );
+    assert_eq!(
+        fact("assumptions_violated"),
+        Some(derivation.violated_assumptions.len() as f64)
+    );
+    // Counted here from the derivation itself, one reasoner at a time.
+    let held = derivation.temporal.links.len() > refused_links;
+    let derived = [
+        matches!(derivation.rules.verdict, symbolic_stage::Step::Derived(_)),
+        held,
+        matches!(derivation.posterior, symbolic_stage::Step::Derived(_)),
+        matches!(derivation.acting, symbolic_stage::Step::Derived(_)),
+        matches!(derivation.abduction, symbolic_stage::Step::Derived(_))
+            || matches!(derivation.intervention, symbolic_stage::Step::Derived(_)),
+        derivation
+            .subject_type
+            .as_ref()
+            .is_some_and(|t| matches!(t.typed, symbolic_stage::Step::Derived(_)))
+            || derivation
+                .knowledge
+                .as_ref()
+                .is_some_and(|k| matches!(k.inference, symbolic_stage::Step::Derived(_))),
+    ]
+    .into_iter()
+    .filter(|d| *d)
+    .count();
+    assert_eq!(fact("reasoners_derived"), Some(derived as f64));
+    assert!(finding.claim.contains(&derivation.hypothesis_id));
+    assert!(covered_by(std::slice::from_ref(&finding)).contains(&Scope::SymbolicReasoning));
+    Ok(())
+}
+
+/// R12-REASON-3026. The Symbolic Reasoning Brain reports on the derivation of
+/// the hypothesis the cycle just reasoned, in the same pass. The cycle's own
+/// panel report is what its REASON stage journaled, run by run, so the test
+/// reads the journal of a `run_cycle` on `PlatformConfig::default` and asserts
+/// the brain's finding for that cycle names the hypothesis the derivation was
+/// computed for, and that it ran after the panel (its run is the last one).
+///
+/// The failure this guards: the brain was on the panel, which dispatched
+/// before `reason_symbolically` wrote the slot, so the first hypothesis got a
+/// no-data finding and every later one the previous hypothesis's derivation
+/// under the new brief's `as_of`.
+///
+/// Mutation: call `dispatch_late` before `reason_symbolically` in
+/// `reason_about_the_queue` (the old order) -- the finding is a no-data one
+/// and the claim check fails.
+#[test]
+fn the_cycles_own_panel_report_carries_a_symbolic_finding_for_the_hypothesis_just_reasoned()
+-> Result<()> {
+    use qip_agents::finding::FindingStatus;
+    use qip_events::{EventFilter, Topic};
+    use qip_investment_agents::ids;
+    use qip_kernel::agent_journal::AgentRunJournal;
+
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    for step in 0..2 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+    let derivations = symbolic_stage::replay(&platform)?;
+    assert!(
+        !derivations.is_empty(),
+        "premise: the cycles formed a hypothesis"
+    );
+    let runs: Vec<AgentRunJournal> = platform
+        .replay_journal(&EventFilter::new().topic(Topic::AgentRunCompleted))?
+        .into_iter()
+        .filter_map(|e| e.decode::<AgentRunJournal>().ok().map(|d| d.body))
+        .collect();
+    for derivation in &derivations {
+        let in_cycle: Vec<&AgentRunJournal> = runs
+            .iter()
+            .filter(|run| run.cycle == derivation.cycle)
+            .collect();
+        let symbolic: Vec<&&AgentRunJournal> = in_cycle
+            .iter()
+            .filter(|run| run.record.agent_id == ids::SYMBOLIC_REASONING)
+            .collect();
+        assert_eq!(
+            symbolic.len(),
+            1,
+            "cycle {} ran the symbolic brain {} time(s)",
+            derivation.cycle,
+            symbolic.len()
+        );
+        let finding = symbolic[0]
+            .record
+            .finding
+            .as_ref()
+            .expect("the brain answered");
+        assert_ne!(finding.status, FindingStatus::NoView, "{}", finding.claim);
+        assert!(
+            finding.claim.contains(&derivation.hypothesis_id),
+            "cycle {}: the finding names a different hypothesis than the one just reasoned: {}",
+            derivation.cycle,
+            finding.claim
+        );
+        assert_eq!(
+            in_cycle.last().map(|run| run.record.agent_id.as_str()),
+            Some(ids::SYMBOLIC_REASONING),
+            "the late phase runs after the panel and the arbiters"
+        );
+    }
+    Ok(())
+}
+
+/// R12-REASON-3026. A scope is covered in a cycle only when a finding for it
+/// was reported in that cycle (principle 6): after a cycle that reasoned, the
+/// platform's record of reported scopes holds symbolic reasoning and the
+/// `qip_organisation_scope_covered` gauge for it reads 1; before any cycle the
+/// record is empty.
+///
+/// Mutation: drop the `record_scopes_reported` call after `dispatch_late`
+/// -- the symbolic scope is missing from the record and the gauge reads 0.
+#[test]
+fn a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported() -> Result<()> {
+    use qip_investment_agents::coverage::Scope;
+    use qip_observability::metrics::names;
+
+    let mut platform = platform()?;
+    assert!(
+        platform.scopes_reported_this_cycle().is_empty(),
+        "premise: nothing reported before a cycle"
+    );
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    assert!(
+        !symbolic_stage::replay(&platform)?.is_empty(),
+        "premise: the cycle formed a hypothesis"
+    );
+    assert!(
+        platform
+            .scopes_reported_this_cycle()
+            .contains(&Scope::SymbolicReasoning)
+    );
+    let snapshot = platform.telemetry().metrics.snapshot();
+    let gauge = |scope: Scope| {
+        snapshot.gauge(
+            names::ORGANISATION_SCOPE_COVERED,
+            &qip_observability::metrics::labels([("scope", scope.as_str())]),
+        )
+    };
+    assert_eq!(gauge(Scope::SymbolicReasoning), Some(1.0));
+    Ok(())
+}

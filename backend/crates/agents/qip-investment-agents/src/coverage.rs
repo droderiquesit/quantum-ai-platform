@@ -111,11 +111,15 @@ pub enum Scope {
     /// calls standing against them and the dated marks on illiquid assets
     /// (R12-ASSET-3018).
     PrivateMarkets,
+    /// The six symbolic reasoners' conclusions about the latest hypothesis:
+    /// ontology, temporal, causal, rule, probabilistic and constraint
+    /// (R12-REASON-3026).
+    SymbolicReasoning,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 24] = [
+    pub const ALL: [Scope; 25] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -140,6 +144,7 @@ impl Scope {
         Scope::DisagreementResolution,
         Scope::WorldModelArbitration,
         Scope::PrivateMarkets,
+        Scope::SymbolicReasoning,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -167,6 +172,7 @@ impl Scope {
             Self::RegimeReliability => "regime_reliability",
             Self::DisagreementResolution => "disagreement_resolution",
             Self::WorldModelArbitration => "world_model_arbitration",
+            Self::SymbolicReasoning => "symbolic_reasoning",
             Self::PrivateMarkets => "private_markets",
         }
     }
@@ -222,6 +228,7 @@ impl Scope {
             Self::RegimeReliability => &["regime_reliability_cells"],
             Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
+            Self::SymbolicReasoning => &["reasoners_derived"],
             Self::PrivateMarkets => &[
                 "private_commitments",
                 "private_unfunded_commitment",
