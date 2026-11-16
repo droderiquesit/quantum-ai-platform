@@ -2638,11 +2638,16 @@ that narrows a security scanner, whatever the owner has delegated.
       Both rows stay unbuilt until the code has a caller.
     - Lane 22 added the two required headings to record 0644 after it had
       landed on main with them. The landed record is kept as main has it.
-    - Patches applied: `cicd-9107-protected.patch` (the deploy job publishes
-      the commit's source and deployment bundle, owner decision 36) and
-      `t5-04-R12-REASON-7203.patch` (the two-person publish signs a reflex
-      package, ADR 0535). Both edit `.github/**`, so the agent-boundary check
-      is red on them by design.
+    - Patches held for the owner: `cicd-9107-protected.patch` (the deploy
+      job publishes the commit's source and deployment bundle, owner
+      decision 36) and `t5-04-R12-REASON-7203.patch` (the two-person publish
+      signs a reflex package, ADR 0535). Both were applied, both lint and the
+      workflow suites pass with them, and both were then taken back out of
+      the batch: they edit `.github/**`, and the agent-boundary check asks for
+      a person's approval of exactly that ("an agent-authored change touches
+      protected paths and no person has approved commit"). That check is the
+      oversight this decision does not override; the two patches go up as a
+      pull request of their own for the owner to approve.
     - Patches not applied. `l8-sast-barrier.patch` narrows a scanner.
       `l5-edge-GOV-9075.patch` edits `.claude/**`, which the permission layer
       refuses. `l6-ncc-hubs-parked.patch` declares hubs a guard forbids
