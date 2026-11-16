@@ -1,9 +1,12 @@
 # Branch disposition, 2026-11-16
 
 Every generated branch of `ccr-116bbb27-osu8n8` is resolved on the owner's
-instruction of 2026-11-16. Those that held no commit `main` did not already
-have were deleted after that was verified. The six that were kept are recorded
-below with why, and with the tip SHA of each.
+instruction of 2026-11-16, and every one of them was deleted the same day:
+`main` is the only branch left in the repository. Branches that held no commit
+`main` did not already have were deleted once that was verified. The six that
+were held back for a decision were recorded below with why, and are deleted too,
+now that the owner has asked for the last refs gone. The tip SHA of each is kept
+here so the trail of what it held survives the ref.
 
 ## Merged into main after a full green `ci` run (14)
 
@@ -46,7 +49,7 @@ where the summary block names the failing test.
 | b53-16 | `hedge_independence::the_hedge_modules_reach_only_the_named_kernel_modules` | The lane has `hedge.rs` construct `cycle::ExposureFinding`, so it names `crate::cycle`, which the Hedge Brain was not declared to reach. `5841e44`: `CYCLE_PATHS` pins that one path by name instead of opening the module, because `cycle.rs` composes every stage's report |
 | b53-7 | `model_gateway_boundary::the_organisation_is_convened_only_after_the_cost_router_places_the_decision` | The lane splits the convention into `dispatch_panel` and `dispatch_late` around the derivation, so the literal `self.organisation.dispatch(` count fell to zero. `240ecb9`: the scan counts the prefix and holds every call to the same three rules — inside `reason_about_the_queue`, after `self.cost_router.select` |
 
-## Judged after the fact: both of the last two rebase onto main as an empty change (2)
+## Judged after the fact: both of the last two rebase onto main as an empty change (2) — deleted 2026-11-16
 
 These were recorded as needing a rebase before they could be judged. A
 three-way merge of `main` with each does conflict — which is what "needs a
@@ -57,11 +60,10 @@ rebase" meant — but reading the conflicts settles them without one:
 | t50-43 | `qip-kernel/tests/position_record.rs` is **byte-identical** on the branch and on `main`: the divestment a wallet halt refuses is already tested there, and the rule is already in the kernel. The only remaining changes are an older revision of `docs/blueprint/assessment/R12-M1.json` (rows `main` has since rewritten) and an ADR row reserving 0512 for R12-EXPAND-6067, belief-discrepancy persistence — a decision this branch does not implement |
 | t50-45 | `main`'s `qip-training/src/ensemble.rs` is this branch's file plus a `predict` method, and `conformal.rs` is byte-identical: the teacher-class blending landed and then grew. `learning.rs`, `training.rs` and `lib.rs` differ only where `main` is newer, down to six cosmetic lines. Its ADR row reserves 0516 for R12-EXPAND-6033, a counterfactual score is not a synthetic episode — again not what the branch implements |
 
-Neither carries a line `main` lacks, and re-adding either ADR row would
-re-reserve a number `main` keeps free on purpose (the ten in the deleted empty
-claims above). The rebase is empty; there is nothing to merge. Both branches
-are kept as the record of that and can be deleted whenever the owner wants the
-last two refs gone:
+Neither carries a line `main` lacks, and neither ADR row was re-added: both
+numbers stay free with the ten from the deleted empty claims. The rebase is
+empty, there is nothing to merge, and both refs were deleted on 2026-11-16 with
+their tips kept here:
 
 t50-43 `ab5f4568a4902c41ccf45ba34ed4bea36092dd5c` ·
 t50-45 `a60890bbddbb4d7f95e94ecce27c8d22befaddec`
@@ -108,7 +110,7 @@ The rest of the list is pinned to job names in `.github/workflows/ci.yml`: a job
 renamed there must be renamed here in the same change, or merges wait on a
 check that will never report.
 
-## Refuted by a reader, not merged (4) — branches retained
+## Refuted by a reader, not merged (4) — deleted 2026-11-16
 
 | Lane | Refusal | Tip SHA |
 |---|---|---|
