@@ -7,7 +7,7 @@ the dev tfvars, both protected. **Not validated, not planned, not applied.**
 
 ```hcl
 variable "enable_replay_pool" {
-  description = "Create the replay shard Cloud Run Job (R12-TICK-8110, ADR 0609 part 3). Off by default; provisional cost about 105 USD a month, the owner's figure."
+  description = "Create the replay shard Cloud Run Job (R12-TICK-8110). Off by default; provisional cost about 105 USD a month, the owner's figure."
   type        = bool
   default     = false
 }
@@ -58,3 +58,7 @@ resource "google_service_account" "replay" {
 `var.replay_image` and the read-only grant on the archive bucket (needs
 `enable_cloud_storage`, R12-DATA-8125) are not written here. A `.tftest.hcl`
 proving the gate admits false and plans the job on true is also needed.
+
+## Decision still to record
+
+Which crate reads `qip-storage`'s `ArchiveReader` into the kernel's scoring inputs. Proposal: `qip-deepbrain` (an app) owns the shard entry point and a public seam over `Platform::score_declined` / `score_filled`; `qip-kernel` keeps no `qip-storage` dependency. Not recorded as an ADR: lane 04's two numbers (0608, 0609) are used by R12-TICK-3097 and R12-TICK-2084.

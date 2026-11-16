@@ -578,58 +578,38 @@ pub struct TickDesk {
 /// What [`dispatch_mismatches`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MismatchDispatch {
-    /// Relative-value hypotheses that entered falsification as new.
-    pub proposed: usize,
-    /// Scout requests handed to discovery: investigations and challenges.
-    pub scouted: usize,
+    /// What the falsification book did with the relative-value proposals.
+    pub admission: qip_kernel::mismatch::MismatchAdmission,
+    /// What the research loop did with the investigations and challenges.
+    pub candidates: crate::research::MismatchCandidates,
 }
 
 /// Hand a round's routed mismatches to their consumers: proposals to the
-/// platform's falsification book, investigations and evidence challenges to
-/// the discovery desk as scout requests. Paper-only by construction: none of
-/// the three records carries a quantity, price or side.
-///
-/// The scout rank is derived from the evidence, not chosen: an investigation
-/// ranks at the prior it contradicted, a challenge at the quality it lacks.
+/// platform's falsification book (charged to the proposal family's trial
+/// budget and journaled), investigations and evidence challenges to the
+/// research loop as acquisition candidates (charged to the sweep's acquisition
+/// budget when launched). Paper-only by construction: none of the three
+/// records carries a quantity, price or side. Without a research loop the
+/// investigations and challenges are not offered anywhere, never handed to
+/// discovery around the budget.
 pub fn dispatch_mismatches(
     desk: &mut TickDesk,
     platform: &mut qip_kernel::Platform,
-    discovery: Option<&mut crate::discovery::DiscoveryDesk>,
-) -> MismatchDispatch {
+    research: Option<&mut crate::research::ResearchLoop>,
+    now: Timestamp,
+) -> Result<MismatchDispatch> {
     let routing = desk.take_mismatch_routing();
-    let mut out = MismatchDispatch {
-        proposed: platform.admit_proposed_hypotheses(routing.proposals),
-        scouted: 0,
+    let admission = platform.admit_proposed_hypotheses(routing.proposals, now)?;
+    let candidates = match research {
+        Some(research) => {
+            research.admit_mismatch_candidates(&routing.questions, &routing.challenges, now)
+        }
+        None => crate::research::MismatchCandidates::default(),
     };
-    // A figure outside [0, 1] is refused, not clamped: that request is
-    // left out rather than ranked on a number the fusion should not have made.
-    let bp = |x: f64| (0.0..=1.0).contains(&x).then(|| (x * 10_000.0).round() as u32);
-    let mut requests = Vec::new();
-    for q in routing.questions {
-        if let Some(rank_bp) = bp(q.prior) {
-            requests.push(crate::research::ScoutRequest {
-                request_id: format!("investigation:{}:{}", q.event, q.instrument),
-                question: q.reason,
-                rank_bp,
-                entities: vec![q.instrument],
-            });
-        }
-    }
-    for c in routing.challenges {
-        if let Some(rank_bp) = bp(1.0 - c.evidence_quality) {
-            requests.push(crate::research::ScoutRequest {
-                request_id: format!("challenge:{}", c.event),
-                question: format!("a better source for {}: {}", c.event, c.reason),
-                rank_bp,
-                entities: c.instruments,
-            });
-        }
-    }
-    if let Some(discovery) = discovery {
-        out.scouted = requests.len();
-        discovery.hand_off(&requests);
-    }
-    out
+    Ok(MismatchDispatch {
+        admission,
+        candidates,
+    })
 }
 
 impl TickDesk {

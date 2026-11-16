@@ -51,7 +51,10 @@ fn an_entry_past_its_own_expiry_is_not_returned() {
 #[test]
 fn a_digest_for_another_region_is_refused() {
     let d = digest();
-    assert!(d.read(at(10), "us-east").is_ok(), "premise: right region reads");
+    assert!(
+        d.read(at(10), "us-east").is_ok(),
+        "premise: right region reads"
+    );
     let err = d.read(at(10), "eu-west").unwrap_err().to_string();
     assert!(err.contains("not eu-west"), "got {err:?}");
 }
@@ -60,7 +63,10 @@ fn a_digest_for_another_region_is_refused() {
 fn a_stale_digest_is_refused_even_if_an_entry_claims_to_be_live() {
     let mut d = digest();
     d.entries[1].expires_at = at(10_000);
-    assert!(d.read(at(300), "us-east").is_ok(), "premise: valid at its edge");
+    assert!(
+        d.read(at(300), "us-east").is_ok(),
+        "premise: valid at its edge"
+    );
     let err = d.read(at(301), "us-east").unwrap_err().to_string();
     assert!(err.contains("stale digest"), "got {err:?}");
     assert_eq!(d.remaining(at(301)), qip_core::Duration::ZERO);

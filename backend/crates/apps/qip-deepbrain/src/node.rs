@@ -710,17 +710,6 @@ pub fn run_with(
         if let Some(desk) = loops.tick.as_deref() {
             platform.set_outside_priors(desk.outside_priors().to_vec())?;
         }
-        // What the market did against the world model reaches one paper-only
-        // consumer per kind (R12-TICK-2084, ADR 0609).
-        if let Some(desk) = loops.tick.as_deref_mut() {
-            crate::tick_desk::dispatch_mismatches(
-                desk,
-                platform,
-                evolution
-                    .as_deref_mut()
-                    .and_then(|engine| engine.discovery_desk_mut()),
-            );
-        }
 
         let mut outcome = step(platform, now, config.cycle_interval);
         outcome.observed = observed;
@@ -885,6 +874,22 @@ pub fn run_with(
                 tick_pass(desk, platform, cycles, now, &mut outcome);
             } else if desk.due(cycles) {
                 cognition.held.insert(crate::cognition::CognitiveLoop::Tick);
+            }
+            // What the market did against the world model reaches one paper-only
+            // consumer per kind (R12-TICK-2084, ADR 0609): proposals to the
+            // falsification book, investigations and challenges to the
+            // research loop's acquisition candidates (charged to its budget at
+            // the next ranked launch). Advisory like the desk: a refused
+            // journal is a side note on the cycle line, never a stopped node.
+            if let Err(error) = crate::tick_desk::dispatch_mismatches(
+                desk,
+                platform,
+                loops.research.as_deref_mut(),
+                now,
+            ) {
+                outcome
+                    .side_failures
+                    .push(format!("mismatch dispatch: {}", error.message()));
             }
         }
         // Lost: the rounds due on this cycle wait in the backlog. Refused or
@@ -1184,11 +1189,14 @@ mod tests {
     use qip_storage::MemoryKeyValueStore;
 
     /// R12-TICK-2084: a round's routed mismatches reach their consumers — the
-    /// proposal the platform's falsification book, the investigation and the
-    /// challenge the discovery desk's scout queue — and are taken, not kept.
-    /// Mutation: not run (nothing was compiled).
+    /// proposal the platform's falsification book (charged and journaled), the
+    /// investigation and the challenge the research loop's candidates — and are
+    /// taken, not kept. Mutations: drop `admit_proposed_hypotheses` in
+    /// `dispatch_mismatches` (admitted 0); drop the `admit_mismatch_candidates`
+    /// call (no candidate accounted for); drop the `take` in
+    /// `take_mismatch_routing` (the second dispatch re-sends).
     #[test]
-    fn a_rounds_mismatches_reach_falsification_and_the_discovery_scout_queue() {
+    fn a_rounds_mismatches_reach_falsification_and_the_research_loops_candidates() {
         use qip_kernel::mismatch::{
             EvidenceChallenge, HypothesisStatus, MismatchRouting, ProposedHypothesis,
             ResearchQuestion,
@@ -1200,10 +1208,11 @@ mod tests {
             Arc::new(qip_storage::blob::MemoryBlobStore::new()),
             Arc::new(qip_storage::blob::MemoryBlobStore::new()),
         );
-        let mut discovery = crate::discovery::DiscoveryDesk::new(
-            crate::discovery::DiscoveryConfig::default(),
-            vec![],
-        );
+        let mut research = crate::research::ResearchLoop::new(
+            crate::research::ResearchConfig::default(),
+            std::collections::BTreeMap::new(),
+        )
+        .expect("the research loop assembles");
         desk.seed_mismatch_routing(MismatchRouting {
             questions: vec![ResearchQuestion {
                 event: "evt-a".into(),
@@ -1225,21 +1234,30 @@ mod tests {
                 status: HypothesisStatus::Proposed,
             }],
         });
-        let done =
-            crate::tick_desk::dispatch_mismatches(&mut desk, &mut platform, Some(&mut discovery));
-        assert_eq!((done.proposed, done.scouted), (1, 2));
+        let done = crate::tick_desk::dispatch_mismatches(
+            &mut desk,
+            &mut platform,
+            Some(&mut research),
+            start(),
+        )
+        .expect("dispatches");
+        assert_eq!(done.admission.admitted, 1);
         assert_eq!(platform.falsification().proposed().len(), 1);
-        let queue: Vec<_> = discovery.scout_queue().collect();
-        assert_eq!(queue.len(), 2);
-        assert_eq!(queue[0].rank_bp, 8_000, "investigation ranks at its prior");
+        let c = done.candidates;
         assert_eq!(
-            queue[1].rank_bp, 7_500,
-            "a challenge ranks at the quality it lacks"
+            c.queued + c.unviable + c.refused + c.held,
+            2,
+            "a mismatch was not accounted for: {c:?}"
         );
-        let again =
-            crate::tick_desk::dispatch_mismatches(&mut desk, &mut platform, Some(&mut discovery));
+        let again = crate::tick_desk::dispatch_mismatches(
+            &mut desk,
+            &mut platform,
+            Some(&mut research),
+            start(),
+        )
+        .expect("dispatches");
         assert_eq!(
-            (again.proposed, again.scouted),
+            (again.admission.admitted, again.candidates.queued),
             (0, 0),
             "a round was dispatched twice"
         );

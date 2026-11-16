@@ -1,5 +1,5 @@
 //! Disjoint replay shards and the merge of their live-versus-counterfactual
-//! totals (R12-TICK-8110; ADR 0609 part 3).
+//! totals (R12-TICK-8110).
 //!
 //! A replay over archived segments is a fold: each segment yields the
 //! comparison of what the live path did against what a counterfactual would
@@ -12,7 +12,7 @@
 //!
 //! It does not read the archive and it does not score: which crate reads
 //! `qip-storage`'s `ArchiveReader` into the kernel's `score_declined` and
-//! `score_filled` inputs is decided in ADR 0609 part 3, and that seam is not built.
+//! `score_filled` inputs is **not yet decided in an ADR** (this lane's two numbers are used); the proposal is that the shard entry point lives in `qip-deepbrain`, an app, since `qip-kernel` keeps no `qip-storage` dependency. That seam is not built.
 
 use qip_core::error::{Error, Result};
 
@@ -40,7 +40,7 @@ impl ComparisonTotals {
     /// The counterfactual's edge over live; positive when it would have done
     /// better. `None` over no segments, because nothing was compared.
     pub fn edge_bps(&self) -> Option<f64> {
-        (self.segments > 0).then(|| self.counterfactual_bps - self.live_bps)
+        (self.segments > 0).then_some(self.counterfactual_bps - self.live_bps)
     }
 
     /// Merge two shards' totals.
@@ -93,10 +93,16 @@ mod tests {
         let n = 11;
         let all: Vec<usize> = (0..n).collect();
         let single = replay(&all);
-        assert_eq!(single.segments, 11, "premise: the single run saw every segment");
+        assert_eq!(
+            single.segments, 11,
+            "premise: the single run saw every segment"
+        );
         let a = shard_indices(n, 0, 2).unwrap();
         let b = shard_indices(n, 1, 2).unwrap();
-        assert!(a.iter().all(|i| !b.contains(i)), "a segment is in both shards");
+        assert!(
+            a.iter().all(|i| !b.contains(i)),
+            "a segment is in both shards"
+        );
         assert_eq!(a.len() + b.len(), n, "a segment is in no shard");
         let merged = replay(&a).merge(replay(&b));
         assert_eq!(merged, single);

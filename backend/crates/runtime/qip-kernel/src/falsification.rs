@@ -151,6 +151,9 @@ pub struct Book {
     /// (R12-TICK-2084). Held as proposed: no falsifier has been evaluated
     /// against them and nothing here sizes from one.
     proposed: Vec<crate::mismatch::ProposedHypothesis>,
+    proposed_capacity: usize,
+    evicted: u64,
+    refused_on_budget: u64,
 }
 
 impl Default for Book {
@@ -165,27 +168,73 @@ impl Book {
             ledger: TrialLedger::new(),
             last: None,
             proposed: Vec::new(),
+            proposed_capacity: crate::mismatch::PROPOSED_CAPACITY,
+            evicted: 0,
+            refused_on_budget: 0,
         }
     }
 
-    /// Take a relative-value hypothesis a mismatch proposed. Idempotent on
-    /// the event and instrument, so a tick round that re-fuses the same event
-    /// does not count one idea twice, and bounded by
-    /// [`crate::mismatch::PROPOSED_CAPACITY`] with the oldest dropped. Returns
-    /// whether it was new.
-    pub fn propose(&mut self, hypothesis: crate::mismatch::ProposedHypothesis) -> bool {
+    /// Take a relative-value hypothesis a mismatch proposed, charging it to
+    /// [`crate::mismatch::PROPOSAL_FAMILY`]'s trial budget (R12-TICK-2084,
+    /// ADR 0609).
+    ///
+    /// Idempotent on the event and instrument, checked **before** the charge,
+    /// so a round that re-fuses an event neither counts one idea twice nor
+    /// spends the family's budget on it. A family at its budget refuses the
+    /// proposal and counts it ([`Self::proposals_refused_on_budget`]); a full
+    /// working set evicts the oldest and counts that
+    /// ([`Self::proposals_evicted`]), returning the evicted record so the
+    /// caller can journal it. Nothing is dropped silently.
+    pub fn propose(
+        &mut self,
+        hypothesis: crate::mismatch::ProposedHypothesis,
+    ) -> Result<crate::mismatch::ProposalOutcome, qip_core::error::Error> {
+        use crate::mismatch::ProposalOutcome;
+        use qip_world_model::falsification::ProposalCharge;
         if self
             .proposed
             .iter()
             .any(|p| p.event == hypothesis.event && p.instrument == hypothesis.instrument)
         {
-            return false;
+            return Ok(ProposalOutcome::Duplicate);
         }
-        if self.proposed.len() == crate::mismatch::PROPOSED_CAPACITY {
-            self.proposed.remove(0);
-        }
+        let (spent, budget) = match self
+            .ledger
+            .charge_proposal(crate::mismatch::PROPOSAL_FAMILY)?
+        {
+            ProposalCharge::Charged { spent, budget } => (spent, budget),
+            ProposalCharge::BudgetExhausted { spent, budget } => {
+                self.refused_on_budget += 1;
+                return Ok(ProposalOutcome::BudgetExhausted { spent, budget });
+            }
+        };
+        let evicted = if self.proposed.len() >= self.proposed_capacity {
+            self.evicted += 1;
+            Some(self.proposed.remove(0))
+        } else {
+            None
+        };
         self.proposed.push(hypothesis);
-        true
+        Ok(ProposalOutcome::Admitted {
+            spent,
+            budget,
+            evicted,
+        })
+    }
+
+    /// The most proposals the working set holds before it evicts the oldest.
+    pub const fn proposed_capacity(&self) -> usize {
+        self.proposed_capacity
+    }
+
+    /// Proposals the working set evicted to stay within its capacity.
+    pub const fn proposals_evicted(&self) -> u64 {
+        self.evicted
+    }
+
+    /// Proposals refused because the family had no trial budget left.
+    pub const fn proposals_refused_on_budget(&self) -> u64 {
+        self.refused_on_budget
     }
 
     /// The hypotheses proposed so far, oldest first.
