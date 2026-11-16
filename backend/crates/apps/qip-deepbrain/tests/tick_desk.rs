@@ -1220,3 +1220,199 @@ fn the_desk_fills_depth_and_imbalance_from_the_replayed_book_into_the_fused_reac
     );
     Ok(())
 }
+
+/// R12-TICK-10121. Mutation: in `TickDesk::round_with_fills`, skip the
+/// `portfolio_outcomes` call, or write the record under another prefix; or in
+/// `book_weights`, drop the sign (use `abs`) or the division by equity.
+#[test]
+fn a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled() -> Result<()> {
+    use qip_deepbrain::tick_book::{PortfolioOutcomeRecord, book_weights};
+    // The weight arithmetic first: a short is negative and the figure is a
+    // fraction of equity, so ten units at 100 against 5,000 is 0.2 either way.
+    let weights = book_weights(
+        &BTreeMap::from([
+            ("obj-ACME".to_string(), (d(10.0), d(100.0))),
+            ("obj-SHORT".to_string(), (d(-10.0), d(100.0))),
+        ]),
+        d(5_000.0),
+    )?;
+    assert!((weights["obj-ACME"] - 0.2).abs() < 1e-12);
+    assert!((weights["obj-SHORT"] + 0.2).abs() < 1e-12);
+    assert!(
+        book_weights(
+            &BTreeMap::from([("obj-ACME".to_string(), (d(1.0), d(1.0)))]),
+            d(0.0)
+        )
+        .is_err(),
+        "an exhausted book is refused, not floored"
+    );
+
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    desk.set_portfolio_weights(BTreeMap::from([("obj-ACME".to_string(), 0.5)]));
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert!(
+        round.branches_live > 1,
+        "premise: a tree with live branches"
+    );
+    assert_eq!(round.portfolio_outcomes.len(), round.branches_live);
+    let mass: f64 = round.portfolio_outcomes.iter().map(|o| o.weight).sum();
+    assert!(
+        (mass - 1.0).abs() < 1e-9,
+        "a distribution sums to one: {mass}"
+    );
+    assert!(
+        round
+            .portfolio_outcomes
+            .iter()
+            .any(|o| o.portfolio_bps != 0.0),
+        "premise: some world moves the book"
+    );
+    let written = outputs.list(&format!("{OUTPUT_NAMESPACE}/portfolio-outcomes/"))?;
+    assert_eq!(written.len(), 1);
+    let record: PortfolioOutcomeRecord =
+        serde_json::from_slice(&outputs.get(&written[0])?.expect("listed"))?;
+    assert_eq!(record.outcomes, round.portfolio_outcomes);
+    assert!((record.positions["obj-ACME"] - 0.5).abs() < 1e-12);
+
+    // A book that names nothing the twin models is refused with a reason and
+    // writes nothing: zero everywhere would read as a hedged book.
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let outputs = Arc::new(MemoryBlobStore::new());
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::clone(&outputs) as Arc<dyn BlobStore>,
+    );
+    desk.set_portfolio_weights(BTreeMap::from([("obj-ELSEWHERE".to_string(), 0.5)]));
+    let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+    assert!(round.portfolio_outcomes.is_empty());
+    assert!(round.portfolio_outcomes_refused.is_some());
+    assert!(
+        outputs
+            .list(&format!("{OUTPUT_NAMESPACE}/portfolio-outcomes/"))?
+            .is_empty()
+    );
+    Ok(())
+}
+
+/// R12-TICK-1176. Mutation: in `plans_of`, drop the `instruments.len() < 2`
+/// guard (slices of one instrument become a plan) or skip `set_plans` in
+/// `maybe_round_with_orders` (no saga is replayed): the matching assertion
+/// below fails.
+///
+/// The failure this prevents: a proposal that sends legs on two instruments
+/// was replayed as two unrelated orders, so the one thing that can go wrong
+/// with it, a later leg failing while an earlier leg stands open, was never
+/// replayed against the recorded market.
+#[test]
+fn a_proposal_that_sent_orders_on_two_instruments_replays_as_one_saga_and_a_single_instrument_proposal_does_not()
+-> Result<()> {
+    use qip_execution_engine::order::OrderType;
+    let lake = Arc::new(MemoryBlobStore::new());
+    seal_session(&lake, "vendor-depth")?;
+    let mut desk = TickDesk::new(
+        config(),
+        Arc::clone(&lake) as Arc<dyn BlobStore>,
+        Arc::new(MemoryBlobStore::new()),
+    );
+    let mut leg_a = platform_order("leg-a", OrderType::Market, 150_000, None);
+    leg_a.proposal_id = "proposal-pair".to_string();
+    let mut leg_b = platform_order("leg-b", OrderType::Market, 152_000, None);
+    leg_b.proposal_id = "proposal-pair".to_string();
+    // The second instrument has no recorded book: the saga's second leg fails.
+    leg_b.object_id = ObjectId::from_string("obj-NOBOOK");
+    // Two slices of one instrument under one proposal: not legs.
+    let mut slice_a = platform_order("slice-a", OrderType::Market, 160_000, None);
+    slice_a.proposal_id = "proposal-slices".to_string();
+    let mut slice_b = platform_order("slice-b", OrderType::Market, 161_000, None);
+    slice_b.proposal_id = "proposal-slices".to_string();
+    let orders = vec![leg_a, leg_b, slice_a, slice_b];
+
+    let round = desk
+        .maybe_round_with_orders(&graph()?, 1, at(400_000), &orders, &[])?
+        .expect("cadence 1 runs every cycle");
+
+    let replay = round.replay.as_ref().expect("the history was replayed");
+    assert_eq!(
+        replay.plans.len(),
+        1,
+        "premise: exactly the two-instrument proposal became a plan: {:?}",
+        replay.plans
+    );
+    let outcome = &replay.plans[0];
+    assert_eq!(outcome.plan_id, "proposal-pair");
+    assert_eq!(outcome.failed_leg, Some(1), "the book-less leg failed");
+    assert!(!outcome.completed);
+    let ids: Vec<&str> = round
+        .order_rows
+        .iter()
+        .map(|row| row.order_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["slice-a", "slice-b"],
+        "the legs are replayed as the plan, not also as independent orders"
+    );
+    Ok(())
+}
+
+/// R12-TICK-1177. Mutation: in `order_reactions`, build the move's `Placed`
+/// with `Duration::ZERO` instead of the tick's uncertainty (every reaction is
+/// ordered as if the clock were exact), or drop the call in `round_with_fills`.
+///
+/// The failure this prevents: a market move read off a tick whose capture
+/// clock was good to fifteen seconds was credited as following an event it
+/// preceded by ten seconds, because the subtraction trusted the stamp.
+#[test]
+fn a_reaction_inside_the_capture_clocks_doubt_is_unordered_and_the_same_reaction_on_a_good_clock_is_not()
+-> Result<()> {
+    use qip_sequencing::align::Order;
+    let run = |uncertainty: Option<Duration>| -> Result<Vec<qip_deepbrain::fusion_clock::ReactionTiming>> {
+        let lake = Arc::new(MemoryBlobStore::new());
+        match uncertainty {
+            Some(doubt) => {
+                seal_session_uncertain(&lake, "vendor-depth", doubt)?;
+            }
+            None => {
+                seal_session(&lake, "vendor-depth")?;
+            }
+        }
+        let mut desk = TickDesk::new(
+            config(),
+            Arc::clone(&lake) as Arc<dyn BlobStore>,
+            Arc::new(MemoryBlobStore::new()),
+        );
+        let round = desk.round(&graph()?, at(400_000), Vec::new())?;
+        assert_eq!(round.fused_events, 1, "premise: the event was fused");
+        Ok(round.reaction_timing)
+    };
+    let exact = run(None)?;
+    let doubtful = run(Some(Duration::from_secs(15)))?;
+    assert!(
+        !exact.is_empty() && !doubtful.is_empty(),
+        "premise: the event drew a measured reaction ({exact:?} / {doubtful:?})"
+    );
+    assert!(
+        doubtful.iter().all(|t| t.order == Order::Unordered),
+        "a move inside fifteen seconds of clock doubt was ordered: {doubtful:?}"
+    );
+    assert!(
+        doubtful
+            .iter()
+            .all(|t| t.lag_uncertainty >= Duration::from_secs(15)),
+        "{doubtful:?}"
+    );
+    assert!(
+        exact.iter().any(|t| t.order == Order::Before),
+        "on a good clock a later move is ordered after its event: {exact:?}"
+    );
+    Ok(())
+}

@@ -45,6 +45,7 @@ pub mod failover;
 pub mod identity;
 pub mod regions;
 pub mod tracker;
+pub mod venues;
 
 pub use align::{Alignment, AsOf, Order, Placed, align, as_of};
 pub use arbitration::{ArbitrationEvent, ArbitrationOutcome, LineArbiter, LineHealth};
@@ -60,3 +61,4 @@ pub use tracker::{
     GapReason, ReorderPolicy, SequenceEvent, SequenceTracker, SequencedBatch, Sequencer,
     StreamStats, delivery_units,
 };
+pub use venues::{CrossVenueAligner, MAX_VENUE_PARTITIONS, VenueAlignment, VenueTick};

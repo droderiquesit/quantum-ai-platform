@@ -351,6 +351,7 @@ fn a_model_pack_missing_any_of_its_nine_fields_is_refused_on_decode() -> Result<
             approver: "approver".to_string(),
             approved_at: Timestamp::from_secs(1_760_000_000),
         },
+        provenance: None,
         inline_model: None,
     };
     pack.validate()?;

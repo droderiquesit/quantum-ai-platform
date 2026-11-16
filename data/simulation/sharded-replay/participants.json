@@ -1,0 +1,8 @@
+{
+  "seed": 7,
+  "calm_half_spread_bps": 5.0,
+  "agents": [
+    {"name": "trend", "behaviour": {"momentum": {"clip": "10", "lookback": 2, "threshold": 0.001}}},
+    {"name": "flow", "behaviour": {"passive": {"size": "5", "participation": 0.5}}}
+  ]
+}

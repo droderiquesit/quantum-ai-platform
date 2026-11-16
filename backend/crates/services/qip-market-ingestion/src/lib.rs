@@ -56,6 +56,7 @@
 //! perfectly measured value and an unstated quality would arrive as one.
 
 pub mod adapter;
+pub mod admit;
 pub mod alternative;
 pub mod connector;
 pub mod connector_feed;

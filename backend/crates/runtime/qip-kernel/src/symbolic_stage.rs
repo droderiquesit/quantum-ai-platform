@@ -519,12 +519,51 @@ impl SymbolicDerivation {
         if verdict.facts.get("cash_short") == Some(&Value::Bool(true)) {
             stops.push("cash is short of one lot");
         }
+        // R12-REASON-3054: the knowledge graph's entailment is read here, not
+        // only journaled. The graph is closed from the same expiry margin the
+        // pack's r70 reads, so this can only restrict (it adds a stop to a
+        // hypothesis already ineligible) and it fires only where the closure
+        // holds the hypothesis concerns a dated contract that expires before
+        // the claim can resolve.
+        if self.outlived_by_knowledge() {
+            stops.push("the contract expires before the claim can resolve");
+        }
         (!stops.is_empty()).then(|| {
             format!(
                 "{RULE_PACK} v{RULE_PACK_VERSION} does not find it eligible ({})",
                 stops.join("; ")
             )
         })
+    }
+
+    /// The rule ids whose firing made the pack find the thesis eligible
+    /// (R12-EXPAND-6044, the direction a veto cannot see): the trace steps
+    /// that derived `eligible`. Empty when the pack did not find it eligible,
+    /// and when review had not approved, because eligibility the pack derives
+    /// for a hypothesis nobody approved is not what was acted on. Read from
+    /// the verdict's own trace, as [`Self::veto_rules`] is, so a renamed rule
+    /// is named by its new id.
+    pub fn eligible_rules(&self) -> Vec<String> {
+        let Step::Derived(verdict) = &self.rules.verdict else {
+            return Vec::new();
+        };
+        let approved = self
+            .rules
+            .inputs
+            .iter()
+            .any(|(name, value)| name == "status" && *value == Value::Text("approved".into()));
+        if !approved || verdict.facts.get("eligible") != Some(&Value::Bool(true)) {
+            return Vec::new();
+        }
+        let mut rules: Vec<String> = verdict
+            .trace
+            .iter()
+            .filter(|step| step.fact == "eligible" && step.value == Value::Bool(true))
+            .map(|step| step.rule.clone())
+            .collect();
+        rules.sort();
+        rules.dedup();
+        rules
     }
 
     /// The rule and invariant ids whose firing made [`Self::veto`]
@@ -557,9 +596,22 @@ impl SymbolicDerivation {
         {
             rules.push("i10-no-eligibility-under-live-authority".to_string());
         }
+        if self.outlived_by_knowledge() {
+            rules.push(KNOWLEDGE_OUTLIVED_RULE.to_string());
+        }
         rules.sort();
         rules.dedup();
         rules
+    }
+
+    /// Whether this record's own knowledge graph entails that the claim
+    /// outlives the contract (R12-REASON-3054). `false` for a record written
+    /// before the graph existed: absence of the graph adds no stop, and the
+    /// pack's own rule still rules on the margin.
+    fn outlived_by_knowledge(&self) -> bool {
+        self.knowledge
+            .as_ref()
+            .is_some_and(|k| k.outlived_by_claim(&self.hypothesis_id, &self.subject))
     }
 
     /// ADR 0212: why no money may move on this conclusion, or `None` when
@@ -813,6 +865,10 @@ pub const KNOWLEDGE_GRAPH_VERSION: u32 = 1;
 /// deadline.
 pub const CONTRACT_LIVE_THROUGH_HORIZON: &str = "contract/live_through_horizon";
 pub const CONTRACT_EXPIRES_BEFORE_HORIZON: &str = "contract/expires_before_horizon";
+
+/// The id [`SymbolicDerivation::veto_rules`] names when the knowledge graph's
+/// entailment, rather than a pack rule, is what stopped a hypothesis.
+pub const KNOWLEDGE_OUTLIVED_RULE: &str = "knowledge/outlived-by-claim";
 
 /// The asset classes whose instruments are physical things, and so carry a
 /// delivery lifecycle as well as a financial one.
@@ -1636,6 +1692,52 @@ mod tests {
         Timestamp::from_secs(1_700_000_000 + secs)
     }
 
+    /// R12-REASON-3054: an approved hypothesis whose subject the knowledge
+    /// graph entails is a contract expiring before the claim resolves is
+    /// vetoed, naming the entailment; one with margin to spare is not.
+    /// Mutation: not run (nothing was compiled; lane 44, 2026-11-15).
+    #[test]
+    fn an_approved_hypothesis_the_knowledge_graph_entails_is_outlived_by_its_contract_is_vetoed() {
+        let healthy = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(30),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        // Premise: the same hypothesis with margin is not vetoed, so the veto
+        // below is the expiry's doing and not a standing veto.
+        assert_eq!(healthy.veto(), None, "{:?}", healthy.rules.verdict);
+        let expiring = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(-1),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(
+            expiring
+                .knowledge
+                .as_ref()
+                .is_some_and(|k| k.outlived_by_claim("hyp-3-AAA", "AAA")),
+            "premise: the graph entails the claim outlives the contract"
+        );
+        let veto = expiring.veto().expect("the entailment must stop it");
+        assert!(
+            veto.contains("expires before the claim can resolve"),
+            "{veto}"
+        );
+        assert!(
+            expiring
+                .veto_rules()
+                .contains(&KNOWLEDGE_OUTLIVED_RULE.to_string()),
+            "{:?}",
+            expiring.veto_rules()
+        );
+    }
+
     #[test]
     fn a_dated_contract_that_expires_before_the_deadline_is_entailed_to_be_outlived_by_the_claim() {
         // R12-REASON-3054, the financial and physical lifecycles: the stage
@@ -1711,6 +1813,29 @@ mod tests {
             cash_headroom: Some(900_000),
             contract_expiry_margin_days: None,
         }
+    }
+
+    /// R12-EXPAND-6044: the rules that made the pack find a thesis eligible
+    /// are read from the trace, and none are named for a thesis the pack
+    /// did not find eligible. Mutation: make `eligible_rules` return the
+    /// whole trace's rule ids; the second assert fails.
+    #[test]
+    fn eligible_rules_names_the_rule_that_admitted_and_nothing_when_not_eligible() {
+        let admitted = derive(input(), &CausalGraph::default(), at(20));
+        assert_eq!(admitted.eligible_rules(), vec!["r10-eligible".to_string()]);
+        let expiring = derive(
+            SymbolicInput {
+                contract_expiry_margin_days: Some(-1),
+                ..input()
+            },
+            &CausalGraph::default(),
+            at(20),
+        );
+        assert!(
+            expiring.eligible_rules().is_empty(),
+            "{:?}",
+            expiring.eligible_rules()
+        );
     }
 
     /// REASON-3057, contracts: a hypothesis on a dated contract that expires

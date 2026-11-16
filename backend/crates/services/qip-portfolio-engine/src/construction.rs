@@ -615,7 +615,13 @@ impl PortfolioConstructor {
             }
         };
         for (label, members, cap) in &group_checks {
-            let held: f64 = members.iter().map(|index| carried(*index)).sum();
+            // Gross, not net (R12-ASSET-4070 gap 4, ADR 0685 addendum). The
+            // group row the solver is given bounds the *net* sum, so under a
+            // shorting mandate a long and a short in one group cancel and the
+            // group could carry twice its cap in exposure. Checked here on
+            // absolute weights: equal to the net sum for a long-only mandate,
+            // and it can only refuse more, never admit more.
+            let held: f64 = members.iter().map(|index| carried(*index).abs()).sum();
             if !held.is_finite() || held > cap + 1e-9 {
                 return Err(Error::denied(format!(
                     "the sizing holds {held:.6} in {label}, above its cap of {cap}; the grouped \

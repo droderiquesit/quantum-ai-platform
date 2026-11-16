@@ -1,0 +1,22 @@
+{"lane": "20", "rows": [
+{"id":"R12-EXPAND-6025","outcome":"NEEDS_PERSON","claims_requirement_met":false,
+ "what":"No code written. Deployable capability needs the ADR 0110 PackageSigner installed in qip-deepbrain main.rs, which needs key material and a composition-root change that this lane may not choose.",
+ "remains":"Signer key material and its installation at the deep brain root; campaign runners for gap kinds other than fill-bias (qip-expansion, research.rs). Not started: the other kinds have no design in any ADR I found.",
+ "tests":[],"test_command":"not run","mutations":[],"commit":""},
+{"id":"R12-EXPAND-6034","outcome":"NEEDS_PERSON","claims_requirement_met":false,
+ "what":"No code written. The row waits on R12-CONTRACT-7064 (ADR 0149 d2 rename to ModelSetVersion, d3 unsigned contract ModelPack draft). grep for ModelSetVersion in backend finds nothing, so that lane has not landed in this tree.",
+ "remains":"The rename and the draft written after promote_model_from in LearningDesk::shadow_round, both owned by the CONTRACT-7064 lane. Doing it here would collide with that lane's isolated change.",
+ "tests":[],"test_command":"not run","mutations":[],"commit":""},
+{"id":"R12-EXPAND-6035","outcome":"NOT_BUILT","claims_requirement_met":false,
+ "what":"No code written. ExperimentPack exists for the fill-bias kind only; agents writing experiments, building features or proposing strategies from other gap kinds have no committed design, and each would need a new campaign runner.",
+ "remains":"Campaign kinds beyond fill-bias; backtest via the evolution engine rather than the campaign's own stages; pack reaching the journal without an ambient journal.",
+ "tests":[],"test_command":"not run","mutations":[],"commit":""},
+{"id":"R12-EXPAND-6038","outcome":"NEEDS_PERSON","claims_requirement_met":false,
+ "what":"No code written. CellOutcome is strategy-level (returns, loss, drawdown, cost bps) while RegionalEpisode carries a free-text detail and no strategy, so mapping episodes to CellOutcome fields would invent a rule nobody gave. ADR 0133 d3 defines ReflexDelta as a signed, two-person-published reflex package change, which needs the signing path and is not a lane-sized choice.",
+ "remains":"A decision on how episodes become CellOutcome fields; the ReflexDelta record over ADR 0131 signing; the qip-kernel/tests/central.rs test that ingested episodes reach learn_from_cells.",
+ "tests":[],"test_command":"not run","mutations":[],"commit":""},
+{"id":"R12-EXPAND-6039","outcome":"NEEDS_PERSON","claims_requirement_met":false,
+ "what":"No code written. Cross-process sharing needs a new transport seam through qip-contracts, edge, fastbrain, api and deepbrain, and the register says the owner must rule on the requirement text under ADR 0151 d4; the producer is also behind the null QIP_CONNECTOR_SOURCE.",
+ "remains":"Owner ruling under ADR 0151 d4; the transport seam; a deployed second reader.",
+ "tests":[],"test_command":"not run","mutations":[],"commit":""}
+]}

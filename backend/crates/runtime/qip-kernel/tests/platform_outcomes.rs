@@ -1393,6 +1393,17 @@ fn a_fill_a_refused_order_and_an_opportunity_that_lapsed_unworked_each_reach_the
         Some(&waiting.len())
     );
     assert_eq!(platform.outcomes().tally().get("missed_opportunity"), None);
+    // ADR 0148 decision 2 (R12-TICK-2077): each lapse is also counted as
+    // never graded, under its own reason, so an opportunity that was seen and
+    // not priced is a number rather than a silence.
+    assert_eq!(
+        platform.telemetry().metrics.snapshot().counter(
+            qip_observability::metrics::names::OPPORTUNITIES_UNPRICED,
+            &qip_observability::metrics::labels([("reason", "expired_unworked")]),
+        ),
+        waiting.len() as u64,
+        "the unpriced-opportunity counter does not match the lapses captured"
+    );
 
     // The fill and the refusal are on the same chain, each under the order
     // the ledger booked it against.

@@ -1,0 +1,86 @@
+{
+ "lane": "01",
+ "rows": [
+  {
+   "id": "R12-TICK-10121",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "tick_pass derives signed equity-at-cost weights from the platform book (tick_book::book_weights), hands them to TickDesk::set_book, and each round prices every live branch through FutureTree::portfolio_outcomes and journals a PortfolioOutcomeRecord under portfolio-outcomes/. A book naming no modelled instrument is refused with a reason and writes nothing.",
+   "remains": "Counterparty propagation is not built. Weights are at cost because the platform holds no marks. No test drives node::tick_pass end to end; the desk test sets the book directly. The desk is still off in every committed deployment.",
+   "tests": [
+    "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_book_offered_to_the_desk_is_priced_against_every_live_branch_and_journaled"
+   ],
+   "test_command": "cargo test -p qip-deepbrain --test tick_desk",
+   "mutations": [
+    "tick_desk.rs, portfolio_outcomes call disabled: assertion left 0 right 19",
+    "tick_book.rs, weight.abs(): assertion left 0.2 right -0.2",
+    "tick_desk.rs, output prefix portfolio-outcomez: assertion left 0 right 1"
+   ],
+   "commit": "39acf988"
+  },
+  {
+   "id": "R12-TICK-10184",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "replay_subcommand.rs spawns the real qip-edge-node on the simulated feed, waits for a pass marker in its spool, kills it, and runs 'qip-edge-node replay' on that spool: it exits 0 with REPRODUCED over at least one pass, and a different QIP_VENUES is refused.",
+   "remains": "run() still composes no ControlConsumer, so mesh control is not recorded and PassMarker.control is empty on the mesh path. No cell book digest in the marker. The replayed run compared 0 journal entries, so the fill and flag comparison is not exercised by this test. Found: once the drain archives a segment the spool no longer holds it, so a long-running node's spool replays only its newest passes; replay from the archive is the route for older history. GCS still needs enable_cloud_storage.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/replay_subcommand.rs::the_replay_subcommand_reproduces_a_spool_the_running_node_wrote",
+    "backend/crates/apps/qip-edge-node/tests/replay_subcommand.rs::the_replay_subcommand_refuses_a_configuration_the_spool_was_not_recorded_under"
+   ],
+   "test_command": "cargo test -p qip-edge-node --test replay_subcommand",
+   "mutations": [
+    "replay.rs line 705 config_digest != flipped to ==: both tests failed ('replay exited ... 512', 'a different configuration replayed')",
+    "main.rs replay_command is_reproduced test inverted: both tests failed"
+   ],
+   "commit": "bc63da66"
+  },
+  {
+   "id": "R12-TICK-1176",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "plans_of reads a multi-leg plan back from the platform's orders: orders of one proposal on two or more instruments become a MultiLegPlan handed to the tick desk's replay, which replays them as a saga and stops replaying them as independent orders. The leg interval is the mean gap between the legs' creation instants; no decay bound or reservation is stated.",
+   "remains": "A leg's region is the order's kill-switch scope since orders record no region. Replayed plan outcomes are not scored against what the venue did. The desk is still off by default behind the entitlement grant.",
+   "tests": [
+    "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_proposal_that_sent_orders_on_two_instruments_replays_as_one_saga_and_a_single_instrument_proposal_does_not"
+   ],
+   "test_command": "cargo test -p qip-deepbrain --test tick_desk",
+   "mutations": [
+    "tick_desk.rs plans_of, two-instrument guard dropped: assertion left 2 right 1 (slices became a plan)",
+    "tick_desk.rs, set_plans skipped: assertion left 0 right 1 (no plan)"
+   ],
+   "commit": "2f7cf5ca"
+  },
+  {
+   "id": "R12-TICK-1177",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "fusion_clock::order_reactions relates each fused reaction to its event through qip_sequencing::align using the capture-clock uncertainty of the tick the move was read from, and each tick-desk round reports the verdicts in TickRound::reaction_timing; a move inside the clocks' doubt is Unordered.",
+   "remains": "No learned tick embedding exists (R12-TICK-2064). The verdict is reported and does not yet discount the belief update in fuse. The desk is off in every committed deployment; enabling it in gitops with entitlement grants is a protected path and an owner decision. No lake source.",
+   "tests": [
+    "backend/crates/apps/qip-deepbrain/tests/tick_desk.rs::a_reaction_inside_the_capture_clocks_doubt_is_unordered_and_the_same_reaction_on_a_good_clock_is_not"
+   ],
+   "test_command": "cargo test -p qip-deepbrain --test tick_desk",
+   "mutations": [
+    "fusion_clock.rs, move Placed built with zero uncertainty: 'a move inside fifteen seconds of clock doubt was ordered ... lag_uncertainty: 0ns'",
+    "tick_desk.rs, order_reactions call replaced by Vec::new(): 'premise: the event drew a measured reaction ([] / [])'"
+   ],
+   "commit": "49827f34"
+  },
+  {
+   "id": "R12-TICK-2044",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Added Decision::OrderRejected {order_id, venue, object, reason}, written from Cell::send when the gateway errors or its queue is full, classified on P2 in the fabric writer. A venue reject is now a typed journal record.",
+   "remains": "SimulatedGateway::declare_status still has no non-test caller; no default session schedule (open, auction with imbalance, close, breaker) exists. Acknowledgements without a fill have no typed record beyond OrderSent. qip-acceptance was not run.",
+   "tests": [
+    "backend/crates/edge/qip-edge/tests/venue_failure.rs::an_order_the_venue_rejects_is_journaled_as_a_typed_reject_naming_the_order_and_the_venue"
+   ],
+   "test_command": "cargo test -p qip-edge --test venue_failure",
+   "mutations": [
+    "cell.rs Cell::send, rejection filtered to nothing: 'assertion left == right failed: [] left: 0 right: 1'"
+   ],
+   "commit": "59d9196c"
+  }
+ ]
+}

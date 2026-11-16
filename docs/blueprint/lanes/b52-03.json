@@ -1,0 +1,68 @@
+{
+ "lane": "03",
+ "rows": [
+  {
+   "id": "R12-TICK-2070",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "ADR 0606 records the owner's ruling: a deep-brain distillate reaches the issuer only inside its two-person signed pack, and the issuer admits from a verified pack alone. No code written.",
+   "remains": "ModelPack signing_payload field (qip-contracts), qip-cli model-pack taking a journaled ModelPromotion by digest and refusing one with no permitted locations, qip-api/model_trust.rs admission from a verified pack only, the acceptance test and its two mutations. ADR index row is the orchestrator's.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": "2e2f0b80"
+  },
+  {
+   "id": "R12-TICK-2074",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Nothing built. A decision nobody made stops any slice: the capacity probe's time scale (a step derived from measured latency with per-step volatility rescaled) is a design change in platform.rs.",
+   "remains": "Decide the probe time scale (needs an ADR, number 0607 is lane 03's), then rescale per-step volatility and prove a measured millisecond latency moves a fill on the default path.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2077",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "ADR 0148 decisions 1-2 slice: qip_opportunities_unpriced_total{reason} counts opportunities seen and never graded (expired_unworked, no_mechanism, undirected_claim), so an ungradeable miss is a number, not a silence.",
+   "remains": "Only expired_unworked has a test; no_mechanism and undirected_claim are counted but untested. Platform::score_missed over an as-of view and bar-level information sets are not built.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/platform_outcomes.rs::a_fill_a_refused_order_and_an_opportunity_that_lapsed_unworked_each_reach_the_evaluation_input_under_their_own_decision_id"
+   ],
+   "test_command": "cargo test -p qip-kernel --no-fail-fast",
+   "mutations": [
+    "platform.rs capture_unworked, reason label changed to expired_unwork; failed: the unpriced-opportunity counter does not match the lapses captured left: 0 right: 1"
+   ],
+   "commit": "c581e9af"
+  },
+  {
+   "id": "R12-TICK-2080",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Nothing built. Needs an acknowledgement instant on SimulatedBroker fills (qip-brokers, a protected-domain crate needing the compliance_proof/security/paper_boundary run) and a queue term in the twin's CostModel, each calibrated from scored fills; not started in this lane.",
+   "remains": "Acknowledgement instant on fills, queue term in CostModel, calibration of both from scored fills, kernel convergence test; cell fills still calibrate against the twin's mark.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-TICK-2083",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "Found the register's 'beliefs dropped' gap stale: the deep-brain node already hands TickDesk::outside_priors to Platform::set_outside_priors each cycle (ADR 0151), narrowing REASON. Added fusion_to_reason, a recorded world event plus tick trace through fuse() to the confidence the cycle writes.",
+   "remains": "The tick desk is off by default (QIP_DEEPBRAIN_TICK_EVERY set nowhere); enabling it is under infrastructure/environments, a protected path, so NEEDS_PERSON for that clause. No belief store was invented; beliefs stay narrow-only per ADR 0151.",
+   "tests": [
+    "backend/crates/runtime/qip-kernel/tests/fusion_to_reason.rs::a_recorded_event_and_its_tick_reaction_narrow_the_claim_they_contradict_and_not_the_one_they_support"
+   ],
+   "test_command": "cargo test -p qip-kernel --test fusion_to_reason",
+   "mutations": [
+    "fusion.rs outside_priors passes -direction; failed: a reaction for the claim moved its confidence"
+   ],
+   "commit": "aa5efb92"
+  }
+ ]
+}

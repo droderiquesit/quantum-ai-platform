@@ -229,3 +229,44 @@ fn a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance() {
         "a round recorded after acceptance was admitted"
     );
 }
+
+/// R12-MODEL-4022: the kernel's gate reads the trial, but a caller holding
+/// the registry could call `promote` directly and reach production with none.
+/// A card marked `trial_required` is refused by the registry itself.
+#[test]
+fn a_card_that_requires_a_trial_is_refused_by_the_registry_until_it_has_run_one() {
+    use qip_ai::registry::{MIN_TRIAL_ROUNDS, TrialVenue};
+    let mut card = eligible(ModelClass::Generic);
+    card.stage = ModelStage::Validation;
+    card.trial_required = true;
+    let reference = card.reference();
+    let mut registry = ModelRegistry::new();
+    assert!(registry.register(card).is_ok(), "premise: registers");
+    let at = |secs: i64| now().saturating_add(qip_core::Duration::from_secs(secs));
+
+    let untried = registry.promote(&reference, at(100));
+    assert!(
+        untried.is_err_and(|e| e.message().contains("trial")),
+        "a card that requires a trial was promoted with none"
+    );
+    assert_ne!(
+        registry.get(&reference).map(|card| card.stage),
+        Some(ModelStage::Production),
+        "a refused promotion moved the card"
+    );
+
+    for round in 1..i64::from(MIN_TRIAL_ROUNDS) {
+        let _ = registry.record_trial_round(&reference, TrialVenue::Paper, "paper", at(round));
+    }
+    assert!(
+        registry.promote(&reference, at(100)).is_err(),
+        "one round short of the trial was promoted"
+    );
+    let _ = registry.record_trial_round(
+        &reference,
+        TrialVenue::Paper,
+        "paper",
+        at(i64::from(MIN_TRIAL_ROUNDS)),
+    );
+    assert!(registry.promote(&reference, at(100)).is_ok());
+}

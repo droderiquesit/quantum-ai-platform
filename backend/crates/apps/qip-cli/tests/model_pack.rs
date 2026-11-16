@@ -33,6 +33,7 @@ fn draft() -> ModelPack {
             approver: "approver@example.com".to_string(),
             approved_at: Timestamp::from_secs(1_799_000_000),
         },
+        provenance: None,
         inline_model: None,
     }
 }

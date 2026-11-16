@@ -177,6 +177,7 @@ mod tests {
                 approver: approver.to_string(),
                 approved_at: Timestamp::from_secs(1_800_000_000),
             },
+            provenance: None,
             inline_model: None,
         }
     }

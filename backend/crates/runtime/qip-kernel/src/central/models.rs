@@ -298,6 +298,10 @@ pub fn register_fit(
         passed,
     });
 
+    // A fitted candidate reaches production only after a recorded trial, by
+    // whichever door (ADR 0436); the desk's own self-fit path clears this by
+    // setting `self_fitted`, which its shadow stage then gates.
+    card.trial_required = true;
     let reference = card.reference();
     registry.register(card)?;
 

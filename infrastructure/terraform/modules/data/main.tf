@@ -682,6 +682,9 @@ locals {
     "us-east4" = { config = "nam3", default_leader = var.spanner_default_leader }
   }
   spanner_placement = lookup(local.spanner_placements, var.region, null)
+
+  # PROVISIONAL (ADR 0684): the longest retention Spanner admits.
+  spanner_version_retention = "7d"
 }
 
 resource "google_spanner_instance" "global" {
@@ -740,6 +743,15 @@ resource "google_spanner_database" "positions" {
   # leader, which is a choice nobody recorded.
   ddl = local.spanner_placement == null ? [] : [
     "ALTER DATABASE `positions` SET OPTIONS (default_leader = '${local.spanner_placement.default_leader}')",
+    # Point-in-time recovery (R12-LEDGER-8140, ADR 0684). Its own statement,
+    # never folded into the leader statement above: tests/spanner_placement
+    # pins that statement's exact text, and an earlier draft that merged the
+    # two broke those pins. Spanner's default retention is one hour, which is
+    # shorter than a logical corruption takes to be noticed. Seven days is
+    # Spanner's maximum and PROVISIONAL (ADR 0684): no figure was given.
+    # No google_spanner_backup_schedule is declared; scheduled backups are
+    # billed storage and need an approved figure first.
+    "ALTER DATABASE `positions` SET OPTIONS (version_retention_period = '${local.spanner_version_retention}')",
   ]
 
   encryption_config {

@@ -456,3 +456,42 @@ fn the_unbuilt_fabric_objectives_read_unmeasured_whatever_the_registry_holds() {
         );
     }
 }
+
+/// R12-OBS-9164: the three AI objectives beyond freshness and the queue.
+/// Failure prevented: an objective declared with a target and a series that
+/// nothing reads, so it evaluates met on zero observations.
+#[test]
+fn the_ai_objectives_read_unmeasured_until_their_series_is_recorded_and_agent_tool_failure_stays_unmeasured()
+ {
+    use qip_observability::critical_paths::{ai_objectives, evaluate_ai};
+    let metrics = Metrics::new("test");
+    let before = evaluate_ai(&metrics.snapshot());
+    assert_eq!(before.len(), ai_objectives().len());
+    assert!(before.iter().all(|s| !s.is_observed()), "premise");
+
+    metrics.increment(
+        names::CALIBRATION_CHECKS,
+        labels([("outcome", "within")]),
+        3,
+    );
+    metrics.count(names::CALIBRATION_CHECKS, labels([("outcome", "breached")]));
+    metrics.count(
+        names::QUANTUM_CLASSICAL_CHECKS,
+        labels([("outcome", "worse")]),
+    );
+    metrics.increment(
+        names::QUANTUM_CLASSICAL_CHECKS,
+        labels([("outcome", "not_worse")]),
+        3,
+    );
+
+    let after = evaluate_ai(&metrics.snapshot());
+    let calibration = status_of(&after, "calibration-drift");
+    assert_eq!(calibration.observations, 4);
+    assert!((calibration.achieved - 0.75).abs() < 1e-12);
+    assert!(!calibration.is_met);
+    let delta = status_of(&after, "quantum-classical-delta");
+    assert_eq!(delta.observations, 4);
+    assert!((delta.achieved - 0.75).abs() < 1e-12);
+    assert!(!status_of(&after, "agent-tool-failure").is_observed());
+}

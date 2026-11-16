@@ -1,0 +1,21 @@
+{"lane": "19", "rows": [
+{"id": "R12-EXPAND-6023", "outcome": "SLICE", "claims_requirement_met": false,
+ "what": "ResearchRegistry::record now refuses a Null or Supported verdict (only Open is accepted) and record_version is crate-private, so record_concluded, which demands the cited experiments and a benchmark, is the only door for a concluded verdict. Four existing tests that used the old door were moved to record_concluded; none was loosened.",
+ "remains": "ResearchMemory::promote still counts cited episodes without resolving them to held episodes: the kernel LEARN stage (platform.rs, research_lessons tally) cites resolution ids that are not held analyst episodes, so resolving would make every kernel promotion refuse until LEARN is reworked to cite held episodes. The ontology candidate from the sweep still cites a gap, not an evaluation. No skeptic round ran.",
+ "tests": ["backend/crates/libs/qip-agents/tests/expansion_registries.rs::a_concluded_verdict_cannot_enter_the_research_registry_through_the_uncited_door", "backend/crates/libs/qip-agents/src/research.rs::tests::a_version_not_above_the_latest_is_refused"],
+ "test_command": "cargo test -p qip-agents --no-fail-fast && cargo test -p qip-expansion --no-fail-fast && cargo test -p qip-acceptance --test registry_versioning",
+ "mutations": ["research.rs ResearchRegistry::record: disabled the non-Open refusal (if false && ...); failed 'a concluded verdict was recorded with no experiment and no benchmark' at expansion_registries.rs:662; restored, cmp clean"],
+ "commit": "91372307"},
+{"id": "R12-AMBIENT-7146", "outcome": "NOT_BUILT", "claims_requirement_met": false,
+ "what": "Not attempted. Forecast/scenario ambient model types and an autonomous model/strategy lifecycle are a multi-crate build that did not fit this session.",
+ "remains": "Everything in the last reader's note: forecast/scenario ambient models and the lifecycle seam under authority envelopes.", "tests": [], "test_command": "", "mutations": [], "commit": ""},
+{"id": "R12-AMBIENT-9001", "outcome": "NOT_BUILT", "claims_requirement_met": false,
+ "what": "Not attempted. The ADR (lane numbers 0638/0639) was not written, and no BigQuery adapter, agent read path or Fabric ResearchTask publish was built.",
+ "remains": "ADR first, then qip-storage BigQuery REST evidence adapter, qip-agents read path, qip-world-model ResearchTask publish to the Fabric with a delete-the-publish test.", "tests": [], "test_command": "", "mutations": [], "commit": ""},
+{"id": "R12-AMBIENT-9029", "outcome": "NOT_BUILT", "claims_requirement_met": false,
+ "what": "Not attempted.",
+ "remains": "Fabric task/result topics for specialist agents, a knowledge-API seam, multimodal reasoning; each needs an ADR first.", "tests": [], "test_command": "", "mutations": [], "commit": ""},
+{"id": "R12-EXPAND-1021", "outcome": "NOT_BUILT", "claims_requirement_met": false,
+ "what": "Not attempted.",
+ "remains": "A governed-promotion seam that registers a tool in the node's ToolRegistry from a tool gap (evaluation, implementation, registry lifecycle) across qip-agents and qip-deepbrain; brains and model families from gaps.", "tests": [], "test_command": "", "mutations": [], "commit": ""}
+]}

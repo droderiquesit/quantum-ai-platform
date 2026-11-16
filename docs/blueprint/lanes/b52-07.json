@@ -1,0 +1,73 @@
+{
+ "lane": "07",
+ "rows": [
+  {
+   "id": "R12-FABRIC-10077",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "The node now builds a control.local consumer from its own settings (QIP_FABRIC_CONTROL_TOKEN), under the node's TrustRoot, and main spawns it and feeds its handoff to the decision loop. A real broker over HTTP carries a controller-published signed grant onto the P0 stream and the cell applies it from there; a forged grant is refused.",
+   "remains": "The start barrier is not awaited by the scheduler and refusals are not drained into the pass marker. No deployment sets the control token (protected paths). The owner ruling on ADR 0128 decision 2 and CellStateDelta incremental loss are untouched. Only the shared-key and bundle root are covered, in tests the shared key only.",
+   "tests": [
+    "backend/crates/apps/qip-edge-node/tests/event_fabric_control_wiring.rs::a_grant_published_to_the_p0_control_stream_is_consumed_by_the_cell_from_there",
+    "backend/crates/apps/qip-edge-node/tests/event_fabric_control_wiring.rs::a_grant_on_the_stream_signed_under_another_key_never_reaches_the_cell",
+    "backend/crates/apps/qip-edge-node/tests/event_fabric_control_wiring.rs::a_cell_with_no_control_token_reads_no_control"
+   ],
+   "test_command": "cargo test -p qip-edge-node --test event_fabric_control_wiring",
+   "mutations": [
+    "control.rs ControlWiring::spawn, trust key swapped to another key: grant test fails at event_fabric_control_wiring.rs:361 (applied.len)",
+    "same, trust key = the forged key: forged test fails at :401",
+    "outbox.rs control_consumer no-token arm returns Err: no-token test fails at the unwrap"
+   ],
+   "commit": "edd2b7a5"
+  },
+  {
+   "id": "R12-FABRIC-10161",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted: the row is a phase of deliverables (3-broker RF3 deployment, GCS archive, OTel, chaos exit test) that needs Terraform and deploy work outside a lane.",
+   "remains": "Everything the register gap lists.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-FABRIC-7034",
+   "outcome": "SLICE",
+   "claims_requirement_met": false,
+   "what": "retain_hot now also removes archived local segments sealed longer ago than a span class's retention (EventAnchored Rolling 90d, FallbackSeries For), using the seal's sealed_at, so no new cross-crate seam was needed. The archive-and-index guard still holds age back until archival.",
+   "remains": "qip-fabricd calls retain_hot only when QIP_EVENT_FABRIC_HOT_BATCHES is set and no deployment sets it (protected paths), so nothing is trimmed in a deployment. The For(..) span is judged against the broker clock, not the newest observation, which only keeps more.",
+   "tests": [
+    "backend/crates/services/qip-streaming/tests/event_fabric_retention.rs::a_time_bounded_stream_drops_sealed_segments_older_than_its_retention"
+   ],
+   "test_command": "cargo test -p qip-streaming --test event_fabric_retention",
+   "mutations": [
+    "broker.rs age_limit returns None for Rolling/For: fails 'left: 0' at the six-segment assertion",
+    "broker.rs age comparison flipped: same failure"
+   ],
+   "commit": "c04f5417"
+  },
+  {
+   "id": "R12-FABRIC-7057",
+   "outcome": "NOT_BUILT",
+   "claims_requirement_met": false,
+   "what": "Not attempted: needs the ADR 0119 async mirror consumer, a StreamPolicy change to allow mirroring, a link-cut non-blocking-produce test and a second region to deploy into; too large for this lane beside the other rows.",
+   "remains": "All of it.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  },
+  {
+   "id": "R12-FABRIC-7060",
+   "outcome": "NEEDS_PERSON",
+   "claims_requirement_met": false,
+   "what": "No code: the size bound and digest-shape check need a wire decision that migrates pinned digests ADR 0149 decision 17 keeps byte-identical. ADR 0614 is written as Proposed with the decision and its consequences.",
+   "remains": "Owner ruling on ADR 0614, MAX_MANIFEST_BYTES (a figure no lane may choose: NEEDS_FIGURE), then the shared digest function, checked decode and migration; plus the announcement producer/consumer and package fetch path.",
+   "tests": [],
+   "test_command": "",
+   "mutations": [],
+   "commit": ""
+  }
+ ]
+}

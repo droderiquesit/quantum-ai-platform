@@ -1415,6 +1415,7 @@ fn sent(order: &str, quantity: u64, simulated: bool) -> Decision {
         equalised: false,
         grants: Vec::new(),
         grounds: Vec::new(),
+        cycle_id: None,
     }
 }
 
@@ -1913,4 +1914,92 @@ fn an_export_verifies_against_the_replayed_history_and_a_tampered_or_stale_one_i
     let mut stale = exported.clone();
     stale.chain_records_count -= 1;
     assert!(store.verify_export(&stale).is_err(), "stale count refused");
+}
+
+// --- cycle identity on the register (ADR 0652) -------------------------------
+
+fn leg_of(cycle: &str, order: &str, quantity: u64) -> Decision {
+    match sent(order, quantity, true) {
+        Decision::OrderSent {
+            order_id,
+            venue,
+            quantity,
+            simulated,
+            ..
+        } => Decision::OrderSent {
+            order_id,
+            venue,
+            quantity,
+            simulated,
+            release_at: None,
+            equalised: false,
+            grants: Vec::new(),
+            grounds: Vec::new(),
+            cycle_id: Some(cycle.to_string()),
+        },
+        _ => unreachable!("sent builds an OrderSent"),
+    }
+}
+
+#[test]
+fn the_register_groups_a_cycles_legs_and_judges_each_cycle_by_what_filled() {
+    // The failure this prevents: R12-LEDGER-10114's multi-region cycle was
+    // two unrelated orders to the ledger, so a cycle that filled one leg and
+    // lost the other raised nothing. Mutation verified: dropping the
+    // `cycle_id` copy in `register_move` leaves every cycle unfound (the
+    // premise assert fails); making `evaluate` skip its `Partial` arm reads
+    // c2 as `Failed`; ignoring `Open` reads c4 as `Failed`.
+    use qip_ledgerd::cycles::CycleVerdict;
+    let dir = temp_dir("cycles");
+    let (store, _) = open(&dir);
+    let mut j = Journal::new("cell-a", 1);
+    let mut offset = 0;
+    let mut deliver = |record: P1Record| {
+        store.apply(&at(offset, &record)).expect("apply");
+        offset += 1;
+    };
+    let expire = |order: &str| Decision::OrderExpired {
+        order_id: order.to_string(),
+        venue: VENUE.to_string(),
+        withdrawn: "ok".to_string(),
+    };
+    // c1: both legs fill. c2: one fills, one expires. c3: both expire.
+    // c4: one leg sent and still open.
+    for (cycle, legs) in [
+        ("c1", ["c1-a", "c1-b"]),
+        ("c2", ["c2-a", "c2-b"]),
+        ("c3", ["c3-a", "c3-b"]),
+    ] {
+        for leg in legs {
+            deliver(j.outcome(leg_of(cycle, leg, 10)));
+        }
+    }
+    deliver(j.outcome(leg_of("c4", "c4-a", 10)));
+    for leg in ["c1-a", "c1-b", "c2-a"] {
+        deliver(j.outcome(fill(leg, 10, "10", BookSide::Ask, true)));
+    }
+    for leg in ["c2-b", "c3-a", "c3-b"] {
+        deliver(j.outcome(expire(leg)));
+    }
+    deliver(j.outcome(sent("lone", 5, true)));
+
+    let cycles = store.cycles().expect("cycles");
+    assert_eq!(
+        cycles.len(),
+        4,
+        "premise: four cycles, and no cycle for `lone`"
+    );
+    let verdict = |id: &str| {
+        cycles
+            .iter()
+            .find(|c| c.cycle_id == id)
+            .unwrap_or_else(|| panic!("no cycle {id}"))
+            .verdict
+    };
+    assert_eq!(verdict("c1"), CycleVerdict::Complete);
+    assert_eq!(verdict("c2"), CycleVerdict::Partial);
+    assert_eq!(verdict("c3"), CycleVerdict::Failed);
+    assert_eq!(verdict("c4"), CycleVerdict::Open);
+    let c2 = cycles.iter().find(|c| c.cycle_id == "c2").unwrap();
+    assert_eq!(c2.orders, vec!["c2-a".to_string(), "c2-b".to_string()]);
 }

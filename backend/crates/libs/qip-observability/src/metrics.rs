@@ -997,6 +997,14 @@ pub mod names {
     /// The degradation table's sizing multiplier currently in force. A cell
     /// sizing at the 0.375 floor is an operator-visible fact.
     pub const EDGE_SIZING_MULTIPLIER: &str = "qip_edge_sizing_multiplier";
+    /// The uncertainty, in seconds, the clock discipline put on the most
+    /// recent tick it normalized, by `venue` and `feed` (R12-TICK-2052). An
+    /// offset nobody bounded is a fake lead/lag signal, so the bound is a
+    /// series an operator can chart and alert on rather than a field found
+    /// only by reading lake lines. Absent until a tick has been normalized,
+    /// and not updated by a tick the discipline refused: a stale bound is
+    /// shown as stale, never replaced by a zero that reads as perfect.
+    pub const EDGE_CLOCK_UNCERTAINTY: &str = "qip_edge_clock_uncertainty";
     /// The sequence of the policy payload this cell has applied, for
     /// correlation against what the central plane believes it published.
     pub const EDGE_POLICY_SEQUENCE: &str = "qip_edge_policy_sequence";
@@ -1106,6 +1114,11 @@ pub mod names {
     /// Declined paths that were due for pricing and left for a later cycle because
     /// the per-cycle cap was reached. Counted rather than silently truncated.
     pub const COUNTERFACTUALS_DEFERRED: &str = "qip_counterfactuals_deferred_total";
+    /// Opportunities the platform saw and could not grade, by `reason`
+    /// (ADR 0148 decision 2): `expired_unworked`, `no_mechanism`,
+    /// `undirected_claim`. Counted, never zeroed: a figure nobody computed
+    /// would read as a miss that cost nothing. The label set is closed.
+    pub const OPPORTUNITIES_UNPRICED: &str = "qip_opportunities_unpriced_total";
     /// Declined paths that will never be priced, by `reason` — the working set was
     /// full, or the twin refused the evaluation. Since the LEARN stage also
     /// prices the orders a venue *filled*, `reason="fill_capacity"` counts a
@@ -1576,4 +1589,13 @@ pub mod names {
     /// Each sweep's reading of the research queue's depth against the
     /// queue-depth objective's ceiling, by outcome (`within`, `over`).
     pub const RESEARCH_QUEUE_CHECKS: &str = "qip_research_queue_checks_total";
+    /// Each cycle's reading of a horizon's calibration against the
+    /// calibration objective's Brier bound, by outcome (`within`,
+    /// `breached`). Counted only once the horizon has enough resolutions to
+    /// be judged, so an unjudged horizon adds nothing (R12-OBS-9164).
+    pub const CALIBRATION_CHECKS: &str = "qip_calibration_checks_total";
+    /// Each quantum answer that was judged and ran, read against the
+    /// classical baseline the router always solves (ADR 0006), by outcome
+    /// (`not_worse`, `worse`) (R12-OBS-9164).
+    pub const QUANTUM_CLASSICAL_CHECKS: &str = "qip_quantum_classical_checks_total";
 }

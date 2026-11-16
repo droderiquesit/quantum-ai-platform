@@ -605,6 +605,15 @@ impl EvolutionEngine {
         cycle: u64,
         now: Timestamp,
     ) -> (Option<crate::source_alpha::SourceAlphaRound>, Result<()>) {
+        // What LEARN last attributed to each source's decisions goes to the
+        // desk before it scores, so the round carries it (R12-DATA-2025).
+        // A grouping that cannot be built leaves the previous figures.
+        if let (Some(desk), Some(pass)) = (self.source_alpha.as_mut(), platform.last_attribution())
+            && let Ok(figures) =
+                qip_kernel::source_decision_attribution::decision_contributions(pass)
+        {
+            desk.observe_decisions(figures);
+        }
         let round = self
             .source_alpha
             .as_mut()
@@ -4334,6 +4343,99 @@ mod tests {
                 .is_some(),
             "the withdrawn extent is not marked on the platform's ledger"
         );
+        Ok(())
+    }
+
+    /// R12-DATA-1037, the revised half: an extent the source has rewritten
+    /// since it was referenced is recorded the moment a re-fetch finds it —
+    /// on the log, on the metric and on the ledger, where the newer
+    /// reference replaces the old — and not at whatever later poll happens
+    /// to cover the same extent. Until this was driven through the arm, a
+    /// `Revised` finding was returned to the caller and nothing else moved,
+    /// so a research campaign that had read the old bytes stayed unflagged.
+    ///
+    /// The unchanged re-fetch in the same test is the premise that keeps the
+    /// assertions from passing on a recorder that records everything.
+    ///
+    /// Mutated by deleting the `platform.record_reference(revised, at)?`
+    /// call in `ConnectorArm::refetch`: the revision-detected log count stays
+    /// 0 and the first assertion after the revised pass fails; restored.
+    #[test]
+    fn a_re_fetch_that_finds_a_revised_extent_records_the_revision_at_once() -> Result<()> {
+        use qip_data_finder::reference::RevisionCheck;
+        use qip_events::Topic;
+        use qip_market_ingestion::connector::emulator::RecordedAnswer;
+        let now = start().saturating_add(Duration::from_mins(1));
+        let ok = || RecordedAnswer::json(200, ticker_body(now));
+        let rewritten = RecordedAnswer::json(200, ticker_body(now).replace("64230.99", "64999.99"))
+            .with_etag("v2");
+        assert_ne!(
+            ticker_body(now),
+            ticker_body(now).replace("64230.99", "64999.99"),
+            "premise: the rewritten body differs"
+        );
+        let mut platform = platform()?;
+        let mut engine = engine(0)
+            .with_connector(scripted_coinbase_arm(
+                now,
+                vec![ok(), ok(), ok(), rewritten],
+            )?)
+            .with_refetch(1);
+        engine.sense(&mut platform, now)?;
+        let original = platform
+            .reference_ledger()
+            .references()
+            .next()
+            .cloned()
+            .ok_or_else(|| Error::not_found("premise: the poll was referenced"))?;
+        let revisions = |platform: &Platform| {
+            platform
+                .event_log()
+                .by_topic(Topic::SourceRevisionDetected)
+                .len()
+        };
+        assert_eq!(revisions(&platform), 0, "premise: nothing revised yet");
+
+        let later = now.saturating_add(Duration::from_hours(1));
+        let same = engine
+            .maybe_refetch(&mut platform, 1, later)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert_eq!(same[0].check, Some(RevisionCheck::Unchanged));
+        assert_eq!(
+            revisions(&platform),
+            0,
+            "an unchanged re-fetch recorded a revision"
+        );
+
+        let latest = later.saturating_add(Duration::from_hours(1));
+        let found = engine
+            .maybe_refetch(&mut platform, 1, latest)?
+            .ok_or_else(|| Error::not_found("no pass on the cadence"))?;
+        assert!(
+            matches!(&found[0].check, Some(RevisionCheck::Revised { .. })),
+            "premise: the re-fetch saw the rewrite: {found:?}"
+        );
+        assert_eq!(
+            revisions(&platform),
+            1,
+            "a revised extent found by a re-fetch was not recorded on the log"
+        );
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                qip_observability::metrics::names::DATA_REVISIONS_DETECTED,
+                &qip_observability::metrics::labels([("origin", original.origin().as_str())]),
+            ),
+            1,
+            "the revision is not counted"
+        );
+        let held = platform
+            .reference_ledger()
+            .references()
+            .find(|reference| reference.locator() == original.locator())
+            .ok_or_else(|| Error::not_found("the extent left the ledger"))?;
+        assert_ne!(held.content_hash(), original.content_hash());
+        assert_eq!(held.retrieved_at(), latest);
+        assert_eq!(held.etag(), Some("v2"));
         Ok(())
     }
 
