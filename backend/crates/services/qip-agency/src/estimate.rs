@@ -24,7 +24,7 @@
 //! All figures are statistics, so `f64`.
 
 use crate::attribution::{EffectAttribution, Identification};
-use crate::causal::StructuralModel;
+use crate::causal::{StructuralModel, StructuralModelDecl};
 use qip_core::{Error, sha256_hex};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1035,6 +1035,31 @@ pub enum EstimateInput {
         x: Vec<f64>,
         y: Vec<f64>,
     },
+    /// R12-MODEL-4013: an effect adjusted for a declared set and checked
+    /// against a declared structural model's graph ([`backdoor_adjusted`]).
+    /// A design that leaves a back-door path open, or adjusts for a
+    /// descendant of the treatment, abstains: the document is refused with
+    /// the reason and no widening follows.
+    ///
+    /// `segments` maps a segment name (an entity group, audience, market or
+    /// horizon, as the operator's data names it) to the row indices of the
+    /// units in it. With segments present, `segment` names the one whose
+    /// estimate is this evidence, and [`backdoor_adjusted_by_segment`]
+    /// estimates every segment first, so a design that fails for any of them
+    /// widens nothing. Without segments, `segment` must be absent.
+    BackdoorAdjusted {
+        model: StructuralModelDecl,
+        treatment_variable: String,
+        outcome_variable: String,
+        covariates: BTreeMap<String, Vec<f64>>,
+        treatment: Vec<f64>,
+        outcome: Vec<f64>,
+        prior_sd: f64,
+        #[serde(default)]
+        segments: BTreeMap<String, Vec<usize>>,
+        #[serde(default)]
+        segment: Option<String>,
+    },
 }
 
 impl EstimateInput {
@@ -1098,6 +1123,54 @@ impl EstimateInput {
                 outcome,
             } => instrumental_variable(instrument, treatment, outcome),
             Self::Correlation { x, y } => correlation(x, y),
+            Self::BackdoorAdjusted {
+                model,
+                treatment_variable,
+                outcome_variable,
+                covariates,
+                treatment,
+                outcome,
+                prior_sd,
+                segments,
+                segment,
+            } => {
+                let model = StructuralModel::new(model.clone())?;
+                if segments.is_empty() {
+                    if let Some(name) = segment {
+                        return Err(Error::invalid(format!(
+                            "segment `{name}` is named and the document declares no segments"
+                        )));
+                    }
+                    return backdoor_adjusted(
+                        &model,
+                        treatment_variable,
+                        outcome_variable,
+                        covariates,
+                        treatment,
+                        outcome,
+                        *prior_sd,
+                    );
+                }
+                let Some(name) = segment else {
+                    return Err(Error::invalid(
+                        "the document declares segments and names none as the evidence; a pooled \
+                         figure would hide the segment where the action does harm",
+                    ));
+                };
+                let mut estimates = backdoor_adjusted_by_segment(
+                    &model,
+                    treatment_variable,
+                    outcome_variable,
+                    covariates,
+                    treatment,
+                    outcome,
+                    *prior_sd,
+                    segments,
+                )?;
+                estimates.remove(name).ok_or_else(|| {
+                    Error::invalid(format!("segment `{name}` is not one the document declares"))
+                })
+            }
         }
     }
 }
