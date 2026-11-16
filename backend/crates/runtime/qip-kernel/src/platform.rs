@@ -536,6 +536,8 @@ pub struct Platform {
     /// family and the refutations they produced. Held across cycles because a
     /// budget that reset every cycle would be a budget of one.
     falsification: crate::falsification::Book,
+    /// Sequence of the last mismatch-proposal journal entry (ADR 0609).
+    mismatch_proposal_sequence: u64,
     /// Resolved episodes, for precedent (blueprint §10): what this platform
     /// reasoned in situations like the one in front of it, and what
     /// followed. Bounded by the memory's own capacity, and readable only
@@ -1030,6 +1032,12 @@ pub struct Platform {
     /// assembly like `asset_classes`; the release loop asks it which
     /// permission an order needs.
     derivative_types: BTreeMap<String, InstrumentType>,
+    /// Event contracts in the universe (ADR 0658), for the funding and
+    /// one-unit refusals in `event_contract_gate`.
+    pub(crate) event_contract_ids: std::collections::BTreeSet<String>,
+    /// Event-contract orders `order_for` admitted and nothing has submitted
+    /// yet, so a second admission in the pass sees what the first claimed.
+    pub(crate) pending_event_orders: BTreeMap<String, crate::event_contract_gate::Reservation>,
     /// The smallest tradable unit of every instrument — lot size times
     /// contract multiplier — taken from the universe at assembly like
     /// `asset_classes`. What the symbolic rule pack prices one lot with
@@ -6282,6 +6290,7 @@ impl Platform {
                 Some((object.object_id.as_str().to_string(), expiry))
             })
             .collect();
+        let event_contract_ids = crate::event_contract_gate::event_contract_ids(&universe);
         let derivative_types: BTreeMap<String, InstrumentType> = universe
             .iter()
             .filter(|object| object.instrument_type.is_derivative())
@@ -6819,6 +6828,8 @@ impl Platform {
         // resumed proposal is re-validated against the real rule it names.
         let (open_proposals, closed_proposals) = Self::resume_open_proposals(&event_log, &limits)?;
         let replay_divergence_resumed = crate::replay_divergence::resume(&event_log)?;
+        let (falsification_resumed, mismatch_sequence_resumed) =
+            crate::mismatch::resume(&event_log)?;
         let microstructure_model_resumed = crate::microstructure_model::resume(&event_log)?;
         let fill_bias_installations_resumed = crate::fill_bias_installation::resume(&event_log)?;
         let routing_reputation_resumed = crate::routing_score::resume_book(&event_log)?;
@@ -6858,7 +6869,8 @@ impl Platform {
             confirmations: Confirmations::exactly(config.chain_confirmations),
             bridges: BridgeLedger::new(),
             predictions: Vec::new(),
-            falsification: crate::falsification::Book::new(),
+            falsification: falsification_resumed,
+            mismatch_proposal_sequence: mismatch_sequence_resumed,
             evaluations: Vec::new(),
             last_calibration: None,
             self_model,
@@ -6963,6 +6975,8 @@ impl Platform {
             inherited_through,
             asset_classes,
             derivative_types,
+            event_contract_ids,
+            pending_event_orders: BTreeMap::new(),
             lot_units,
             contract_expiries,
             derivative_permissions: DerivativePermissions::none(),
@@ -14737,6 +14751,9 @@ impl Platform {
         }
         self.reasoned_through = now;
         self.cycle += 1;
+        // A reservation outlives its pass at most: an order abandoned before
+        // submission must not hold an event contract's cash or headroom.
+        self.pending_event_orders.clear();
         // Re-anchor the day before anything in the cycle can move the book.
         // `TrackedCapital::apply_fill` does the same for a fill, but a day on
         // which nothing trades still has to roll: without this, a quiet
@@ -24732,6 +24749,63 @@ impl Platform {
         &self.falsification
     }
 
+    /// Admit the relative-value hypotheses a tick round's mismatches proposed
+    /// (R12-TICK-2084, ADR 0609). Each is charged to the proposal family's
+    /// trial budget by the falsification book, and **every outcome that
+    /// changes the book is journaled**: an admission, an eviction the working
+    /// set's capacity forced, and a refusal because the family's budget was
+    /// spent. The working set is therefore rebuilt from the log
+    /// ([`crate::mismatch::replay`]), not from this process's memory. A
+    /// duplicate changes nothing and writes nothing.
+    pub fn admit_proposed_hypotheses(
+        &mut self,
+        proposals: Vec<crate::mismatch::ProposedHypothesis>,
+        now: Timestamp,
+    ) -> Result<crate::mismatch::MismatchAdmission> {
+        use crate::mismatch::{MismatchProposalJournal, ProposalAction, ProposalOutcome};
+        let mut admission = crate::mismatch::MismatchAdmission::default();
+        for hypothesis in proposals {
+            let outcome = self.falsification.propose(hypothesis.clone())?;
+            let family = crate::mismatch::PROPOSAL_FAMILY.to_string();
+            let mut entries = Vec::new();
+            match outcome {
+                ProposalOutcome::Duplicate => admission.duplicates += 1,
+                ProposalOutcome::BudgetExhausted { spent, budget } => {
+                    admission.refused_on_budget += 1;
+                    entries.push((ProposalAction::RefusedOnBudget, hypothesis, spent, budget));
+                }
+                ProposalOutcome::Admitted {
+                    spent,
+                    budget,
+                    evicted,
+                } => {
+                    admission.admitted += 1;
+                    if let Some(old) = evicted {
+                        admission.evicted += 1;
+                        entries.push((ProposalAction::Evicted, old, spent, budget));
+                    }
+                    entries.push((ProposalAction::Admitted, hypothesis, spent, budget));
+                }
+            }
+            for (action, hypothesis, spent, budget) in entries {
+                self.mismatch_proposal_sequence += 1;
+                self.journal_record(
+                    MismatchProposalJournal {
+                        action,
+                        hypothesis,
+                        family: family.clone(),
+                        spent,
+                        budget,
+                        sequence: self.mismatch_proposal_sequence,
+                    },
+                    crate::mismatch::PROPOSAL_ORIGIN,
+                    now,
+                )?;
+            }
+        }
+        Ok(admission)
+    }
+
     /// What the platform's own series say, for the metrics named.
     ///
     /// The metric is `observable:subject`, as [`Platform::record_prediction`]
@@ -25779,6 +25853,19 @@ impl Platform {
         // built through `order_from` meets the same refusal `order_for` gives
         // before an order exists.
         self.financing_gate(order.object_id.as_str(), order.side, order.quantity, now)?;
+        // ADR 0658: every submission, so an order built through `order_from`
+        // meets the event-contract refusals `order_for` gives.
+        let own = order.order_id.to_string();
+        let admitted = self.event_contract_gate(
+            order.object_id.as_str(),
+            order.side,
+            order.quantity,
+            order.arrival_price,
+            Some(&own),
+        );
+        // Submitted now, so its claim is the OMS's from here on.
+        self.pending_event_orders.remove(&own);
+        admitted?;
         // R12-ASSET-4074: a venue-asset the wallet reconciliation halted is
         // not traded into. Before the pre-trade routing on purpose: the
         // desk's own books disagree with the custodian's about this asset,
@@ -27213,6 +27300,19 @@ impl Platform {
 
     /// Refuse, before an order object exists, a derivative this desk holds no
     /// permission for. Not a derivative, or not in the universe: no claim.
+    /// Units of `object_id` the desk is long; zero when none is held.
+    pub(crate) fn held_quantity(&self, object_id: &str) -> Decimal {
+        self.capital
+            .positions
+            .get(object_id)
+            .map_or(Decimal::ZERO, |lot| lot.quantity)
+    }
+
+    /// Cash the book holds after every fill's notional and costs.
+    pub(crate) fn free_cash(&self) -> Decimal {
+        self.capital.cash
+    }
+
     fn derivative_gate(&self, object_id: &str) -> qip_core::error::Result<()> {
         let Some(instrument_type) = self.derivative_types.get(object_id) else {
             return Ok(());
@@ -27242,8 +27342,13 @@ impl Platform {
         now: Timestamp,
     ) -> qip_core::error::Result<Order> {
         self.derivative_gate(object_id.as_str())?;
+        self.event_contract_gate(object_id.as_str(), side, quantity, price, None)?;
         self.financing_gate(object_id.as_str(), side, quantity, now)?;
-        Ok(self.order_from(
+        let reserved = self
+            .event_contract_ids
+            .contains(object_id.as_str())
+            .then(|| (object_id.as_str().to_string(), quantity * price));
+        let order = self.order_from(
             object_id,
             side,
             quantity,
@@ -27251,7 +27356,19 @@ impl Platform {
             proposal_id,
             hypotheses,
             now,
-        ))
+        );
+        if let Some((object, premium)) = reserved {
+            self.reserve_event_order(
+                order.order_id.to_string(),
+                crate::event_contract_gate::Reservation {
+                    object_id: object,
+                    side,
+                    quantity,
+                    premium,
+                },
+            );
+        }
+        Ok(order)
     }
 
     /// Build an order from a proposal leg, for the ACT stage.

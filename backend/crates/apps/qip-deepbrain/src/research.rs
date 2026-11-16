@@ -1383,6 +1383,27 @@ pub fn sweep_ontology_over(
     Ok(registry)
 }
 
+/// What [`ResearchLoop::admit_mismatch_candidates`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MismatchCandidates {
+    /// Offered to the sweep's ranking; charged only when launched.
+    pub queued: usize,
+    /// Already held as a candidate or a request.
+    pub held: usize,
+    /// Not worth the acquisition cost at its derived value.
+    pub unviable: usize,
+    /// A figure outside `[0, 1]` or a request the contract refused.
+    pub refused: usize,
+    /// Over [`MAX_MISMATCH_CANDIDATES`] pending; counted, not queued.
+    pub dropped: usize,
+}
+
+/// Mismatch candidates that may wait for the next sweep's ranked launch.
+/// **Provisional**: no figure was given; chosen small, in the restrictive
+/// direction, so a noisy tick feed cannot crowd the queue. Drops are counted
+/// ([`ResearchLoop::mismatch_candidates_dropped`]).
+pub const MAX_MISMATCH_CANDIDATES: usize = 16;
+
 /// A launched information request as a scout job: what to find evidence
 /// about, and the rank it was launched at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1802,6 +1823,8 @@ pub struct ResearchLoop {
     /// (`launch_ranked`), which a re-acquisition is charged to (ADR 0158
     /// decision 11).
     acquisition_left_bp: u32,
+    /// Mismatch candidates refused over [`MAX_MISMATCH_CANDIDATES`] (ADR 0609).
+    mismatch_candidates_dropped: u64,
     /// The entities each launched request's gap named, kept so a
     /// re-acquisition scouts the same subjects. Bounded by [`RETAINED`].
     launched_entities: BTreeMap<String, Vec<String>>,
@@ -2041,6 +2064,7 @@ impl ResearchLoop {
             candidates: Vec::new(),
             candidate_entities: BTreeMap::new(),
             acquisition_left_bp: 0,
+            mismatch_candidates_dropped: 0,
             launched_entities: BTreeMap::new(),
             meta: MetaIntelligence::new(MetaPolicy::default())?,
             compiler: CognitiveCompiler::new(CompilerBounds::default())?,
@@ -3675,6 +3699,98 @@ impl ResearchLoop {
             self.candidates.push((request, source));
         }
         Ok(())
+    }
+
+    /// Mismatch candidates refused because the queue was at its bound.
+    pub const fn mismatch_candidates_dropped(&self) -> u64 {
+        self.mismatch_candidates_dropped
+    }
+
+    /// Offer the investigations and evidence challenges a tick round's
+    /// mismatches raised as acquisition candidates (R12-TICK-2084, ADR 0609).
+    ///
+    /// They are candidates, not launches: they join the sweep's ranking and
+    /// are charged to the **same** acquisition budget as every other scout job
+    /// ([`Self::launch_ranked`], ADR 0158 A.1(iv)), so a noisy mismatch feed
+    /// cannot buy discovery effort the budget never covered. Significance and
+    /// uncertainty are derived from the evidence: an investigation's from the
+    /// prior the market contradicted, a challenge's from the quality the
+    /// evidence lacks. A figure outside `[0, 1]` is refused and counted, not
+    /// clamped; one not worth the acquisition cost at its derived value is
+    /// left out by `cheapest_viable`, as for a decision uncertainty.
+    pub fn admit_mismatch_candidates(
+        &mut self,
+        questions: &[qip_kernel::mismatch::ResearchQuestion],
+        challenges: &[qip_kernel::mismatch::EvidenceChallenge],
+        now: Timestamp,
+    ) -> MismatchCandidates {
+        let acquisition_bp =
+            u32::try_from(declared_cost(task_kind(GapClass::Data)).raw() / Decimal::ONE.raw())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(1_000)
+                .min(qip_contracts::ambient::MAX_SEVERITY_BP);
+        let deadline = now.saturating_add(self.config.signal_ttl);
+        let mut out = MismatchCandidates::default();
+        let offers: Vec<(String, String, f64, Vec<String>)> = questions
+            .iter()
+            .map(|q| {
+                (
+                    format!("mismatch-investigation:{}:{}", q.event, q.instrument),
+                    q.reason.clone(),
+                    q.prior,
+                    vec![q.instrument.clone()],
+                )
+            })
+            .chain(challenges.iter().map(|c| {
+                (
+                    format!("mismatch-challenge:{}", c.event),
+                    format!("a better source for {}: {}", c.event, c.reason),
+                    1.0 - c.evidence_quality,
+                    c.instruments.clone(),
+                )
+            }))
+            .collect();
+        for (id, question, figure, entities) in offers {
+            let held = self.info_requests.iter().any(|r| r.id() == id)
+                || self.candidates.iter().any(|(r, _)| r.id() == id);
+            if held {
+                out.held += 1;
+                continue;
+            }
+            // Bounded: candidates are cleared only when a sweep launches, so
+            // a tick feed that mismatches every round would otherwise grow the
+            // queue between sweeps without limit. A candidate over the bound
+            // is counted, not silently lost.
+            let pending = self
+                .candidates
+                .iter()
+                .filter(|(r, _)| r.id().starts_with("mismatch-"))
+                .count();
+            if pending >= MAX_MISMATCH_CANDIDATES {
+                out.dropped += 1;
+                self.mismatch_candidates_dropped += 1;
+                continue;
+            }
+            let Ok(bp) = basis_points(figure) else {
+                out.refused += 1;
+                continue;
+            };
+            let urgency = urgency_bp(now, deadline, self.config.signal_ttl);
+            let Some((source, criteria)) = cheapest_viable(bp, bp, urgency, false, acquisition_bp)
+            else {
+                out.unviable += 1;
+                continue;
+            };
+            let Ok(request) = InfoRequest::new(id.clone(), question, criteria, deadline, now)
+            else {
+                out.refused += 1;
+                continue;
+            };
+            self.candidate_entities.insert(id, entities);
+            self.candidates.push((request, source));
+            out.queued += 1;
+        }
+        out
     }
 
     /// Compile the started items into the sweep's plan (R12-REASON-3061). A
@@ -5842,6 +5958,91 @@ mod tests {
         assert_eq!(raised.len(), 2, "premise: both gates repeat: {raised:?}");
         assert_eq!(value_of("tight-gate"), Some(Decimal::from_int(150)));
         assert_eq!(value_of("idle-gate"), Some(Decimal::ZERO));
+    }
+
+    /// R12-TICK-2084: the queue of mismatch candidates is bounded and counts
+    /// what it refuses. Mutation: delete the `pending >= MAX_MISMATCH_CANDIDATES`
+    /// check — all 20 are queued and the dropped count is 0.
+    #[test]
+    fn the_mismatch_candidate_queue_is_bounded_and_counts_what_it_refuses() {
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let at = Timestamp::from_secs(1_800_000_000);
+        let challenges: Vec<_> = (0..MAX_MISMATCH_CANDIDATES + 4)
+            .map(|n| qip_kernel::mismatch::EvidenceChallenge {
+                event: format!("evt-{n}"),
+                evidence_quality: 0.05,
+                reason: "weak".to_string(),
+                instruments: vec![format!("inst-{n}")],
+            })
+            .collect();
+        let offered = research.admit_mismatch_candidates(&[], &challenges, at);
+        assert_eq!(
+            offered.queued, MAX_MISMATCH_CANDIDATES,
+            "premise: the first {MAX_MISMATCH_CANDIDATES} are viable: {offered:?}"
+        );
+        assert_eq!(offered.dropped, 4, "{offered:?}");
+        assert_eq!(research.mismatch_candidates_dropped(), 4);
+        assert_eq!(research.candidates.len(), MAX_MISMATCH_CANDIDATES);
+    }
+
+    /// R12-TICK-2084, ADR 0609: the scout jobs a mismatch raises are charged
+    /// to the same acquisition budget every other scout job is (ADR 0158
+    /// A.1(iv)): with budget for one, the weaker challenge is outranked and
+    /// launches nothing, and the budget left falls by the launched one's cost.
+    /// Mutation: have `admit_mismatch_candidates` push straight onto
+    /// `round.scouted` instead of `self.candidates` — the outranked
+    /// challenge is scouted and `info_outranked` stays 0.
+    #[test]
+    fn a_mismatch_scout_job_is_charged_to_the_acquisition_budget() {
+        let cost =
+            u32::try_from(declared_cost(task_kind(GapClass::Data)).raw() / Decimal::ONE.raw())
+                .unwrap_or(u32::MAX)
+                .saturating_mul(1_000)
+                .min(qip_contracts::ambient::MAX_SEVERITY_BP);
+        let config = ResearchConfig {
+            acquisition_budget_bp: cost + cost / 2,
+            ..ResearchConfig::default()
+        };
+        let mut research = ResearchLoop::new(config, BTreeMap::new()).expect("assembles");
+        let at = Timestamp::from_secs(1_800_000_000);
+        let challenge = |event: &str, quality: f64| qip_kernel::mismatch::EvidenceChallenge {
+            event: event.to_string(),
+            evidence_quality: quality,
+            reason: "weak".to_string(),
+            instruments: vec![format!("inst-{event}")],
+        };
+        let offered = research.admit_mismatch_candidates(
+            &[],
+            &[challenge("weak", 0.05), challenge("less-weak", 0.30)],
+            at,
+        );
+        assert_eq!(
+            offered.queued, 2,
+            "premise: both challenges are worth offering at cost {cost}: {offered:?}"
+        );
+        let again = research.admit_mismatch_candidates(&[], &[challenge("weak", 0.05)], at);
+        assert_eq!(again.held, 1, "a candidate was offered twice");
+        let mut round = ResearchRound::default();
+        research
+            .launch_ranked(&Metrics::new("test"), &mut round)
+            .expect("launches");
+        let scouted: Vec<&str> = round
+            .scouted
+            .iter()
+            .map(|s| s.request_id.as_str())
+            .collect();
+        assert_eq!(scouted, ["mismatch-challenge:weak"], "{round:?}");
+        assert_eq!(
+            round.info_outranked, 1,
+            "the weaker challenge was not outranked"
+        );
+        assert_eq!(
+            research.acquisition_left_bp,
+            cost / 2,
+            "the launch was not charged"
+        );
+        assert_eq!(round.scouted[0].entities, ["inst-weak"]);
     }
 
     /// Every launched request becomes a scout job on the round, in rank

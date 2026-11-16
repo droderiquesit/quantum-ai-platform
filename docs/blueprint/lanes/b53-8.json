@@ -1,0 +1,149 @@
+{
+ "lane": "b53-8",
+ "rows": [
+  {
+   "id": "R12-WORLD-3086",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "options, company specialists and hedge-demand output exist",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "outputs promoted only to Strategy/Capital/Risk (admission refusal)",
+     "code": "backend/crates/services/qip-world-model/src/lattice.rs::Horizon::promotion_target",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs (lattice run)",
+     "test": "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_model_aimed_anywhere_but_its_horizons_promotion_target_is_refused_at_admission"
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Admission clause and the catalyst wiring exist (signals_from_world is called at platform.rs ~16234; the register gap saying otherwise is stale). Not closable here: options and hedge-demand specialists need an options-chain/positioning source and company specialists need company data; I found no such source feeding the world model (grep only), and the data rules require the licensing posture be evaluated before a source is used, so this is a vendor/licence clause. Also nothing downstream consumes PromotionTarget. No slice built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-WORLD-3088",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "capital-cycle, policy, technology, geopolitical scenarios and twin-driven structural scenarios",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "quarters-years promoted only to Strategic allocation/research (admission refusal)",
+     "code": "backend/crates/services/qip-world-model/src/lattice.rs::Horizon::promotion_target",
+     "caller": "backend/crates/runtime/qip-kernel/src/lattice_stage.rs::signals_from_world",
+     "test": "backend/crates/services/qip-world-model/tests/forecast_lattice.rs::a_retired_structural_claim_narrows_the_quarters_row"
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Scenario generation for policy/technology/geopolitics needs a structural model and data source nobody has specified or licensed; twins are tick-desk only by standing decision (ADR 0151). Needs an owner design ruling and ADR, not a code slice. Wiring clause is done (ADR 0632). No slice built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-COVERAGE-7190",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "every constituent obligation COMPLETE",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "acceptance suite proves the composite",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Constituents R12-AGENCY-1065, 1069 (sentence-level citation binding, declined by ADR 0146 decision 5) and 7027 (causal simulation, held by ADR 0417/0145) are PARTIAL on owner-held decisions; R12-AGENCY-6105 is COMPLETE. A composite suite cannot make the aggregate COMPLETE while they are PARTIAL, and building one would be a slice.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EVID-1200",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [
+    {
+     "clause": "global scout stage runs ahead of evidence",
+     "code": "",
+     "caller": "",
+     "test": ""
+    },
+    {
+     "clause": "failing record refused by name, never reaches world model",
+     "code": "backend/crates/runtime/qip-kernel/src/evidence_intake.rs::Platform::admit_world_records",
+     "caller": "backend/crates/apps/qip-fastbrain/src/node.rs::step_with",
+     "test": "backend/crates/runtime/qip-kernel/tests/evidence_intake.rs::a_record_the_world_fabric_withholds_is_refused_by_its_claim_with_the_fabrics_reason"
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Scout is ADR 0144's Cloud Run job, bucket, identity and egress route (deployment/cloud resource, Terraform). Gap (4), a committed environment configuring a connector, needs infrastructure/environments/** (protected). Gap (1) (public Platform::observe, unclaimed records, replay/demo adapters) is not claimed closable without the scout stage. Refusal-by-name clause already holds; not re-run this lane.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-6035",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [
+    {
+     "clause": "ResearchCampaign/ExperimentPack produced, validated, with lineage",
+     "code": "backend/crates/services/qip-expansion/src/executor.rs::CampaignResult::experiment_pack",
+     "caller": "backend/crates/apps/qip-deepbrain/src/research.rs::sweep_over",
+     "test": "backend/crates/services/qip-expansion/tests/loop.rs::a_campaign_produces_a_validated_experiment_pack_with_its_backtest_result"
+    },
+    {
+     "clause": "agents write experiments, build features, inspect failures, propose strategies or models beyond the fill-bias campaign",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Record clause exists. Remaining clause needs an owner decision on which further campaign kinds exist and how a strategy/model proposal is authorised; inventing campaign kinds would be a slice. No code built.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-6066",
+   "outcome": "NEEDS_FIGURE",
+   "clauses": [
+    {
+     "clause": "reconciliation breaks become one gap naming origin",
+     "code": "backend/crates/services/qip-expansion/src/detectors.rs::reconciliation_breaks",
+     "caller": "backend/crates/apps/qip-deepbrain/src/research.rs (sweep)",
+     "test": "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs::a_cell_halted_by_two_reconciliation_breaks_yields_one_execution_item_naming_both_records"
+    },
+    {
+     "clause": "failed sagas become one gap naming origin",
+     "code": "backend/crates/services/qip-expansion/src/detectors.rs::failed_sagas",
+     "caller": "backend/crates/apps/qip-deepbrain/src/research.rs:2758 saga_outcome_records",
+     "test": "backend/crates/apps/qip-deepbrain/tests/evidence_gaps.rs (saga test, record_saga_outcome)"
+    },
+    {
+     "clause": "adverse selection becomes a learning objective",
+     "code": "",
+     "caller": "",
+     "test": ""
+    }
+   ],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Saga half is already built (commit 3d9fc5a9; register text stale). Adverse selection needs a markout measurement (mark against the fill some interval later); the interval is a figure nobody has set and ADR 0193 decision 3 / ADR 0151 decision 12 forbid a detector on a guessed one. NEEDS_FIGURE: the markout interval(s), and the ADR 0193 amendment. Not re-run this lane.",
+   "commit": ""
+  }
+ ]
+}
