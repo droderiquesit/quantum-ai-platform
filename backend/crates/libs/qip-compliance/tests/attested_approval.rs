@@ -93,6 +93,7 @@ fn request() -> CapitalRequest {
         requested_by: "r.mensah".to_string(),
         exposure: None,
         drawdown: None,
+        authority: None,
     }
 }
 
