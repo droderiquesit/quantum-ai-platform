@@ -1,0 +1,56 @@
+{
+  "lane": "b53-3",
+  "rows": [
+    {
+      "id": "R12-MODEL-4025",
+      "outcome": "NEEDS_FIGURE",
+      "clauses": [
+        {"clause": "a model whose drift exceeds its threshold is retired and its predecessor reactivated", "code": "backend/crates/apps/qip-deepbrain/src/learning.rs::roll_back_degraded", "caller": "backend/crates/apps/qip-deepbrain/src/evolution.rs (round: promote then roll back)", "test": "already built and tested before this wave; not re-run here"},
+        {"clause": "a model whose counterfactual performance degrades is held", "code": "none", "caller": "none", "test": "none"}
+      ],
+      "test_command": "not run: no code written",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Holding on counterfactual performance needs (a) a model reference carried by proposal, order and FillScore (platform.rs FillScore has order_id, object_id, venue and no model), several kernel seams, and (b) a figure nobody gave: how much counterfactual shortfall over how many scored fills holds a model. ADR 0392 'What would make this wrong' lists the owner giving a tolerance as still pending. Inventing it is forbidden.",
+      "commit": "none"
+    },
+    {
+      "id": "R12-MODEL-6074",
+      "outcome": "NEEDS_FIGURE",
+      "clauses": [
+        {"clause": "a candidate without a calibrated baseline on record is refused", "code": "backend/crates/runtime/qip-kernel/src/central/models.rs::require_calibrated_baseline", "caller": "qip-kernel central models path", "test": "backend/crates/runtime/qip-kernel/tests/models.rs (pre-existing; not re-run here)"},
+        {"clause": "one miscalibrated under a stressed regime is refused", "code": "none", "caller": "none", "test": "none"}
+      ],
+      "test_command": "not run: no code written",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Needs the tolerance at which a candidate's stressed-regime holdout calibration (bias or conformal coverage against CONFORMAL_ALPHA) counts as miscalibrated. No admitted figure exists: qip_ai::evaluation::expected_calibration_error has no threshold, and ADR 0392 states a calibration tolerance is a figure the owner has not given. Inventing it is forbidden.",
+      "commit": "none"
+    },
+    {
+      "id": "R12-WORLD-1016",
+      "outcome": "PARTIAL",
+      "clauses": [
+        {"clause": "beliefs carry a confidence/interval; contradictory evidence recorded, not overwritten, across world, causal, episodic, semantic and self models", "code": "existing: qip-reasoning-engine contradiction.rs, qip-ai memory/episode.rs, qip-agents memory.rs superseded_outcomes", "caller": "partial", "test": "qip-acceptance uncertainty_records (pre-existing; not re-run here)"}
+      ],
+      "test_command": "not run: no code written",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "Register gap items still open: (1) causal model has no contradiction record; (2) episodic records unreachable without QIP_MESH_CELLS and unjournaled; (3) live semantic lesson never accumulates counter-evidence in the kernel path; (5) self-model Drift windowed, unjournaled, regrade double-count; (6) no uniform uncertainty field across the five kinds; superseded outcomes have no production reader. Five independent seams across five crates plus a journaling decision; one lane cannot carry them to COMPLETE without delivering slices, which the wave forbids. Also the 2026-11-14 drafted tests are not yet mutation-verified.",
+      "commit": "none"
+    },
+    {
+      "id": "R12-WORLD-3034",
+      "outcome": "NEEDS_PERSON",
+      "clauses": [
+        {"clause": "research procedures stored, versioned, retrieved", "code": "backend/crates/libs/qip-agents/src/memory.rs::ResearchMemory::record_procedure", "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::distil_procedure", "test": "backend/crates/libs/qip-agents/tests/memory.rs (pre-existing; not re-run here)"},
+        {"clause": "strategy templates, data adapters, playbooks, remediation patterns kept as procedural memory", "code": "none", "caller": "none", "test": "none"}
+      ],
+      "test_command": "not run: no code written",
+      "result_lines": [],
+      "mutations": [],
+      "remains": "ADR 0444 decision 5 deliberately does not store the four missing kinds because nothing reads memory for them, and ADR 0069 forbids a capability without a consumer. Building storage now would be a function only its own tests call. A person must decide which kind gets a named production consumer first (or supersede decision 5 via a new ADR), plus MAX_PROCEDURES has no supersede path and the chief and non-analyst agents skip build_against.",
+      "commit": "none"
+    }
+  ]
+}
