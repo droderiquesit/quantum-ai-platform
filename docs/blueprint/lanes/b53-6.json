@@ -1,0 +1,113 @@
+{
+ "lane": "b53-6",
+ "rows": [
+  {
+   "id": "R12-EVENT-3015",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. Scenario trees have no production producer: qip_prediction::belief::Development is built only in tests, and the plane's belief is a book-implied distribution, so a tree derived from it would be a one-level tautology. Event probabilities, information arrival (EventMarketPlane::observations) and valuation (fair_values) do exist behind breadth_simulate, and a desk view plus agent could cover them (pattern: PrivateMarketsView and private_markets_feed). Needs a person to decide whether a tree source is required or the clause is withdrawn.",
+   "commit": ""
+  },
+  {
+   "id": "R12-EXPAND-6033",
+   "outcome": "PARTIAL",
+   "clauses": [
+    {
+     "clause": "tail worlds drawn from the cycle seed are MonteCarlo episodes with a seed",
+     "code": "backend/crates/runtime/qip-kernel/src/platform.rs::generated_world_episodes",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::stress_the_book (via stage_simulate)",
+     "test": "backend/crates/runtime/qip-kernel/src/platform.rs::simulate_tests::simulate_journals_its_seeded_worlds_as_monte_carlo_and_both_causal_signs_as_conditional"
+    },
+    {
+     "clause": "capacity probe agent simulation is a seeded MonteCarlo episode",
+     "code": "backend/crates/runtime/qip-kernel/src/platform.rs::capacity_probe_episode",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::stage_simulate",
+     "test": "backend/crates/runtime/qip-kernel/src/platform.rs::simulate_tests::simulate_journals_its_seeded_worlds_as_monte_carlo_and_both_causal_signs_as_conditional"
+    },
+    {
+     "clause": "Conditional arm (both signs of a causal driver) has a test that fails when its push is deleted",
+     "code": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::stress_through_the_graph",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::stage_simulate",
+     "test": "backend/crates/runtime/qip-kernel/src/platform.rs::simulate_tests::simulate_journals_its_seeded_worlds_as_monte_carlo_and_both_causal_signs_as_conditional"
+    }
+   ],
+   "test_command": "cd backend && cargo test --no-fail-fast -p qip-kernel",
+   "result_lines": [
+    "passed=1350 failed=0 across 89 result lines (qip-kernel)",
+    "clippy -p qip-kernel --all-targets -D warnings: Finished, no warnings",
+    "acceptance suites (9) all ok; check-secrets: nothing found"
+   ],
+   "mutations": [
+    "platform.rs stress_the_book: tail episodes replaced by empty iterator; fails 'synthetic-1' assertion",
+    "platform.rs stage_simulate: probe.episode filtered out; fails probe record assertion",
+    "platform.rs stress_through_the_graph: Conditional push removed; fails 'both signs of the one driver's shock: []'",
+    "platform.rs generated_world_episodes: seed None; episode refused, synthetic-1 assertion fails"
+   ],
+   "remains": "LEARN's counterfactual twin scores are not SyntheticEpisodes. The contract (ADR 0149 d18) says a backtester never writes one and the twin replays recorded bars; whether counterfactual worlds count as generated is a decision for a person (NEEDS_PERSON). A decision record 0726 was not written.",
+   "commit": "20ffc7e4"
+  },
+  {
+   "id": "R12-MODEL-4006",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not changed. The check text (interval, regime selection, regime-switch test) is already met; what remains is the statement's 'provide' and 'compact in hot': the blend is deliberately research-lane and not offered for promotion, the provider serves one teacher and the reflex lane a linear distillate. Serving an ensemble is a serving-design and promotion decision, not a code gap.",
+   "commit": ""
+  },
+  {
+   "id": "R12-MODEL-4013",
+   "outcome": "PARTIAL",
+   "clauses": [
+    {
+     "clause": "uplift estimator returns effect with identification status and abstains on a confounded design",
+     "code": "backend/crates/services/qip-agency/src/estimate.rs::EstimateInput::BackdoorAdjusted",
+     "caller": "backend/crates/apps/qip-cli/src/agency.rs::widen (decl.evidence.estimate())",
+     "test": "backend/crates/apps/qip-cli/tests/agency_record.rs::a_back_door_design_widens_only_when_it_identifies_the_effect_and_abstains_on_a_confounded_one"
+    },
+    {
+     "clause": "effect per segment, abstaining for all when unidentified",
+     "code": "backend/crates/services/qip-agency/src/estimate.rs::backdoor_adjusted_by_segment",
+     "caller": "backend/crates/services/qip-agency/src/estimate.rs::EstimateInput::estimate",
+     "test": "backend/crates/apps/qip-cli/tests/agency_record.rs::a_back_door_design_widens_only_when_it_identifies_the_effect_and_abstains_on_a_confounded_one"
+    }
+   ],
+   "test_command": "cd backend && cargo test --no-fail-fast -p qip-agency -p qip-cli",
+   "result_lines": [
+    "39 'test result: ok' lines, no FAILED, qip-agency and qip-cli",
+    "clippy -p qip-agency -p qip-cli --all-targets -D warnings clean",
+    "acceptance suites (9) ok; check-secrets: nothing found"
+   ],
+   "mutations": [
+    "estimate.rs EstimateInput::estimate: pooled arm uses bayesian_causal; fails agency_record.rs abstention premise",
+    "estimate.rs: segment arm returns first segment; fails segment-effect assertion at agency_record.rs:760"
+   ],
+   "remains": "Segments and columns come from the operator's document, as for every estimator; no platform stage produces treatment/outcome data by entity, audience, market or horizon. The 2026-11-14 qip-agency tests (an_uplift_effect_is_estimated_per_segment...) were not re-mutation-verified in this lane.",
+   "commit": "dca1ca79"
+  },
+  {
+   "id": "R12-QUANT-4029",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not built. Two clauses are open: a kernel-cycle slow-provider test needs Platform to accept a provider (platform.rs:6739 hardwires SimulatedProvider; any seam has no production caller since no hosted provider is deployed), and making the boundary a type needs QuantumProvider::solve_qubo sealed or removed from the public trait, an architectural change needing an ADR. quantum_provider_boundary already pins the convention as a scan.",
+   "commit": ""
+  },
+  {
+   "id": "R12-REASON-3012",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Elections and public-policy facts, and a production source of Mechanism::Geopolitical edges, need a data source and licensing evaluation (qip-data-finder posture) that does not exist in the tree; sovereign and currency regimes are the FX analyst's scope. Code cannot supply facts no feed provides.",
+   "commit": ""
+  }
+ ]
+}
