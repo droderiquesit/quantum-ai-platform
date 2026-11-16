@@ -1253,6 +1253,9 @@ pub struct Platform {
     /// The slot the desk's Symbolic Reasoning Brain reads (R12-REASON-3026),
     /// written by `reason_symbolically` from the derivation it journals.
     symbolic_view: Upstream<SymbolicView>,
+    /// The scopes an informative finding covered in the current cycle's
+    /// REASON stage, cleared when REASON starts.
+    scopes_reported: BTreeSet<qip_investment_agents::coverage::Scope>,
     /// The research organisation's episodic and semantic memory, the slot the
     /// desk's `read_research_memory` gate reads (R12-WORLD-3032).
     ///
@@ -7094,6 +7097,7 @@ impl Platform {
             company_view,
             arbitration_view,
             symbolic_view,
+            scopes_reported: BTreeSet::new(),
             research_memory,
             memory_registry: MemoryRegistry::standard(),
             research_lessons: BTreeMap::new(),
@@ -12748,6 +12752,33 @@ impl Platform {
         });
     }
 
+    /// What the organisation reported in the cycle's REASON stage, by scope
+    /// (R12-REASON-3026). Coverage counts what reported, not what was
+    /// constructed (principle 6, "Bill what ran, not what was planned"): a
+    /// scope is covered in a cycle only when an informative finding for it came
+    /// back in that cycle, so an agent removed from the organisation drops its
+    /// scope on a deployed node, which a roster-derived registry could not show.
+    pub fn scopes_reported_this_cycle(&self) -> &BTreeSet<qip_investment_agents::coverage::Scope> {
+        &self.scopes_reported
+    }
+
+    /// Fold `report`'s covered scopes into the cycle's record and publish
+    /// every scope's state as `qip_organisation_scope_covered`, 1 or 0.
+    fn record_scopes_reported(&mut self, report: &qip_investment_agents::OrganisationReport) {
+        self.scopes_reported.extend(report.covered_scopes());
+        for scope in qip_investment_agents::coverage::Scope::ALL {
+            self.telemetry.metrics.gauge(
+                names::ORGANISATION_SCOPE_COVERED,
+                labels([("scope", scope.as_str())]),
+                if self.scopes_reported.contains(&scope) {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
+        }
+    }
+
     /// The symbolic derivation the desk's Symbolic Reasoning Brain reads, as
     /// REASON last wrote it.
     pub fn desk_symbolic_view(&self) -> Reading<'_, SymbolicView> {
@@ -17982,6 +18013,8 @@ impl Platform {
     /// rise on a quiet cycle learns the same fact a day earlier than one who
     /// waits for the next opportunity to be refused eighteen times.
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
+        // Coverage is of this cycle's REASON stage only (R12-REASON-3026).
+        self.scopes_reported.clear();
         let expired = self.expired_manifests(now);
         let roster = self.organisation.roster().len();
         self.telemetry.metrics.gauge(
@@ -18287,7 +18320,8 @@ impl Platform {
             .iter()
             .map(|p| (p.name.clone(), p.version))
             .collect();
-        let report = self.organisation.dispatch(&brief, now, lineage);
+        let mut report = self.organisation.dispatch_panel(&brief, now, lineage);
+        self.record_scopes_reported(&report);
         // What each analyst did with its procedure, read off the findings
         // the panel returned (R12-WORLD-3034): delivered is not reused, and
         // only the finding can say the agent executed the step.
@@ -18422,6 +18456,49 @@ impl Platform {
                     pack: symbolic_pack,
                     infeasible: symbolic_infeasibility,
                 } = self.reason_symbolically(&opportunity, &reasoned, report.is_contested(), now);
+                // The late phase (R12-REASON-3026): the Symbolic Reasoning Brain
+                // restates the derivation just written for THIS hypothesis, so
+                // it runs now and not with the panel, which dispatched before
+                // any derivation existed. Only the late agents run; the
+                // panel's order is unchanged. Its runs are counted and
+                // journaled as the panel's are, and a run the log refuses
+                // loses its finding, because no synthesis may rest on a run
+                // that could not be reproduced from the log.
+                let panel_runs = report.runs.len();
+                let panel_failures = report.failed.len();
+                self.organisation
+                    .dispatch_late(&mut report, &brief, now, lineage);
+                let late_runs: Vec<_> = report.runs[panel_runs..].to_vec();
+                self.telemetry.metrics.increment(
+                    names::AGENT_RUNS,
+                    labels([]),
+                    late_runs.len() as u64,
+                );
+                if report.failed.len() > panel_failures {
+                    self.telemetry.metrics.increment(
+                        names::AGENT_FAILURES,
+                        labels([]),
+                        (report.failed.len() - panel_failures) as u64,
+                    );
+                }
+                for run in &late_runs {
+                    let body = crate::agent_journal::AgentRunJournal {
+                        cycle: self.cycle,
+                        record: run.clone(),
+                    };
+                    if let Err(error) = self.journal_record(body, crate::agent_journal::ORIGIN, now)
+                    {
+                        report
+                            .findings
+                            .retain(|finding| finding.agent_id != run.agent_id);
+                        problems.push(format!(
+                            "agent run {} could not be journaled: {}",
+                            run.run_id,
+                            error.message()
+                        ));
+                    }
+                }
+                self.record_scopes_reported(&report);
                 // ADR 0212: a derivation that contradicts itself is a
                 // conclusion no money may rest on, whatever review said, so
                 // it is demoted here beside the veto and the decision below

@@ -732,6 +732,12 @@ pub mod names {
     // Agents
     pub const AGENT_RUNS: &str = "qip_agent_runs_total";
     pub const AGENT_FAILURES: &str = "qip_agent_failures_total";
+    /// One series per `qip_investment_agents::coverage::Scope`: 1 when a
+    /// finding for that scope was reported in the cycle's REASON stage, 0 when
+    /// none was. Coverage counts what reported, never what was constructed, so
+    /// an agent removed from the organisation reads 0 on a deployed node
+    /// (R12-REASON-3026).
+    pub const ORGANISATION_SCOPE_COVERED: &str = "qip_organisation_scope_covered";
     /// How many of the roster's manifests are past their review interval at
     /// the instant the REASON stage ran — a gauge, because it is a state of
     /// the organisation and not a rate of anything.

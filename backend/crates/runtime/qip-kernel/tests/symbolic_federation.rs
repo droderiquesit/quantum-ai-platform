@@ -2475,3 +2475,120 @@ fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain
     assert!(covered_by(std::slice::from_ref(&finding)).contains(&Scope::SymbolicReasoning));
     Ok(())
 }
+
+/// R12-REASON-3026. The Symbolic Reasoning Brain reports on the derivation of
+/// the hypothesis the cycle just reasoned, in the same pass. The cycle's own
+/// panel report is what its REASON stage journaled, run by run, so the test
+/// reads the journal of a `run_cycle` on `PlatformConfig::default` and asserts
+/// the brain's finding for that cycle names the hypothesis the derivation was
+/// computed for, and that it ran after the panel (its run is the last one).
+///
+/// The failure this guards: the brain was on the panel, which dispatched
+/// before `reason_symbolically` wrote the slot, so the first hypothesis got a
+/// no-data finding and every later one the previous hypothesis's derivation
+/// under the new brief's `as_of`.
+///
+/// Mutation: call `dispatch_late` before `reason_symbolically` in
+/// `reason_about_the_queue` (the old order) -- the finding is a no-data one
+/// and the claim check fails.
+#[test]
+fn the_cycles_own_panel_report_carries_a_symbolic_finding_for_the_hypothesis_just_reasoned()
+-> Result<()> {
+    use qip_agents::finding::FindingStatus;
+    use qip_events::{EventFilter, Topic};
+    use qip_investment_agents::ids;
+    use qip_kernel::agent_journal::AgentRunJournal;
+
+    let mut platform = platform()?;
+    let mut records = bars("AAA", 120);
+    records.extend(bars("BBB", 120));
+    platform.observe(records);
+    for step in 0..2 {
+        platform.run_cycle(start().saturating_add(Duration::from_mins(5 * step)));
+    }
+    let derivations = symbolic_stage::replay(&platform)?;
+    assert!(
+        !derivations.is_empty(),
+        "premise: the cycles formed a hypothesis"
+    );
+    let runs: Vec<AgentRunJournal> = platform
+        .replay_journal(&EventFilter::new().topic(Topic::AgentRunCompleted))?
+        .into_iter()
+        .filter_map(|e| e.decode::<AgentRunJournal>().ok().map(|d| d.body))
+        .collect();
+    for derivation in &derivations {
+        let in_cycle: Vec<&AgentRunJournal> = runs
+            .iter()
+            .filter(|run| run.cycle == derivation.cycle)
+            .collect();
+        let symbolic: Vec<&&AgentRunJournal> = in_cycle
+            .iter()
+            .filter(|run| run.record.agent_id == ids::SYMBOLIC_REASONING)
+            .collect();
+        assert_eq!(
+            symbolic.len(),
+            1,
+            "cycle {} ran the symbolic brain {} time(s)",
+            derivation.cycle,
+            symbolic.len()
+        );
+        let finding = symbolic[0]
+            .record
+            .finding
+            .as_ref()
+            .expect("the brain answered");
+        assert_ne!(finding.status, FindingStatus::NoView, "{}", finding.claim);
+        assert!(
+            finding.claim.contains(&derivation.hypothesis_id),
+            "cycle {}: the finding names a different hypothesis than the one just reasoned: {}",
+            derivation.cycle,
+            finding.claim
+        );
+        assert_eq!(
+            in_cycle.last().map(|run| run.record.agent_id.as_str()),
+            Some(ids::SYMBOLIC_REASONING),
+            "the late phase runs after the panel and the arbiters"
+        );
+    }
+    Ok(())
+}
+
+/// R12-REASON-3026. A scope is covered in a cycle only when a finding for it
+/// was reported in that cycle (principle 6): after a cycle that reasoned, the
+/// platform's record of reported scopes holds symbolic reasoning and the
+/// `qip_organisation_scope_covered` gauge for it reads 1; before any cycle the
+/// record is empty.
+///
+/// Mutation: drop the `record_scopes_reported` call after `dispatch_late`
+/// -- the symbolic scope is missing from the record and the gauge reads 0.
+#[test]
+fn a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported() -> Result<()> {
+    use qip_investment_agents::coverage::Scope;
+    use qip_observability::metrics::names;
+
+    let mut platform = platform()?;
+    assert!(
+        platform.scopes_reported_this_cycle().is_empty(),
+        "premise: nothing reported before a cycle"
+    );
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    assert!(
+        !symbolic_stage::replay(&platform)?.is_empty(),
+        "premise: the cycle formed a hypothesis"
+    );
+    assert!(
+        platform
+            .scopes_reported_this_cycle()
+            .contains(&Scope::SymbolicReasoning)
+    );
+    let snapshot = platform.telemetry().metrics.snapshot();
+    let gauge = |scope: Scope| {
+        snapshot.gauge(
+            names::ORGANISATION_SCOPE_COVERED,
+            &qip_observability::metrics::labels([("scope", scope.as_str())]),
+        )
+    };
+    assert_eq!(gauge(Scope::SymbolicReasoning), Some(1.0));
+    Ok(())
+}

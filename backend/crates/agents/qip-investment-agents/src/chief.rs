@@ -278,6 +278,9 @@ pub struct Organisation {
     /// Agents run after the panel with its findings (ADR 0466). Rostered
     /// like every agent; never run in the first phase.
     arbiters: Vec<Arc<dyn Arbiter>>,
+    /// Agents that run after the kernel's own derivation, not after the panel
+    /// (R12-REASON-3026): see [`Self::dispatch_late`].
+    late: Vec<Arc<dyn Agent>>,
     host: AgentHost,
     audit: AuditTrail,
     /// Monotonic run counter, so run ids are deterministic across a replay.
@@ -326,6 +329,7 @@ impl Organisation {
             roster,
             agents,
             arbiters: Vec::new(),
+            late: Vec::new(),
             host,
             audit: AuditTrail::new(),
             sequence: 0,
@@ -363,6 +367,43 @@ impl Organisation {
         Ok(self)
     }
 
+    /// Add the agents that run after the kernel has derived the hypothesis
+    /// the panel just reasoned about (R12-REASON-3026).
+    ///
+    /// The Symbolic Reasoning Brain restates a derivation that takes the
+    /// panel's own verdict (`is_contested`) as an input, so it cannot sit on
+    /// the panel: dispatched there it read the slot before the derivation was
+    /// written and reported no data on the first hypothesis and the previous
+    /// hypothesis's derivation after it. [`Self::dispatch`] runs these after
+    /// the arbiters for callers that have no derivation to wait for; the
+    /// kernel instead calls [`Self::dispatch_panel`], derives, and then
+    /// [`Self::dispatch_late`]. Refused for an agent the roster does not hold,
+    /// and for one also on the panel or among the arbiters.
+    pub fn with_late_agents(mut self, late: Vec<Arc<dyn Agent>>) -> Result<Self> {
+        for agent in &late {
+            let id = &agent.manifest().id;
+            if self.roster.get(id).is_none() {
+                return Err(qip_core::error::Error::invalid(format!(
+                    "late agent {id} is not on the roster, so its manifest was never reviewed; \
+                     add it to manifests::roster or do not construct it"
+                )));
+            }
+            if self.agents.iter().any(|a| &a.manifest().id == id)
+                || self.arbiters.iter().any(|a| &a.manifest().id == id)
+            {
+                return Err(qip_core::error::Error::invalid(format!(
+                    "{id} is already in another phase; construct it in one phase only"
+                )));
+            }
+        }
+        let capacity = (self.agents.len() + self.arbiters.len() + late.len()).max(1) * 2;
+        if self.backlog.is_empty() && self.backlog.capacity() < capacity {
+            self.backlog = AgentBacklog::new(capacity)?;
+        }
+        self.late = late;
+        Ok(self)
+    }
+
     /// Replace the backlog, for a deployment or a test that wants a bound
     /// other than two entries per agent.
     pub fn with_backlog(mut self, backlog: AgentBacklog) -> Self {
@@ -397,7 +438,8 @@ impl Organisation {
             quantum_backend_available,
         );
         Self::new(manifests::roster(reviewed_at), agents, host, now)?
-            .with_arbiters(standard_arbiters(desk, reviewed_at))
+            .with_arbiters(standard_arbiters(desk.clone(), reviewed_at))?
+            .with_late_agents(standard_late_agents(desk, reviewed_at))
     }
 
     pub fn roster(&self) -> &Roster {
@@ -408,13 +450,13 @@ impl Organisation {
         &self.audit
     }
 
-    /// Every agent the organisation runs, panel and arbiters.
+    /// Every agent the organisation runs: panel, arbiters and late agents.
     pub fn len(&self) -> usize {
-        self.agents.len() + self.arbiters.len()
+        self.agents.len() + self.arbiters.len() + self.late.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.agents.is_empty() && self.arbiters.is_empty()
+        self.agents.is_empty() && self.arbiters.is_empty() && self.late.is_empty()
     }
 
     /// Re-run the governance review, e.g. after time has passed and an
@@ -429,6 +471,20 @@ impl Organisation {
     /// others, because an organisation where one analyst's bug silences the
     /// other seventeen is worse than one where a finding is missing.
     pub fn dispatch(
+        &mut self,
+        brief: &AgentBrief,
+        now: Timestamp,
+        lineage: &Lineage,
+    ) -> OrganisationReport {
+        let mut report = self.dispatch_panel(brief, now, lineage);
+        self.dispatch_late(&mut report, brief, now, lineage);
+        report
+    }
+
+    /// The panel and the arbiters, without the late agents. The kernel calls
+    /// this, derives what the late agents restate, and then calls
+    /// [`Self::dispatch_late`] on the same report.
+    pub fn dispatch_panel(
         &mut self,
         brief: &AgentBrief,
         now: Timestamp,
@@ -487,6 +543,52 @@ impl Organisation {
             backlogged: collected.backlogged,
             backlog_refused: collected.backlog_refused,
         }
+    }
+}
+
+impl Organisation {
+    /// Run the late agents and fold their runs and findings into `report`
+    /// (R12-REASON-3026). Only these agents run; no panel agent or arbiter
+    /// runs a second time, so every other scope's order is unchanged.
+    pub fn dispatch_late(
+        &mut self,
+        report: &mut OrganisationReport,
+        brief: &AgentBrief,
+        now: Timestamp,
+        lineage: &Lineage,
+    ) {
+        if self.late.is_empty() {
+            return;
+        }
+        let mut collected = Collected {
+            runs: std::mem::take(&mut report.runs),
+            findings: std::mem::take(&mut report.findings),
+            deferred: std::mem::take(&mut report.deferred),
+            failed: std::mem::take(&mut report.failed),
+            missing_inputs: std::mem::take(&mut report.missing_inputs),
+            backlogged: std::mem::take(&mut report.backlogged),
+            backlog_refused: std::mem::take(&mut report.backlog_refused),
+        };
+        for agent in &self.late {
+            run_one(
+                &self.host,
+                &mut self.backlog,
+                &mut self.audit,
+                &mut self.sequence,
+                agent.as_ref(),
+                brief,
+                now,
+                lineage,
+                &mut collected,
+            );
+        }
+        report.runs = collected.runs;
+        report.findings = collected.findings;
+        report.deferred = collected.deferred;
+        report.failed = collected.failed;
+        report.missing_inputs = collected.missing_inputs;
+        report.backlogged = collected.backlogged;
+        report.backlog_refused = collected.backlog_refused;
     }
 }
 
@@ -596,6 +698,19 @@ fn run_one(
     }
     audit.record(record.clone());
     out.runs.push(record);
+}
+
+/// The agents that run after the kernel's derivation (R12-REASON-3026):
+/// split from [`standard_agents`] for the reason [`Organisation::with_late_agents`]
+/// gives, so the Symbolic Reasoning Brain reads the derivation of the
+/// hypothesis just reasoned and never a previous one.
+pub fn standard_late_agents(desk: Arc<Desk>, reviewed_at: Timestamp) -> Vec<Arc<dyn Agent>> {
+    vec![Arc::new(
+        crate::symbolic_brain::SymbolicReasoningAnalyst::new(
+            manifests::symbolic_reasoning_brain(reviewed_at),
+            desk,
+        ),
+    )]
 }
 
 /// The agents that run after the panel (ADR 0466): today the Meta Brain
@@ -743,10 +858,6 @@ pub fn standard_agents(
         )),
         Arc::new(crate::world_model_brain::WorldModelArbitrationAnalyst::new(
             manifests::world_model_arbitration_brain(reviewed_at),
-            desk.clone(),
-        )),
-        Arc::new(crate::symbolic_brain::SymbolicReasoningAnalyst::new(
-            manifests::symbolic_reasoning_brain(reviewed_at),
             desk,
         )),
     ]

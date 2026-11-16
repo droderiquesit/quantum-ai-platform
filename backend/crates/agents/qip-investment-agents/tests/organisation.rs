@@ -2377,6 +2377,7 @@ fn the_credit_analyst_abstains_on_a_brief_about_no_instrument() -> Result<()> {
 /// The standard organisation with the agent `without` left out, under the
 /// standard roster and the same host settings [`organisation`] uses.
 fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> {
+    let desk_for_late = desk.clone();
     let agents: Vec<_> = qip_investment_agents::chief::standard_agents(
         desk.clone(),
         now(),
@@ -2392,13 +2393,19 @@ fn organisation_without(desk: Arc<Desk>, without: &str) -> Result<Organisation> 
         .into_iter()
         .filter(|arbiter| arbiter.manifest().id != without)
         .collect();
+    // The late phase too (R12-REASON-3026), left out the same way.
+    let late: Vec<_> = qip_investment_agents::chief::standard_late_agents(desk_for_late, now())
+        .into_iter()
+        .filter(|agent| agent.manifest().id != without)
+        .collect();
     Organisation::new(
         manifests::roster(now()),
         agents,
         AgentHost::new(42).with_language_model(Arc::new(DeterministicModel::new())),
         now(),
     )?
-    .with_arbiters(arbiters)
+    .with_arbiters(arbiters)?
+    .with_late_agents(late)
 }
 
 /// Dispatch `brief` to the standard organisation and to the same organisation
