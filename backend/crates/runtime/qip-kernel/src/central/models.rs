@@ -39,8 +39,8 @@
 //!   candidates.
 
 use qip_ai::registry::{
-    CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, EvaluationRecord, ModelCard, ModelRegistry,
-    PromotionTest, PromotionTests, REPLAY_TEST, RISK_ENVELOPE_TEST, ResourceBudget,
+    ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, EvaluationRecord, ModelCard,
+    ModelRegistry, PromotionTest, PromotionTests, REPLAY_TEST, RISK_ENVELOPE_TEST, ResourceBudget,
 };
 use qip_ai::serving::{ModelArtifact, ModelProvider};
 use qip_core::error::{Error, Result};
@@ -404,6 +404,7 @@ pub fn run_promotion_tests(
             record(CALIBRATION_TEST, false, unmeasured());
             record(CLASSICAL_BASELINE_TEST, false, unmeasured());
             record(RISK_ENVELOPE_TEST, false, unmeasured());
+            record(ADVERSARIAL_TEST, false, unmeasured());
         }
         None => {
             let mut bits = Vec::with_capacity(outputs.len() * 8);
@@ -496,6 +497,34 @@ pub fn run_promotion_tests(
                     }
                 ),
             );
+            // Attacked last, because the suite's own refusal of a non-finite
+            // output means nothing on a window whose unperturbed outputs
+            // already failed the envelope above. Default policy, never a
+            // caller's: a tolerance a desk may loosen is the convention this
+            // test replaces.
+            let policy = qip_training::adversarial::PerturbationPolicy::default();
+            match qip_training::adversarial::attack(|row| first.score(row), rows, &policy) {
+                Ok(report) => match report.refusal(&policy) {
+                    None => record(
+                        ADVERSARIAL_TEST,
+                        true,
+                        format!(
+                            "{} row(s) nudged by {:.2} of each feature's spread either way: \
+                             {} fragile, worst movement {:.2} of the output's spread",
+                            report.rows,
+                            policy.input_step_sd,
+                            report.fragile_rows,
+                            report.worst_movement_sd
+                        ),
+                    ),
+                    Some(why) => record(ADVERSARIAL_TEST, false, why),
+                },
+                Err(error) => record(
+                    ADVERSARIAL_TEST,
+                    false,
+                    format!("the suite could not run: {}", error.message()),
+                ),
+            }
         }
     }
     let tests = PromotionTests {

@@ -557,6 +557,28 @@ impl ResearchMemory {
                 policy.minimum_smoothed_support
             ));
         }
+        // R12-EXPAND-6023: a lesson is promoted on episodes this memory holds,
+        // not on ids it was merely handed. A cited id resolves when a held
+        // episode is that run, or names the id as its evidence (the kernel's
+        // LEARN cites the resolved claim's episode id, which every analyst
+        // episode written from that resolution carries). The count above
+        // would otherwise be arithmetic over strings anyone can invent, and
+        // the policy's floor a gate that cites nothing it can check.
+        for cited in &lesson.supporting_episodes {
+            let held = self.episodes.iter().any(|episode| {
+                &episode.run_id == cited
+                    || episode
+                        .evidence
+                        .iter()
+                        .any(|evidence| evidence.as_str() == cited.as_str())
+            });
+            if !held {
+                return Err(format!(
+                    "supporting episode {cited} is not held by this memory; cite only \
+                     episodes recorded here"
+                ));
+            }
+        }
         let id = lesson.lesson_id.clone();
         self.lessons.push(lesson);
         Ok(id)

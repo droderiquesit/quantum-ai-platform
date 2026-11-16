@@ -1,5 +1,5 @@
-//! The four promotion tests (ADR 0392, R12-MODEL-10202): replay,
-//! calibration, classical baseline and envelope.
+//! The promotion tests (ADR 0392, R12-MODEL-10202, R12-MODEL-4021): replay,
+//! calibration, classical baseline, envelope and adversarial.
 //!
 //! The registry's own suite (`qip-ai/tests/model_infrastructure.rs`) proves
 //! that a card lacking any of the four is refused. This suite proves the
@@ -10,8 +10,8 @@
 #![allow(clippy::panic_in_result_fn)]
 
 use qip_ai::registry::{
-    CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, ModelRegistry, PROMOTION_TESTS, PromotionTests,
-    REPLAY_TEST, RISK_ENVELOPE_TEST,
+    ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, ModelRegistry, PROMOTION_TESTS,
+    PromotionTests, REPLAY_TEST, RISK_ENVELOPE_TEST,
 };
 use qip_ai::serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
 use qip_core::error::Result;
@@ -456,6 +456,94 @@ fn the_tests_refuse_to_run_on_a_window_of_other_features_and_write_nothing() -> 
             .and_then(|card| card.promotion_tests.clone()),
         None,
         "a refused run writes nothing on the card"
+    );
+    Ok(())
+}
+
+/// Scores a step on the first feature, inside the window's own data. Repeatable
+/// and finite, so replay and envelope pass and the adversarial test is the one
+/// left to fail.
+#[derive(Debug)]
+struct Stepping;
+
+#[derive(Debug)]
+struct SteppingModel(String);
+
+impl ModelProvider for Stepping {
+    fn name(&self) -> &str {
+        "the stepping provider"
+    }
+    fn serves(&self) -> &[ModelFormat] {
+        &[ModelFormat::DistilledLinear]
+    }
+    fn serve(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
+        Ok(Box::new(SteppingModel(artifact.reference.clone())))
+    }
+}
+
+impl ServedModel for SteppingModel {
+    fn reference(&self) -> &str {
+        &self.0
+    }
+    fn format(&self) -> ModelFormat {
+        ModelFormat::DistilledLinear
+    }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn cost(&self) -> usize {
+        1
+    }
+    fn score(&self, inputs: &[f64]) -> Result<f64> {
+        Ok(if inputs[0] > 0.0 { 0.2 } else { -0.2 })
+    }
+}
+
+/// R12-MODEL-4021: acceptance attacks the artifact and a promotion without a
+/// passing adversarial result is refused by the registry, not by a caller's
+/// convention. Premise first: the smooth in-tree model passes the same suite,
+/// so the refusal below is about the step and not about the suite refusing
+/// everything.
+#[test]
+fn a_model_that_flips_inside_the_window_fails_its_adversarial_test_and_is_not_admitted()
+-> Result<()> {
+    let teacher = teacher("bar-linear-adversarial")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("adversarial-recorded", 200, 400)?;
+
+    let mut registry = registry_with(&teacher)?;
+    let smooth = run_promotion_tests(
+        &InTreeProvider,
+        &mut registry,
+        &artifact,
+        &recorded,
+        start(),
+    )?;
+    assert!(
+        passed(&smooth, ADVERSARIAL_TEST),
+        "premise: a smooth model survives: {}",
+        evidence(&smooth, ADVERSARIAL_TEST)
+    );
+    assert_eq!(smooth.gap(&artifact.digest), None, "premise: all five hold");
+
+    let mut registry = registry_with(&teacher)?;
+    let stepped = run_promotion_tests(&Stepping, &mut registry, &artifact, &recorded, start())?;
+    assert!(passed(&stepped, REPLAY_TEST), "premise: the step repeats");
+    assert!(
+        passed(&stepped, RISK_ENVELOPE_TEST),
+        "premise: the step is finite"
+    );
+    assert!(
+        !passed(&stepped, ADVERSARIAL_TEST),
+        "a step inside the data must fail: {}",
+        evidence(&stepped, ADVERSARIAL_TEST)
+    );
+    assert!(
+        stepped
+            .gap(&artifact.digest)
+            .is_some_and(|gap| gap.contains("failed its adversarial test")),
+        "{:?}",
+        stepped.gap(&artifact.digest)
     );
     Ok(())
 }

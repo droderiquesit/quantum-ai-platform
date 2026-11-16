@@ -1,0 +1,98 @@
+{
+ "lane": "b53-5",
+ "rows": [
+  {
+   "id": "R12-ASSET-1015",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Remaining work amends ADR 0183 (existing docs/adr file, protected) and needs a decision on how private/illiquid/tokenized/physical positions enter the book; the withdrawn adapter refusal contradicts ADR 0183.",
+   "commit": ""
+  },
+  {
+   "id": "R12-ASSET-1160",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "One step remains: the simulated venue must fill on the instrument's lot grid so a divested position reaches Closed. That is a venue-model decision that moves every simulated fill the tape and valuation suites pin; exempting the closing sell would relax a refusal.",
+   "commit": ""
+  },
+  {
+   "id": "R12-ASSET-3018",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Not attempted in code: register says blocked on a kernel feed (BookView/RiskView as Upstreams) plus a desk commitments facility; a standard_agents entry would also touch organisation coverage tables. Not re-verified beyond reading the register.",
+   "commit": ""
+  },
+  {
+   "id": "R12-ASSET-4069",
+   "outcome": "NEEDS_PERSON",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Platform::submit_order is public with ~200 call sites (grep '.submit_order(' = 209) and opens positions without a plan; refusing on that path is a product decision ADR 0183 left open and rewrites the callers. Not attempted.",
+   "commit": ""
+  },
+  {
+   "id": "R12-CAPITAL-7204",
+   "outcome": "NOT_CLOSABLE",
+   "clauses": [],
+   "test_command": "",
+   "result_lines": [],
+   "mutations": [],
+   "remains": "Hedge Brain (qip-kernel hedge.rs, 1496 lines) reads StressReport, AssetClassRegistry and qip_simulation_engine::scenario; moving it needs a new home crate and dependency allowances ADR 0464 (existing, protected) withdrew, plus the scenario library out of the simulation engine. Needs a decision record first. Not attempted.",
+   "commit": ""
+  },
+  {
+   "id": "R12-CONTRACT-7074",
+   "outcome": "PARTIAL",
+   "clauses": [
+    {
+     "clause": "typed MicrostructureDelta contract",
+     "code": "backend/crates/libs/qip-contracts/src/microstructure_delta.rs::MicrostructureDelta",
+     "caller": "backend/crates/services/qip-expansion/src/campaigns.rs (MicrostructureDeltaFields construction)",
+     "test": "backend/crates/libs/qip-contracts/tests/section27_contracts.rs::a_microstructure_delta_round_trips_and_its_residual_is_signed"
+    },
+    {
+     "clause": "carries fills, slippage, impact, liquidity, lead/lag, venue behaviour",
+     "code": "microstructure_delta.rs::ResidualKind",
+     "caller": "qip-expansion campaigns.rs",
+     "test": "section27_contracts.rs::a_microstructure_delta_carries_each_of_the_six_residual_families_under_its_wire_name"
+    },
+    {
+     "clause": "missing any required field refused (top level and residual)",
+     "code": "microstructure_delta.rs::Residual, MicrostructureDeltaFields::check",
+     "caller": "backend/crates/runtime/qip-kernel/src/platform.rs::Platform::admit_microstructure_delta",
+     "test": "section27_contracts.rs::a_microstructure_delta_refuses_a_residual_missing_or_smuggling_a_field"
+    },
+    {
+     "clause": "round trip preserves every field",
+     "code": "microstructure_delta.rs::MicrostructureDelta",
+     "caller": "platform.rs::admit_microstructure_delta",
+     "test": "section27_contracts.rs::a_microstructure_delta_round_trips_and_its_residual_is_signed"
+    }
+   ],
+   "test_command": "cargo test --no-fail-fast -p qip-contracts",
+   "result_lines": [
+    "test result: ok. 25 passed; 0 failed (section27_contracts)",
+    "cargo fmt --all --check ok; cargo clippy -p qip-contracts --all-targets -- -D warnings clean",
+    "nine named qip-acceptance suites ok; qip-deepbrain 250 passed with node.rs mutation applied"
+   ],
+   "mutations": [
+    "microstructure_delta.rs: #[serde(default)] on Residual::samples -> 'was refused for another reason, so the field is defaulted'",
+    "microstructure_delta.rs: drop rename_all on ResidualKind -> 'FillProbability is written under another name'",
+    "qip-deepbrain/src/node.rs:309 remove admit_deltas call -> NO test failed (unguarded), restored, cmp clean"
+   ],
+   "remains": "Production caller exists (qip-deepbrain node.rs research_pass -> ResearchRound::admit_deltas -> Platform::admit_microstructure_delta, read in LEARN) but no test drives node::run_with to it; mutation removing the call passed all 250 tests. Also no transport to qip-api's Platform (register gap, needs its own record). Register 'no production caller' is stale for the deep-brain process.",
+   "commit": "8fd1cbe5"
+  }
+ ]
+}

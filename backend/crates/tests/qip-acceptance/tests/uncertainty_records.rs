@@ -17,6 +17,7 @@
 
 #![allow(clippy::panic_in_result_fn)]
 
+use qip_agents::memory::Episode;
 use qip_ai::memory::episode::ClaimRecord;
 use qip_core::error::{Error, Result};
 use qip_core::ids::EvidenceId;
@@ -156,7 +157,7 @@ fn a_capability_is_estimated_only_from_enough_graded_outcomes_and_never_as_certa
 /// R12-WORLD-1016: contradicting evidence on the semantic and self models is
 /// recorded beside the belief, not overwritten. (The episodic case is
 /// `qip-ai`'s
-/// `an_outcome_against_its_claim_is_recorded_beside_the_claim_and_the_claim_keeps_its_confidence`
+/// `an_outcome_against_its_claim_is_recorded_beside_the_claim_and_the_claim_keeps_its_confidence`;
 /// and the kernel's `an_issue_counts_the_episodes_whose_outcome_contradicted_their_claim`;
 /// the world graph's is the test above.)
 ///
@@ -201,6 +202,23 @@ fn contradicting_evidence_on_the_semantic_and_self_models_is_recorded_beside_the
         unopposed.smoothed_support()
     );
     let mut memory = ResearchMemory::new();
+    // R12-EXPAND-6023: a lesson is promoted only on episodes the memory holds,
+    // so the memory has to hold the runs this lesson cites before it can be
+    // promoted at all. Recording them is the premise, not the subject: this
+    // test is about the counter-examples surviving beside the lesson.
+    for n in 1..=6 {
+        memory.record_episode(Episode {
+            run_id: AgentRunId::from_string(format!("run-{n}")),
+            agent_id: "macro-analyst".to_string(),
+            occurred_at: now(),
+            question: "do credit spreads lead equity?".to_string(),
+            conclusion: "they lead by two days".to_string(),
+            evidence: Vec::new(),
+            conviction: 0.62,
+            outcome: None,
+            regime: None,
+        });
+    }
     memory
         .promote(opposed, PromotionPolicy::default())
         .map_err(Error::invalid)?;

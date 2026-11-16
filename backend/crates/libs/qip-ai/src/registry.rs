@@ -388,14 +388,23 @@ pub const CLASSICAL_BASELINE_TEST: &str = "classical_baseline";
 /// The envelope test: every output on the recorded window is a finite
 /// number a deterministic threshold can be compared against.
 pub const RISK_ENVELOPE_TEST: &str = "risk_envelope";
+/// The adversarial test (R12-MODEL-4021, blueprint §10.1): the artifact's
+/// output, with every feature of every recorded row nudged a tenth of that
+/// feature's spread either way, does not move beyond the perturbation
+/// policy's tolerance. It is a promotion test, and not a call a desk makes
+/// beside promotion, so that `ModelRegistry::promote_artifact` refuses a
+/// model that was never attacked: a guard that is a convention one caller
+/// follows is one the next caller does not.
+pub const ADVERSARIAL_TEST: &str = "adversarial";
 
-/// The four tests a promotion needs, in the order a refusal names them
-/// (ADR 0392).
-pub const PROMOTION_TESTS: [&str; 4] = [
+/// The tests a promotion needs, in the order a refusal names them
+/// (ADR 0392; the adversarial test since R12-MODEL-4021).
+pub const PROMOTION_TESTS: [&str; 5] = [
     REPLAY_TEST,
     CALIBRATION_TEST,
     CLASSICAL_BASELINE_TEST,
     RISK_ENVELOPE_TEST,
+    ADVERSARIAL_TEST,
 ];
 
 /// One promotion test's result: whether it passed and the sentence that
@@ -429,8 +438,8 @@ pub struct PromotionTests {
 }
 
 impl PromotionTests {
-    /// Why these results do not admit `artifact_digest`, or `None` when all
-    /// four tests are present, passed, and were run on those bytes.
+    /// Why these results do not admit `artifact_digest`, or `None` when every
+    /// test in [`PROMOTION_TESTS`] are present, passed, and were run on those bytes.
     pub fn gap(&self, artifact_digest: &str) -> Option<String> {
         if self.artifact_digest != artifact_digest {
             return Some(format!(

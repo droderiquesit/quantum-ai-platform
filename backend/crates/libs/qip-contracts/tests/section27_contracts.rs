@@ -479,6 +479,67 @@ fn a_microstructure_delta_refuses_each_broken_invariant() {
     );
 }
 
+/// R12-CONTRACT-7074's "missing any required field is refused" reaches the
+/// residual records too. The top-level check cannot see inside the list: a
+/// residual that gained `#[serde(default)]` on `samples` or lost
+/// `deny_unknown_fields` decoded exactly as before and passed it, and a
+/// residual with no sample count is a pair nobody can weight.
+///
+/// Mutation: put `#[serde(default)]` on `Residual::samples` and the
+/// nested check fails with "was refused for another reason, so the field is
+/// defaulted".
+#[test]
+fn a_microstructure_delta_refuses_a_residual_missing_or_smuggling_a_field() {
+    refuses_missing_and_unknown_nested(micro(), "/residuals/0");
+}
+
+/// §27 names six residual families and each must be carryable on its own,
+/// under the wire name a producer in another process writes. A delta that
+/// could carry only some of them would lose the rest silently, and a renamed
+/// variant would decode the old journal as a refusal.
+///
+/// Mutation: remove `#[serde(rename_all = "snake_case")]` from
+/// `ResidualKind` and the wire-name assertion fails.
+#[test]
+fn a_microstructure_delta_carries_each_of_the_six_residual_families_under_its_wire_name()
+-> Result<()> {
+    let families = [
+        (ResidualKind::FillProbability, "fill_probability"),
+        (ResidualKind::Slippage, "slippage"),
+        (ResidualKind::Impact, "impact"),
+        (ResidualKind::Liquidity, "liquidity"),
+        (ResidualKind::LeadLag, "lead_lag"),
+        (ResidualKind::VenueBehaviour, "venue_behaviour"),
+    ];
+    assert_eq!(families.len(), 6, "premise: the blueprint names six");
+    for (kind, wire) in families {
+        let fields = MicrostructureDeltaFields {
+            residuals: vec![residual(kind)],
+            ..micro()
+        };
+        round_trips(fields.clone())?;
+        let value = serde_json::to_value(&fields)
+            .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+        assert_eq!(
+            value
+                .pointer("/residuals/0/kind")
+                .and_then(serde_json::Value::as_str),
+            Some(wire),
+            "{kind:?} is written under another name"
+        );
+    }
+    let mut bad = serde_json::to_value(micro())
+        .map_err(|e| qip_core::error::Error::invalid(e.to_string()))?;
+    *bad.pointer_mut("/residuals/0/kind")
+        .ok_or_else(|| qip_core::error::Error::invalid("pointer"))? =
+        serde_json::Value::from("latency");
+    assert!(
+        serde_json::from_value::<MicrostructureDelta>(bad).is_err(),
+        "a seventh, unnamed family was admitted"
+    );
+    Ok(())
+}
+
 // ---- WorldModelState (7075) --------------------------------------------
 
 fn edge(cause: &str, effect: &str) -> CausalEdge {

@@ -643,6 +643,146 @@ fn each_estimator_is_journaled_with_its_method_and_a_label_it_did_not_earn_is_re
     );
 }
 
+/// R12-MODEL-4013: the shipped widening path runs the back-door estimator on
+/// the operator's data, and a design that leaves the effect unidentified
+/// abstains on the record instead of widening. Before this the estimator was
+/// a library function whose only callers were its own tests, so a confounded
+/// design could not abstain anywhere a request could reach.
+///
+/// Mutations: in `EstimateInput::estimate`, replace the `BackdoorAdjusted`
+/// arm's `backdoor_adjusted(..)` call with `bayesian_causal(..)` over the same
+/// columns -- the confounded design then yields a number and widens, and the
+/// abstention assertion fails; in the segmented branch, return the first
+/// segment's estimate instead of the named one -- the harmful segment's
+/// effect is not the one reported and the segment-effect assertion fails.
+#[test]
+fn a_back_door_design_widens_only_when_it_identifies_the_effect_and_abstains_on_a_confounded_one() {
+    let n = 200usize;
+    let u: Vec<f64> = (0..n)
+        .map(|i| ((i * 37) % 101) as f64 / 50.0 - 1.0)
+        .collect();
+    let t: Vec<f64> = (0..n)
+        .map(|i| {
+            if u[i] + ((i * 13) % 7) as f64 / 7.0 - 0.5 > 0.0 {
+                1.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let y: Vec<f64> = (0..n)
+        .map(|i| 2.0 * t[i] + 3.0 * u[i] + ((i * 29) % 11) as f64 / 110.0)
+        .collect();
+    let model = json!({
+        "name": "confounded-uplift",
+        "links": [
+            {"cause": "u", "effect": "t", "coefficient": 1.0},
+            {"cause": "u", "effect": "y", "coefficient": 3.0},
+            {"cause": "t", "effect": "y", "coefficient": 2.0}
+        ]
+    });
+    let evidence = |covariates: Value, segments: Value, segment: Value| {
+        json!({"backdoor_adjusted": {
+            "model": model, "treatment_variable": "t", "outcome_variable": "y",
+            "covariates": covariates, "treatment": t, "outcome": y, "prior_sd": 10.0,
+            "segments": segments, "segment": segment
+        }})
+    };
+    let widened = |name: &str, evidence: &Value| -> (String, Vec<AgencyRecord>, Option<f64>) {
+        let estimate = serde_json::from_value::<EstimateInput>(evidence.clone())
+            .unwrap()
+            .estimate();
+        let (label, effect) = match &estimate {
+            Ok(estimate) => (
+                serde_json::to_value(estimate.identification()).unwrap(),
+                estimate.effect(),
+            ),
+            Err(_) => (json!("experiment"), 0.0),
+        };
+        let (out, _, journaled) = pass(
+            name,
+            &policy_document(),
+            &widening(attribution(label, effect), evidence.clone()),
+        );
+        (out, journaled, estimate.ok().map(|e| e.effect()))
+    };
+
+    // Identified: adjusting for `u` closes the one back-door path.
+    let identified = evidence(json!({"u": u}), json!({}), Value::Null);
+    let (out, journaled, effect) = widened("backdoor-identified", &identified);
+    assert!(
+        journaled.iter().any(|r| matches!(
+            r,
+            AgencyRecord::Widened { estimator, .. }
+                if serde_json::to_value(estimator).unwrap() == json!("bayesian_causal")
+        )),
+        "an identified design widens: {out}"
+    );
+    let effect = effect.expect("premise: the identified design estimates");
+    assert!(
+        (effect - 2.0).abs() < 0.3,
+        "premise: adjusting for u recovers the true effect of 2.0, not the confounded association: {effect}"
+    );
+
+    // Confounded: `u` is left unadjusted, so the back-door path t <- u -> y is open.
+    let confounded = evidence(json!({}), json!({}), Value::Null);
+    assert!(
+        serde_json::from_value::<EstimateInput>(confounded.clone())
+            .unwrap()
+            .estimate()
+            .is_err_and(|e| e.message().contains("abstains")),
+        "premise: the confounded design abstains with its reason"
+    );
+    let (out, journaled, _) = widened("backdoor-confounded", &confounded);
+    assert!(
+        journaled.iter().any(|r| matches!(
+            r,
+            AgencyRecord::WideningRefused { reason, .. } if reason.contains("abstains")
+        )),
+        "{out}"
+    );
+    assert!(
+        !journaled
+            .iter()
+            .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+        "a confounded design widens nothing: {out}"
+    );
+
+    // Segmented: two segments with different true effects would be hidden by
+    // the pooled figure; the named segment's own estimate is the evidence.
+    let low: Vec<usize> = (0..n).filter(|i| u[*i] < 0.0).collect();
+    let high: Vec<usize> = (0..n).filter(|i| u[*i] >= 0.0).collect();
+    let segments = json!({"low-u": low, "high-u": high});
+    let by_segment = |name: &str| evidence(json!({"u": u}), segments.clone(), json!(name));
+    let (_, _, low_effect) = widened("backdoor-seg-low", &by_segment("low-u"));
+    let (_, _, high_effect) = widened("backdoor-seg-high", &by_segment("high-u"));
+    let (low_effect, high_effect) = (low_effect.unwrap(), high_effect.unwrap());
+    assert!(
+        (low_effect - high_effect).abs() > 1e-6 && (low_effect - effect).abs() > 1e-6,
+        "premise: segments report their own figures, not the pooled {effect}: {low_effect} {high_effect}"
+    );
+    let (out, journaled, _) = widened(
+        "backdoor-seg-unnamed",
+        &evidence(json!({"u": u}), segments.clone(), Value::Null),
+    );
+    assert!(
+        !journaled
+            .iter()
+            .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+        "segments declared and none named widens nothing: {out}"
+    );
+    let (out, journaled, _) = widened(
+        "backdoor-seg-confounded",
+        &evidence(json!({}), segments, json!("low-u")),
+    );
+    assert!(
+        !journaled
+            .iter()
+            .any(|r| matches!(r, AgencyRecord::Widened { .. })),
+        "a confounded design abstains for every segment: {out}"
+    );
+}
+
 /// R12-AGENCY-6104: an attribution with no causal chain, no confounders, no
 /// rival explanation or no horizon observation is refused on the record and
 /// widens nothing. Mutation: in `EffectAttribution::validate`, skip the
