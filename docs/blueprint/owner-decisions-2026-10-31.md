@@ -2675,6 +2675,42 @@ that narrows a security scanner, whatever the owner has delegated.
     a row closes only when what it names is built, the pipeline has passed
     with it, and two independent readers have failed to refute it.
 
+41. **Three integration calls on wave b53, made under decision 40
+    (2026-11-16).** None regrades a row.
+
+    *Lane 26's ledger-authority gate stays out of the integration.*
+    `Platform::submit_released` consults `AuthorityGate::permit_new_orders`
+    only after `Platform::arm_ledger_authority` has armed it, and no
+    composition root calls that. A control that sits on the order path and
+    cannot fire in a deployed binary is what
+    `.claude/rules/domains/risk-and-execution.md` forbids adding: it reads as
+    protection and is not. Arming it needs three things outside this
+    delegation: a ledger client in `qip-fastbrain`, a setting wired through
+    `infrastructure/**`, which no agent may edit, and a staleness bound for
+    an unreachable ledger, which is a figure nobody has given. All three are
+    the owner's. The work stays on `ccr-116bbb27-osu8n8-b52-26`, and the
+    outline of what arming takes is in
+    `docs/blueprint/lanes/b52-26-authority-arming.md`. ADR 0653 and ADR 0694
+    land with it, not before it.
+
+    *R12-REASON-3026, ordering.* The Symbolic Reasoning Brain reports on the
+    derivation of the hypothesis being reasoned in the same pass, never on a
+    previous one. Round 60's readers found `stage_reason` dispatching the
+    organisation before `reason_symbolically` writes the slot the brain
+    reads, so the brain reported nothing on the first hypothesis and a stale
+    derivation after it. If the derivation does not read the panel's output,
+    it moves ahead of the dispatch. If it does, a dispatch phase for that one
+    scope follows the derivation, and the other scopes keep their order.
+
+    *R12-REASON-3026, coverage.* Coverage counts what reported, not what was
+    constructed. That is principle 6 of the working agreement, "Bill what
+    ran, not what was planned", applied to the panel. A scope is covered in
+    a cycle only when a finding for it was reported in that cycle, so
+    removing an analyst from the roster drops its scope on a deployed node.
+    If meeting that needs an edit to an acceptance guard's table or count, or
+    to a protected path, the row is reported as needing a person, and the
+    guard is not edited.
+
 ## Where this stopped (2026-11-01)
 
 Lanes L2, L4 and L6 ended their last turns on "You've hit your weekly
