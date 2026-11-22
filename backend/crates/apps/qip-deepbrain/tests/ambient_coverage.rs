@@ -9,7 +9,7 @@
 use qip_contracts::ambient::{Disposition, Pathway};
 use qip_core::{Clock, Context, Duration, ManualClock, Timestamp};
 use qip_deepbrain::ambient_coverage::{
-    ATTENTION_ACTIVATED_FACT, ATTENTION_ROUTING_FACT, attention_finding,
+    ATTENTION_ACTIVATED_FACT, ATTENTION_ROUTING_FACT, attention_finding, woke_fact,
 };
 use qip_deepbrain::ambient_journal::{AmbientJournal, AmbientRecord, JournalDestination, records};
 use qip_deepbrain::brains::AMBIENT_ATTENTION;
@@ -212,6 +212,155 @@ fn no_attention_events_compose_no_finding() {
     assert_eq!(
         attention_finding(&[], start()).unwrap_or_else(|e| panic!("{e}")),
         None
+    );
+}
+
+/// The finding says which pathways the router woke, and how often, and counts
+/// under a pathway only a decision that activated it.
+///
+/// Every other test here routes one activated assumption signal, so one
+/// pathway's label carried a one and the other four arms of `woke_fact`, and
+/// the filter that keeps a deferred or shed decision out of them, were
+/// asserted by nothing: an independent reader said so on 2026-11-22. The
+/// events below are modelled on a decision the deployed default sweep really
+/// returned, then spread over all five pathways with a different count on
+/// each, so a label written for the wrong pathway is a wrong number and not a
+/// coincidence, and over every disposition that wakes nothing.
+///
+/// The labels are written out here rather than looked up through `woke_fact`.
+/// A first version looked them up, and swapping two pathways' labels in
+/// `woke_fact` then passed: the test asked the function under test which
+/// label to read and the function agreed with itself.
+///
+/// Mutations, each fired and restored: count every decision instead of only
+/// the activated ones; swap two pathways' labels in `woke_fact`; file every
+/// activation under one label.
+#[test]
+fn the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing()
+{
+    let round = sweep(research(), &platform());
+    let template = round
+        .attention_events
+        .first()
+        .cloned()
+        .expect("premise: the default sweep returned a routing decision to model on");
+
+    let activations = [
+        (
+            Pathway::ResearchTask,
+            "attention_woke_research_task",
+            1usize,
+        ),
+        (
+            Pathway::SpecialistActivation,
+            "attention_woke_specialist_activation",
+            2,
+        ),
+        (Pathway::RiskReview, "attention_woke_risk_review", 3),
+        (
+            Pathway::CapitalPreparation,
+            "attention_woke_capital_preparation",
+            4,
+        ),
+        (
+            Pathway::ReflexModelUpdate,
+            "attention_woke_reflex_model_update",
+            5,
+        ),
+    ];
+    let woke_nothing = [
+        (Pathway::ResearchTask, Disposition::Deferred),
+        (Pathway::SpecialistActivation, Disposition::Shed),
+        (Pathway::RiskReview, Disposition::Expired),
+        (Pathway::CapitalPreparation, Disposition::Clustered),
+        (Pathway::ReflexModelUpdate, Disposition::Quarantined),
+    ];
+    let labels_of_pathways: BTreeSet<&str> =
+        activations.iter().map(|(_, label, _)| *label).collect();
+    assert_eq!(
+        labels_of_pathways.len(),
+        activations.len(),
+        "premise: every pathway has a label of its own"
+    );
+
+    let mut events = Vec::new();
+    for (pathway, _, count) in activations {
+        for _ in 0..count {
+            let mut event = template.clone();
+            event.id = format!("attention-{}", events.len());
+            event.pathway = pathway;
+            event.disposition = Disposition::Activated;
+            events.push(event);
+        }
+    }
+    let activated = events.len();
+    for (pathway, disposition) in woke_nothing {
+        assert_ne!(
+            disposition,
+            Disposition::Activated,
+            "premise: these wake nothing"
+        );
+        let mut event = template.clone();
+        event.id = format!("attention-{}", events.len());
+        event.pathway = pathway;
+        event.disposition = disposition;
+        events.push(event);
+    }
+    assert_eq!(activated, 15, "premise: one to five activations");
+    assert_eq!(events.len(), 20, "premise: and five that woke nothing");
+
+    let finding = attention_finding(&events, start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("events compose a finding");
+    let value = |label: &str| finding.fact(label).map(|fact| fact.value.to_bits());
+    assert_eq!(
+        value(ATTENTION_ROUTING_FACT),
+        Some(20.0_f64.to_bits()),
+        "every decision is a routing decision, whatever it woke"
+    );
+    assert_eq!(
+        value(ATTENTION_ACTIVATED_FACT),
+        Some(15.0_f64.to_bits()),
+        "only an activation is counted as one"
+    );
+    for (pathway, label, count) in activations {
+        assert_eq!(
+            woke_fact(pathway),
+            label,
+            "{pathway:?} is counted under its own label"
+        );
+        assert_eq!(
+            value(label),
+            Some((count as f64).to_bits()),
+            "{pathway:?} was activated {count} time(s); a decision that woke nothing on it is \
+             not counted"
+        );
+    }
+    let ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
+    assert_eq!(finding.evidence, ids, "it cites every decision, in order");
+
+    // A pathway nothing activated has no fact at all, rather than a zero a
+    // reader could take for a measurement.
+    let mut only_deferred = template.clone();
+    only_deferred.id = "attention-deferred".to_string();
+    only_deferred.pathway = Pathway::RiskReview;
+    only_deferred.disposition = Disposition::Deferred;
+    let mut one_activated = template;
+    one_activated.id = "attention-activated".to_string();
+    one_activated.pathway = Pathway::ResearchTask;
+    one_activated.disposition = Disposition::Activated;
+    let sparse = attention_finding(&[one_activated, only_deferred], start())
+        .unwrap_or_else(|e| panic!("{e}"))
+        .expect("events compose a finding");
+    assert_eq!(
+        sparse
+            .fact("attention_woke_research_task")
+            .map(|fact| fact.value.to_bits()),
+        Some(1.0_f64.to_bits())
+    );
+    assert!(
+        sparse.fact("attention_woke_risk_review").is_none(),
+        "a pathway that was only deferred to carries no woke fact"
     );
 }
 
