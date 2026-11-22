@@ -563,8 +563,9 @@ pub struct ResearchConfig {
     pub capital_sentinel: bool,
     /// Whether the sweep reads the platform's own measure of what it does
     /// not know ([`Platform::unknowns`]) and raises a research-task signal
-    /// for the most uncertain subjects (R12-AMBIENT-3073). On by default; a
-    /// sweep with it off reads nothing and raises none.
+    /// for the subjects an answer is worth most on (R12-AMBIENT-3073). On
+    /// by default; [`CURIOSITY_SENTINEL_VARIABLE`] set to `off` turns it
+    /// off, and a sweep with it off reads nothing and raises none.
     pub curiosity_sentinel: bool,
     /// Whether the sweep reads the forecast lattice's misses — resolutions
     /// whose outcome fell outside the interval the lattice held at that
@@ -609,6 +610,11 @@ pub const AMBIENT_MODELS_VARIABLE: &str = "QIP_DEEPBRAIN_AMBIENT_MODELS";
 /// `off`, on when unset. Anything else is refused at start-up, because a
 /// typo that silently left the sentinel on (or off) is a switch nobody holds.
 pub const FORECAST_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_FORECAST_SENTINEL";
+/// The variable switching the curiosity sentinel (R12-AMBIENT-3073): `on`
+/// or `off`, on when unset. Until it existed the switch was a struct field
+/// only a test could write, so no deployed binary could show that turning
+/// the sentinel off removes its signals.
+pub const CURIOSITY_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_CURIOSITY_SENTINEL";
 /// The variable switching the opportunity sentinels: `on` or `off`.
 pub const OPPORTUNITY_SENTINEL_VARIABLE: &str = "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL";
 
@@ -704,6 +710,19 @@ impl ResearchConfig {
                 _ => {
                     return Err(Error::invalid(format!(
                         "{FORECAST_SENTINEL_VARIABLE} is {raw:?}; say on or off, or unset it for on"
+                    )));
+                }
+            };
+        }
+        if let Some(raw) = lookup(CURIOSITY_SENTINEL_VARIABLE) {
+            // Refused rather than read as on: a typo for `off` that left the
+            // sentinel running is a switch the operator believes they hold.
+            config.curiosity_sentinel = match raw.trim() {
+                "on" => true,
+                "off" => false,
+                _ => {
+                    return Err(Error::invalid(format!(
+                        "{CURIOSITY_SENTINEL_VARIABLE} is {raw:?}; say on or off, or unset it for on"
                     )));
                 }
             };
@@ -971,15 +990,22 @@ pub struct ResearchRound {
     /// had already dropped because this loop fell behind.
     pub now_surprises: usize,
     pub now_surprises_lost: u64,
-    /// Forecast-lattice misses read this sweep (R12-AMBIENT-3066), how many
-    /// the kernel's queue had already dropped because this loop fell
-    /// behind, and the misses refused as unsizeable (a degenerate interval
-    /// or a non-finite figure), each with why.
     /// Unknowns the curiosity sentinel raised this sweep, by subject, with
     /// the uncertainty each was raised at (R12-AMBIENT-3073), and those
     /// refused as unsizeable, each with why.
     pub unknowns_raised: BTreeMap<String, f64>,
     pub unknowns_refused: Vec<String>,
+    /// What each unknown the router activated this sweep set in motion, by
+    /// subject: the research question now queued on the desk under the
+    /// plan, tools and budget its class asks for. A raised unknown absent
+    /// from here was deferred, shed, or refused admission — the sweep's
+    /// admissions say which — and one present with no scout job in
+    /// [`ResearchRound::scouted`] was not worth its acquisition's cost.
+    pub unknown_tasks: BTreeMap<String, String>,
+    /// Forecast-lattice misses read this sweep (R12-AMBIENT-3066), how many
+    /// the kernel's queue had already dropped because this loop fell
+    /// behind, and the misses refused as unsizeable (a degenerate interval
+    /// or a non-finite figure), each with why.
     pub forecast_misses: usize,
     pub forecast_misses_lost: u64,
     pub forecast_misses_refused: Vec<String>,
@@ -1807,6 +1833,11 @@ pub struct ResearchLoop {
     /// router's budget was spent on repeats. Bounded: entries leave at
     /// expiry, and at most `MAXIMUM_OPEN_UNKNOWNS` enter per sweep.
     unknowns_live: BTreeMap<String, Timestamp>,
+    /// The subject and research question behind each curiosity signal that
+    /// has not yet been answered, by signal id — what lets an activation a
+    /// later sweep delivers still be recorded against its subject. Entries
+    /// leave with the signal's `pending` entry, so it is bounded by it.
+    unknown_questions: BTreeMap<String, (String, String)>,
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
@@ -2074,6 +2105,7 @@ impl ResearchLoop {
             surprises_seen: 0,
             misses_seen: 0,
             unknowns_live: BTreeMap::new(),
+            unknown_questions: BTreeMap::new(),
             breaks_seen: 0,
             sagas_seen: 0,
             issued: 0,
@@ -3036,29 +3068,47 @@ impl ResearchLoop {
         // measure it does not know — a component with too thin a record to
         // estimate, a model no better than a coin, an instrument whose
         // capacity at size is unscored, an unsettled regime boundary — is a
-        // research task raised now, most uncertain first. The exploration
-        // desk ranks probes from the same measure but only under a capital
-        // budget, which is zero by default, so on a default deployment this
-        // is the only reader the measure has. At most as many per sweep as
-        // the desk has probe slots, and none for a subject whose earlier
-        // signal is still live.
+        // research task raised now, the one an answer is worth most on
+        // first. The exploration desk ranks probes from the same measure
+        // but only under a capital budget, which is zero by default, so on
+        // a default deployment this is the only reader the measure has. At
+        // most as many per sweep as the desk has probe slots, and none for
+        // a subject whose earlier signal is still live.
+        //
+        // Each is routed *with its gap*. Routed bare, as it was until
+        // 2026-11-22, the router's activation found nothing pending and the
+        // sweep moved on: the unknown was announced and nothing was asked
+        // to resolve it. With the gap, an activation admits a research
+        // question to the desk under the plan and tools its class asks for,
+        // and prices an information request that `launch_ranked` hands the
+        // discovery desk as a scout job.
         self.unknowns_live.retain(|_, expiry| *expiry > now);
         if self.config.curiosity_sentinel {
-            for (subject, kind, uncertainty) in
-                rank_unknowns(platform.unknowns(now), &self.unknowns_live)
-            {
-                match unknown_signal(
-                    &subject,
-                    kind,
-                    uncertainty,
-                    now,
-                    self.config.signal_ttl,
-                    &mut self.issued,
-                ) {
-                    Ok(signal) => {
+            let ranked = rank_unknowns(platform.unknowns(now), &self.unknowns_live, &|u| {
+                platform.resolution_value(u)
+            });
+            for unknown in ranked {
+                let subject = unknown.subject.clone();
+                let raised = unknown_gap(&unknown).and_then(|gap| {
+                    unknown_signal(
+                        &subject,
+                        unknown.kind,
+                        unknown.uncertainty,
+                        now,
+                        self.config.signal_ttl,
+                        &mut self.issued,
+                    )
+                    .map(|signal| (gap, signal))
+                });
+                match raised {
+                    Ok((gap, signal)) => {
                         self.unknowns_live.insert(subject.clone(), signal.expiry());
-                        round.unknowns_raised.insert(subject, uncertainty);
-                        routable.push((None, signal));
+                        self.unknown_questions.insert(
+                            signal.id().to_string(),
+                            (subject.clone(), qip_expansion::desk::question_for(&gap)),
+                        );
+                        round.unknowns_raised.insert(subject, unknown.uncertainty);
+                        routable.push((Some(gap), signal));
                     }
                     Err(error) => round
                         .unknowns_refused
@@ -3199,6 +3249,7 @@ impl ResearchLoop {
             if !events.iter().any(|e| e.signal_id == signal.id()) {
                 // Below materiality: not an activation and not a loss.
                 self.pending.remove(signal.id());
+                self.unknown_questions.remove(signal.id());
                 self.pending_wakes.remove(signal.id());
                 self.pending_capital.remove(signal.id());
             }
@@ -3217,6 +3268,7 @@ impl ResearchLoop {
                     | Disposition::Clustered
                     | Disposition::Quarantined => {
                         self.pending.remove(&event.signal_id);
+                        self.unknown_questions.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
                         self.pending_capital.remove(&event.signal_id);
                     }
@@ -3307,6 +3359,15 @@ impl ResearchLoop {
                             licensed_sources,
                             eligible_jurisdictions,
                         )?;
+                        // What the activation set in motion, read back from
+                        // the desk rather than assumed: an unknown whose
+                        // question the desk refused is not recorded as work.
+                        if let Some((subject, question)) =
+                            self.unknown_questions.remove(&event.signal_id)
+                            && self.desk.queue().entry(&question).is_some()
+                        {
+                            round.unknown_tasks.insert(subject, question);
+                        }
                     }
                 }
             }
@@ -5301,26 +5362,103 @@ pub fn forecast_miss_signal(
 /// attention router names as its origin.
 pub const UNKNOWN_TRIGGER: &str = "curiosity_unknown";
 
-/// Which of the measured unknowns one sweep raises: those above zero whose
-/// earlier signal is not still live, most uncertain first with ties by
-/// subject, and at most [`MAXIMUM_OPEN_UNKNOWNS`] of them.
+/// One measured unknown the sweep has decided to raise: what is not known,
+/// the probe that would resolve it, how uncertain it is, and what an answer
+/// is worth to the book.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unknown {
+    pub subject: String,
+    pub kind: ProbeKind,
+    /// In `[0, 1]`, as the kernel measured it.
+    pub uncertainty: f64,
+    /// Base currency: [`Platform::resolution_value`] of the uncertainty.
+    pub value: Decimal,
+}
+
+/// Which of the measured unknowns one sweep raises: those an answer is
+/// worth something on whose earlier signal is not still live, highest value
+/// first — ties by uncertainty, then by subject — and at most
+/// [`MAXIMUM_OPEN_UNKNOWNS`] of them. `value` prices an uncertainty; an
+/// unknown it cannot price, or prices at nothing, is not raised.
 ///
 /// The map's own order is alphabetical, which would spend the slots on
-/// whatever sorts first rather than on what is least known; and without the
-/// cap a platform that has learned nothing yet would raise every component
-/// it has at once and spend the router's budget on its own ignorance.
+/// whatever sorts first rather than on what is worth knowing; without the
+/// value a book with nothing at stake would spend the router's budget on
+/// questions nobody would pay to answer; and without the cap a platform
+/// that has learned nothing yet would raise every component it has at once.
 pub fn rank_unknowns(
     unknowns: BTreeMap<String, (ProbeKind, f64)>,
     live: &BTreeMap<String, Timestamp>,
-) -> Vec<(String, ProbeKind, f64)> {
-    let mut ranked: Vec<(String, ProbeKind, f64)> = unknowns
+    value: &dyn Fn(f64) -> Option<Decimal>,
+) -> Vec<Unknown> {
+    let mut ranked: Vec<Unknown> = unknowns
         .into_iter()
         .filter(|(subject, (_, uncertainty))| *uncertainty > 0.0 && !live.contains_key(subject))
-        .map(|(subject, (kind, uncertainty))| (subject, kind, uncertainty))
+        .filter_map(|(subject, (kind, uncertainty))| {
+            value(uncertainty)
+                .filter(|value| value.is_positive())
+                .map(|value| Unknown {
+                    subject,
+                    kind,
+                    uncertainty,
+                    value,
+                })
+        })
         .collect();
-    ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    ranked.sort_by(|a, b| {
+        b.value
+            .cmp(&a.value)
+            .then_with(|| b.uncertainty.total_cmp(&a.uncertainty))
+            .then_with(|| a.subject.cmp(&b.subject))
+    });
     ranked.truncate(MAXIMUM_OPEN_UNKNOWNS);
     ranked
+}
+
+/// What the platform lacks when an unknown of this kind is open, and so the
+/// class of research the desk plans for it: a record too thin to estimate
+/// from wants episodes (a data acquisition), a model no better than a coin
+/// wants a model (an experiment), an unscored capacity or an unfamiliar
+/// venue wants execution evidence (a tick campaign), and an unsettled regime
+/// boundary wants the causal link across it (a simulation).
+pub const fn wanting_for(kind: ProbeKind) -> Wanting {
+    match kind {
+        ProbeKind::StaleEstimate => Wanting::Episodes,
+        ProbeKind::UncertainModel => Wanting::Model,
+        ProbeKind::CapacityAtSize | ProbeKind::UnfamiliarVenue => Wanting::Execution,
+        ProbeKind::RegimeBoundary => Wanting::CausalLink,
+    }
+}
+
+/// The gap one unknown is, as the expansion desk reads it
+/// (R12-AMBIENT-3073): the lack its probe kind names, at the uncertainty the
+/// kernel measured and the value an answer has to the book. This is what
+/// makes an activated curiosity signal work rather than an announcement —
+/// the desk queues the gap's question with a plan, tools and a budget, and
+/// its economic value is what prices the information request a scout is
+/// launched on.
+///
+/// The first evidence entry names the detector, so the gap is not read as an
+/// anomaly a re-read of the next sweep could settle: the kernel has already
+/// measured it, and reading it again buys nothing.
+pub fn unknown_gap(unknown: &Unknown) -> Result<RaisedGap> {
+    let kind = unknown.kind.as_str();
+    raise(Observation {
+        trigger: GapTrigger::LowConfidence,
+        wanting: vec![wanting_for(unknown.kind)],
+        observation: format!("{} is not known ({kind})", unknown.subject),
+        affected_domains: vec![unknown.subject.clone()],
+        evidence: vec![
+            format!("detector:{UNKNOWN_TRIGGER}"),
+            format!("unknown:{kind}"),
+            format!("subject:{}", unknown.subject),
+        ],
+        severity: unknown.uncertainty,
+        economic_value: unknown.value,
+        // An unknown states what an answer is worth, not an exposure: the
+        // book is not at risk from a question it has not asked.
+        risk_value: Decimal::ZERO,
+    })
 }
 
 /// The research-task signal one measured unknown is (R12-AMBIENT-3073).

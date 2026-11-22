@@ -12512,6 +12512,19 @@ impl Platform {
         )
     }
 
+    /// What resolving `uncertainty` of one subject is worth to this book,
+    /// in base currency: the exploration desk's own valuation
+    /// ([`crate::exploration::resolution_value`]) against the tracked equity
+    /// the DECIDE stage hands the desk. `None` where it has no decimal form.
+    ///
+    /// Public for the same reason [`Platform::unknowns`] is: the sentinel
+    /// that raises an unknown must rank it by what an answer is worth, and
+    /// ranking by uncertainty alone raised a thing nobody would pay to know
+    /// on a book with nothing at stake (R12-AMBIENT-3073).
+    pub fn resolution_value(&self, uncertainty: f64) -> Option<Decimal> {
+        crate::exploration::resolution_value(self.capital.equity(), uncertainty)
+    }
+
     /// The per-user, per-strategy books — read-only; fills reach them
     /// through [`Platform::ingest_cell_report`] and nothing else.
     pub fn user_ledger(&self) -> &UserLedger {

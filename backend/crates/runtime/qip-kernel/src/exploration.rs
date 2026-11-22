@@ -528,8 +528,7 @@ fn candidates_from(
         // The value of an answer, as one stated figure per unit of
         // uncertainty — see RESOLUTION_VALUE_BPS. Money, so it stays Decimal
         // all the way into the candidate.
-        let Some(resolution_value) = equity.checked_apply_bps(RESOLUTION_VALUE_BPS * uncertainty)
-        else {
+        let Some(resolution_value) = resolution_value(equity, *uncertainty) else {
             notes.push(format!(
                 "{subject} could not be valued against a book of {equity}; it is not a candidate"
             ));
@@ -544,6 +543,19 @@ fn candidates_from(
         }
     }
     candidates
+}
+
+/// What resolving `uncertainty` of one subject is worth against a book of
+/// `equity`: [`RESOLUTION_VALUE_BPS`] of the book per unit of uncertainty.
+/// `None` where the product has no decimal form.
+///
+/// One function because two readers price an unknown — the desk's probe
+/// candidates and the deep brain's curiosity sentinel (R12-AMBIENT-3073) —
+/// and a second copy of the formula would be a second valuation the moment
+/// one of them changed: the sentinel would rank as high-value what the desk
+/// would not pay to probe.
+pub fn resolution_value(equity: Decimal, uncertainty: f64) -> Option<Decimal> {
+    equity.checked_apply_bps(RESOLUTION_VALUE_BPS * uncertainty)
 }
 
 /// Count what the plan selected, by kind.

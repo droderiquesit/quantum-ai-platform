@@ -2055,6 +2055,16 @@ const READ_BUT_NOT_SET: &[(&str, &str, &str)] = &[
     ),
     (
         "qip-deepbrain",
+        "QIP_DEEPBRAIN_CURIOSITY_SENTINEL",
+        "The curiosity sentinel's switch (R12-AMBIENT-3073), `on` by default \
+         and `on` or `off` only; anything else is refused at start-up. No \
+         manifest sets it because the default is the deployed posture: the \
+         variable exists so an operator can prove that turning the sentinel \
+         off removes its unknown signals and the research they start, not so \
+         a deployment ships it off.",
+    ),
+    (
+        "qip-deepbrain",
         "QIP_DEEPBRAIN_OPPORTUNITY_SENTINEL",
         "The opportunity sentinels' switch (ADR 0434, R12-AMBIENT-3069), `on` \
          by default and `on` or `off` only; anything else is refused at \
