@@ -89,7 +89,8 @@ pub const INSTANCES: &str = "QIP_EVENT_FABRIC_INSTANCES";
 pub const PLACEMENT_GRACE_MS: &str = "QIP_EVENT_FABRIC_PLACEMENT_GRACE_MS";
 /// Optional: how many batches of each partition stay on this broker's disk
 /// once their segments are archived and indexed; older history is read back
-/// from the archive (FABRIC-8079). Unset keeps everything on disk.
+/// from the archive (FABRIC-8079). Unset applies no batch window: each
+/// stream is then trimmed only by its own retention class (FABRIC-7034).
 pub const HOT_BATCHES: &str = "QIP_EVENT_FABRIC_HOT_BATCHES";
 
 /// The lease TTL when none is stated.
@@ -180,7 +181,8 @@ pub struct Config {
     /// broker at the managed consensus and requires every P0/P1 stream to
     /// be declared `managed_majority` (ADR 0111).
     pub managed: Option<ManagedConfig>,
-    /// The hot window, in batches per partition, when retention is on.
+    /// The hot window, in batches per partition, on top of each stream's own
+    /// retention class; `None` leaves the class as the only bound.
     pub hot_batches: Option<u64>,
     /// The protocol listener's workload certificate (ADR 0112): `Some` is
     /// mutual TLS with a client certificate required on every connection;
@@ -604,7 +606,7 @@ impl Config {
         let hot_batches = optional_number(variables, HOT_BATCHES)?;
         if hot_batches == Some(0) {
             return Err(Error::invalid(format!(
-                "{HOT_BATCHES} must be at least 1; unset it to keep every segment on disk"
+                "{HOT_BATCHES} must be at least 1; unset it to trim each stream only by its own retention class"
             )));
         }
         Ok(Self {
