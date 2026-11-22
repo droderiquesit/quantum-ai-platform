@@ -115,8 +115,17 @@ pub fn scout(observations: &[Observation]) -> Vec<Candidate> {
 /// One retailer, marketplace or regional listing of something.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Listing {
-    /// Unique per listing; carries the retailer/marketplace/region identity.
+    /// Unique per listing: the retailer or marketplace and its own reference.
     pub id: String,
+    /// The region the listing is offered in. Named, and never part of the
+    /// product's identity: the statement the resolver answers to says
+    /// equivalents are mapped across retailers, marketplaces *and regions*
+    /// (R12-COMMERCE-5092), and while a listing carried only an id string
+    /// there was nothing to map across, so no caller could ask whether two
+    /// regions' listings of one product had been held to be one product.
+    /// Required, not defaulted: a listing whose region nobody stated is
+    /// refused by [`Resolver::resolve`] rather than filed under a guess.
+    pub region: String,
     pub brand: String,
     pub model: String,
     /// A variant (size, colour, capacity) is a different product.
@@ -158,6 +167,11 @@ impl Resolver {
         }
     }
 
+    /// What makes two listings one product: brand, model and variant, and
+    /// deliberately not the region. A region in this key would split one
+    /// product into as many identities as it has regions, which is the
+    /// cross-region mapping undone; and with a shared GTIN it would then
+    /// read as a variant conflict and refuse a clean feed.
     fn key(l: &Listing) -> String {
         format!("{}|{}|{}", norm(&l.brand), norm(&l.model), norm(&l.variant))
     }
@@ -182,7 +196,18 @@ impl Resolver {
     /// is order-independent. A GTIN that links two different variants is
     /// refused: one of the two feeds is wrong and guessing which would
     /// merge a variant into the genuine product.
+    ///
+    /// A listing that names no region is refused: "across regions" cannot be
+    /// answered for a listing that is nowhere, and reading the blank as one
+    /// more region would report a cross-region match nobody observed.
     pub fn resolve(&self, listings: &[Listing]) -> Result<BTreeMap<String, Identity>> {
+        if let Some(l) = listings.iter().find(|l| norm(&l.region).is_empty()) {
+            return Err(Error::invalid(format!(
+                "listing {} names no region; state the region it is offered in rather than \
+                 resolving it as if it were everywhere",
+                l.id
+            )));
+        }
         let mut out = BTreeMap::new();
         let mut genuine: Vec<&Listing> = Vec::new();
         for l in listings {
@@ -244,6 +269,39 @@ impl Resolver {
         }
         Ok(out)
     }
+}
+
+/// The identities held by listings in more than one region, each with the
+/// regions it was found in, normalised.
+///
+/// This is the cross-region half of the resolver's answer made readable: the
+/// identity map alone says two listings are one product, and nothing in it
+/// says they were offered in different regions. Counterfeits are left out,
+/// because a counterfeit's "identity" is a refusal and not a product two
+/// regions share. A listing absent from `identities` is refused rather than
+/// skipped, since a span computed over part of the listings understates it.
+pub fn regions_spanned(
+    listings: &[Listing],
+    identities: &BTreeMap<String, Identity>,
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut regions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for l in listings {
+        let identity = identities.get(&l.id).ok_or_else(|| {
+            Error::invalid(format!(
+                "listing {} has no resolved identity; resolve every listing before asking which \
+                 regions a product spans",
+                l.id
+            ))
+        })?;
+        if identity.counterfeit_finding.is_none() {
+            regions
+                .entry(identity.id.clone())
+                .or_default()
+                .insert(norm(&l.region));
+        }
+    }
+    regions.retain(|_, r| r.len() > 1);
+    Ok(regions)
 }
 
 // ---------------------------------------------------------- Feasibility

@@ -662,6 +662,114 @@ fn the_committed_dev_plan_maps_its_equivalent_listings_to_one_identity_and_refus
     Ok(())
 }
 
+/// R12-COMMERCE-5092, the region clause. Under the committed dev plan,
+/// installed the way `main` installs it, every DISCOVER pass journals the
+/// products its genuine listings held in more than one region, and that
+/// record is exactly what an oracle that never calls the resolver expects:
+/// listings grouped by their raw brand, model and variant, less the ones the
+/// plan's registry refuses.
+///
+/// The oracle reads the same feed the plane reads (the breadth plan's seed
+/// is the context's, and the test asserts the two feeds agree on the
+/// observation count before comparing anything), so a pass where nothing
+/// spanned two regions is asserted as empty, not skipped.
+///
+/// Mutation: put the region in `Resolver::key` and one product's listings in
+/// two regions, joined by their GTIN, read as a variant conflict; DISCOVER
+/// reports the refusal and journals no span.
+#[test]
+fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_products_listed_in_both_regions()
+-> Result<()> {
+    use qip_kernel::commerce_research::{CommerceFeed, SYNTHETIC_REGIONS};
+    let path = committed_plan_path();
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), path.clone())]);
+    let plan = qip_deepbrain::breadth::load(&|name| environment.get(name).cloned())?
+        .expect("the committed plan loads")
+        .commerce
+        .expect("the committed plan carries a commerce section");
+    assert!(
+        !plan.counterfeit_gtins.is_empty() && !plan.counterfeit_sellers.is_empty(),
+        "premise: the committed plan's registry refuses something"
+    );
+    assert_ne!(
+        SYNTHETIC_REGIONS[0], SYNTHETIC_REGIONS[1],
+        "premise: the feed's two regions are two"
+    );
+    let both: BTreeSet<String> = SYNTHETIC_REGIONS.iter().map(|r| (*r).to_string()).collect();
+
+    let cycles = 12;
+    let platform = install_plan_file(&path, cycles)?;
+    let runs = discovered(&platform)?;
+    assert_eq!(runs.len(), cycles, "premise: one DISCOVER record per cycle");
+
+    let mut feed = SyntheticCommerceFeed::new(platform.config().seed, start());
+    let mut at = start();
+    let mut spanning_passes = 0;
+    let mut variants_apart = false;
+    for run in &runs {
+        let batch = feed.poll(at)?;
+        at = at.saturating_add(Duration::from_hours(1));
+        assert_eq!(
+            run.observations,
+            batch.observations.len(),
+            "premise: the oracle reads the batch the plane read"
+        );
+        // The queue bound is a problem DISCOVER reports on a busy pass and
+        // is not this test's subject; a resolver refusal is.
+        let unresolved: Vec<&String> = run
+            .problems
+            .iter()
+            .filter(|problem| problem.starts_with("the listings could not be resolved"))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "the resolver refused the committed plan's listings: {unresolved:?}"
+        );
+        let mut expected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for listing in &batch.listings {
+            let refused = plan.counterfeit_sellers.contains(&listing.seller)
+                || listing
+                    .gtin
+                    .as_ref()
+                    .is_some_and(|gtin| plan.counterfeit_gtins.contains(gtin));
+            if !refused {
+                expected
+                    .entry(format!(
+                        "product:{}|{}|{}",
+                        listing.brand, listing.model, listing.variant
+                    ))
+                    .or_default()
+                    .insert(listing.region.clone());
+            }
+        }
+        expected.retain(|_, regions| regions.len() > 1);
+        assert_eq!(
+            run.cross_region, expected,
+            "the journaled cross-region products differ from the listings'"
+        );
+        for regions in run.cross_region.values() {
+            assert_eq!(regions, &both, "a span is the feed's two regions");
+        }
+        if !run.cross_region.is_empty() {
+            spanning_passes += 1;
+        }
+        if run.cross_region.contains_key("product:acme|h100|black")
+            && run.cross_region.contains_key("product:acme|h100|white")
+        {
+            variants_apart = true;
+        }
+    }
+    assert!(
+        spanning_passes > 0,
+        "no pass under the committed plan held a product in two regions"
+    );
+    assert!(
+        variants_apart,
+        "no pass held both colours across regions as two products"
+    );
+    Ok(())
+}
+
 /// R12-COMMERCE-5093. A cycle under the committed plan journals, for every
 /// candidate it assesses, the six figures feasibility owes: all-in cost,
 /// expected resale, inventory carry, capital lockup, time to sale and return
