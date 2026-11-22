@@ -413,6 +413,22 @@ pub struct CommerceSimulated {
     /// sizing or capital. Absent from a record written before it existed.
     #[serde(default)]
     pub positions: Vec<qip_financial::position_record::PositionRecord>,
+    /// R12-COMMERCE-5090: the twelve-attribute record of every unit this
+    /// pass received, sold or took back, as it read once the pass had worked
+    /// the unit. Before this the record lived only in the plane's memory and
+    /// was read by tests alone, so nothing an operator can read depended on
+    /// it and a restart lost it. Absent from a record written before it
+    /// existed.
+    #[serde(default)]
+    pub tracked: Vec<TrackedUnit>,
+}
+
+/// One unit's tracked attributes as journalled: each of the twelve names to
+/// its stated value, or to `absent: {reason}` where the plane holds none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedUnit {
+    pub unit: String,
+    pub attributes: BTreeMap<String, String>,
 }
 
 impl EventBody for CommerceSimulated {
@@ -848,6 +864,7 @@ impl CommerceResearch {
                 unit.clone(),
                 self.unit_attributes(&unit, candidate, &logistics)?,
             );
+            run.tracked.extend(self.tracked_unit(&unit));
             let quotes = self.resale_quotes(candidate.reference_price);
             let choice = route_resale(cost_basis, self.plan.daily_capital_cost, &quotes)?;
             // Listed at the chosen venue's own expected price: the router
@@ -1033,6 +1050,7 @@ impl CommerceResearch {
                     );
                 }
                 self.refresh_attributes(&unit)?;
+                run.tracked.extend(self.tracked_unit(&unit));
                 let settlement = self
                     .plane
                     .settlement(&sale)
@@ -1261,9 +1279,53 @@ impl CommerceResearch {
             "inventory_state".to_string(),
             Attr::Value(state_name(&record.state).to_string()),
         );
+        // A unit that came back says so, naming the sale it reversed and
+        // the condition it came back in. Before this the attribute stayed
+        // the plan's return rate for the unit's whole life, so a returned
+        // unit and one never returned read the same (R12-COMMERCE-5090).
+        if let Some(returned) = self
+            .plane
+            .ledger()
+            .returns()
+            .iter()
+            .rev()
+            .find(|record| record.unit == unit)
+        {
+            attrs.insert(
+                "returns".to_string(),
+                Attr::Value(format!(
+                    "return rate {}; returned under {} as {}",
+                    self.plan.terms.returns.rate,
+                    returned.sale,
+                    condition_name(returned.condition)
+                )),
+            );
+        }
         let refreshed = UnitAttributes::new(unit, attrs)?;
         self.attributes.insert(unit.to_string(), refreshed);
         Ok(())
+    }
+
+    /// A unit's tracked record in the form the SIMULATE record journals, or
+    /// nothing for a unit the plane does not track.
+    fn tracked_unit(&self, unit: &str) -> Option<TrackedUnit> {
+        let record = self.attributes.get(unit)?;
+        let attributes = UNIT_ATTRIBUTES
+            .iter()
+            .filter_map(|name| {
+                record.get(name).map(|attr| {
+                    let text = match attr {
+                        Attr::Value(value) => value.clone(),
+                        Attr::Absent { reason } => format!("absent: {reason}"),
+                    };
+                    ((*name).to_string(), text)
+                })
+            })
+            .collect();
+        Some(TrackedUnit {
+            unit: unit.to_string(),
+            attributes,
+        })
     }
 
     /// What each resale venue offers for a unit whose market price is
