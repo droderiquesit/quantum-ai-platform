@@ -57,6 +57,14 @@ pub enum AmbientRecord {
         event: AttentionEvent,
         woke: Option<String>,
     },
+    /// The one finding the sweep composed from its attention events
+    /// (R12-AMBIENT-3027, ADR 0725): what the attention router's scope is
+    /// covered by. Written after the `Attention` records it cites, so the
+    /// finding's own falsifier can be checked against this journal.
+    AttentionFinding {
+        cycle: u64,
+        finding: qip_agents::finding::AgentFinding,
+    },
     /// A conditional scenario the sweep generated from one signal
     /// (R12-AMBIENT-1005), caused by that signal's record.
     Scenario {
@@ -272,6 +280,39 @@ impl AmbientJournal {
             count += 1;
         }
         Ok(count)
+    }
+
+    /// Write the sweep's attention finding, if it composed one
+    /// (R12-AMBIENT-3027, ADR 0725), under the sweep's own correlation and
+    /// after [`Self::record`] has written the `Attention` records it cites.
+    /// Its own door rather than a branch of `record`, so the count `record`
+    /// returns stays the count of what the sweep routed.
+    ///
+    /// The failure it prevents: a finding held only on the round is a report
+    /// nobody can reopen once the cycle line has scrolled away.
+    pub fn record_attention_finding(
+        &mut self,
+        cycle: u64,
+        round: &ResearchRound,
+        at: Timestamp,
+    ) -> Result<usize> {
+        let Some(finding) = &round.attention_finding else {
+            return Ok(0);
+        };
+        let correlation = self.last_correlation.clone().unwrap_or_else(|| {
+            CorrelationId::from_string(format!("attention-finding-{cycle}-{}", self.written))
+        });
+        let lineage = Lineage::root(correlation, AMBIENT_ORIGIN);
+        self.append(
+            &lineage,
+            AmbientRecord::AttentionFinding {
+                cycle,
+                finding: finding.clone(),
+            },
+            at,
+            at,
+        )?;
+        Ok(1)
     }
 
     pub fn record(&mut self, cycle: u64, round: &ResearchRound, at: Timestamp) -> Result<usize> {

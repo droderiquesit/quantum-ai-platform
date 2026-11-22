@@ -349,6 +349,17 @@ fn research_pass(
             .side_failures
             .push(format!("ambient journal: {}", error.message()));
     }
+    // The attention finding the sweep composed, after the attention records
+    // it cites (R12-AMBIENT-3027, ADR 0725): the router's scope is covered by
+    // this finding, and a finding on a cycle line only is one nobody can
+    // check against the events it names.
+    if let Some(journal) = loops.ambient.as_deref_mut()
+        && let Err(error) = journal.record_attention_finding(cycle, &round, now)
+    {
+        outcome
+            .side_failures
+            .push(format!("attention-finding journal: {}", error.message()));
+    }
     // The experiment packs of this cycle, on the same journal
     // (R12-EXPAND-6035): a campaign's backtest and findings printed on a
     // cycle line and written nowhere are a result nobody can reopen.
