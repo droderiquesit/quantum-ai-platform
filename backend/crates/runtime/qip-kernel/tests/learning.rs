@@ -162,11 +162,36 @@ fn platform() -> Result<Platform> {
     Platform::new(config, context, Telemetry::silent(), universe(), limits())
 }
 
+/// A day bar opening at `at`.
 fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Day, open, close)
+}
+
+/// An hour bar opening at `at`, so it closes — and becomes knowable — an hour
+/// later.
+///
+/// R12-TICK-2077: the fixtures that feed bars an hour apart used to stamp
+/// them `Interval::Day`, which describes twenty overlapping day buckets, the
+/// last closing twenty-three hours after the horizon the claim is graded at.
+/// While the as-of rule read a bar from its open time that mislabel was
+/// invisible; a rule on the close time rightly leaves such a bar out. The
+/// fixture is corrected to say what it always meant — hourly bars — rather
+/// than the rule being loosened to admit a bar that had not closed.
+fn hourly_bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Hour, open, close)
+}
+
+fn bar_over(
+    symbol: &str,
+    at: Timestamp,
+    interval: Interval,
+    open: f64,
+    close: f64,
+) -> SensedRecord {
     SensedRecord::Bar(Box::new(Bar {
         object_id: object(symbol),
         venue: "XNYS".to_string(),
-        interval: Interval::Day,
+        interval,
         open_time: at,
         open: Decimal::from_f64(open).expect("a price"),
         high: Decimal::from_f64(open.max(close) * 1.002).expect("a price"),
@@ -281,7 +306,7 @@ fn a_cycle_that_resolves_a_thesis_grades_it_and_moves_the_calibration_series() -
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);
@@ -442,7 +467,7 @@ fn the_cycle_that_grades_a_thesis_journals_each_agents_hit_rate() -> Result<()> 
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);
@@ -664,7 +689,7 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);
@@ -749,7 +774,7 @@ fn hourly_bars_until(symbol: &str, until: Timestamp, closes: &[f64]) -> Vec<Sens
         .enumerate()
         .map(|(i, close)| {
             let at = until.saturating_sub(Duration::from_mins((count - i as i64) * 60));
-            bar(symbol, at, *close, *close)
+            hourly_bar(symbol, at, *close, *close)
         })
         .collect()
 }
@@ -821,8 +846,15 @@ fn a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_ow
     let swinging: Vec<f64> = (0..24)
         .map(|i| if i % 2 == 0 { 150.0 } else { 100.0 })
         .collect();
+    // The last of them closes half an hour *before* the horizon, so the next
+    // bar on the tape is the one that straddles it.
+    let half_hour = Duration::from_mins(30);
     assert_eq!(
-        platform.observe(hourly_bars_until("AAA", horizon, &swinging)),
+        platform.observe(hourly_bars_until(
+            "AAA",
+            horizon.saturating_sub(half_hour),
+            &swinging
+        )),
         24,
         "premise: the bars up to the horizon were absorbed"
     );
@@ -831,23 +863,51 @@ fn a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_ow
     // After it: twenty-four hourly bars at one price, so the window the last
     // value held describes has no movement in it at all.
     let flat = [100.0_f64; 24];
-    let later = hourly_bars_until(
+    //
+    // The first of them is the bar the open-time rule leaked: it opens half an
+    // hour before the horizon and closes half an hour after it. Its close is a
+    // price nobody could have known at the horizon, so it is not in the view,
+    // although its bucket had started. Until the rule moved to the close time
+    // this bar was read, and the grade ran up to one bar interval past the
+    // horizon the claim named.
+    let mut later = hourly_bars_until(
         "AAA",
-        horizon.saturating_add(Duration::from_mins(26 * 60)),
+        horizon
+            .saturating_add(Duration::from_mins(23 * 60))
+            .saturating_add(half_hour),
         &flat,
     );
-    for record in &later {
+    for (index, record) in later.iter().enumerate() {
         let SensedRecord::Bar(bar) = record else {
             panic!("the fixture builds bars");
         };
-        assert!(
-            bar.open_time > horizon,
-            "premise: every later bar opens after the horizon"
-        );
+        if index == 0 {
+            assert!(
+                bar.open_time < horizon && bar.close_time() > horizon,
+                "premise: the first later bar opens before the horizon and closes after it"
+            );
+        } else {
+            assert!(
+                bar.open_time > horizon,
+                "premise: every other later bar opens after the horizon"
+            );
+        }
     }
+    let rest = later.split_off(1);
     assert_eq!(
         platform.observe(later),
-        24,
+        1,
+        "premise: the straddling bar was absorbed"
+    );
+    let through_the_straddler = claim_volatility(&platform.price_history()["obj-AAA"]);
+    assert!(
+        (through_the_straddler - as_of_horizon).abs() > 1e-3 * as_of_horizon,
+        "premise: reading the straddling bar changes the volatility the claim is settled on \
+         ({through_the_straddler} against {as_of_horizon}), so a grade that read it is visible"
+    );
+    assert_eq!(
+        platform.observe(rest),
+        23,
         "premise: the bars after the horizon were absorbed too"
     );
     let newest_held = claim_volatility(&platform.price_history()["obj-AAA"]);
@@ -892,14 +952,16 @@ fn a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_ow
     assert_eq!(graded.len(), 1, "the claim was not graded exactly once");
     let expected_bps = (as_of_horizon - reference) / reference.abs() * 10_000.0;
     let later_bps = (newest_held - reference) / reference.abs() * 10_000.0;
+    let straddled_bps = (through_the_straddler - reference) / reference.abs() * 10_000.0;
     assert!(
         expected_bps > 0.0 && later_bps < 0.0,
         "premise: the two tapes grade the claim in opposite directions"
     );
     assert!(
         (graded[0].realised_move_bps - expected_bps).abs() < 1e-6 * expected_bps.abs(),
-        "the miss was graded {} bps; the tape as of its horizon says {expected_bps} bps, and the \
-         bars after the horizon say {later_bps} bps",
+        "the miss was graded {} bps; the tape as of its horizon says {expected_bps} bps, the bar \
+         straddling the horizon would make it {straddled_bps} bps, and the bars after the horizon \
+         say {later_bps} bps",
         graded[0].realised_move_bps
     );
 
@@ -912,6 +974,294 @@ fn a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_ow
         "grading rewrote the claim it was grading"
     );
     assert!(settled.verdict.is_some(), "the claim was not settled");
+    Ok(())
+}
+
+/// One top-of-book quote on `symbol`, `spread_bps` wide around 100, captured
+/// the instant it was quoted.
+fn quote(symbol: &str, at: Timestamp, spread_bps: f64) -> SensedRecord {
+    let half = spread_bps / 2.0 / 10_000.0;
+    SensedRecord::Quote(qip_market::quote::Quote {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        capture_time: at,
+        sequence: None,
+        bid: Decimal::from_f64(100.0 * (1.0 - half)).expect("a price"),
+        ask: Decimal::from_f64(100.0 * (1.0 + half)).expect("a price"),
+        bid_size: dec!("500"),
+        ask_size: dec!("500"),
+        quality: DataQuality::default(),
+    })
+}
+
+/// How many opportunities were counted unpriced under `reason`.
+fn unpriced(platform: &Platform, reason: &str) -> u64 {
+    recorded(platform).counter(names::OPPORTUNITIES_UNPRICED, &labels([("reason", reason)]))
+}
+
+/// The kind of the anomaly REASON reads the claim from: the first one of the
+/// single opportunity the cycle queued.
+fn leading_anomaly(platform: &Platform) -> qip_opportunity_engine::detector::AnomalyKind {
+    let queue = platform.queue();
+    assert_eq!(
+        queue.len(),
+        1,
+        "premise: exactly one opportunity was queued"
+    );
+    queue[0]
+        .anomalies
+        .first()
+        .expect("premise: an opportunity carries the anomaly it was raised on")
+        .kind
+}
+
+#[test]
+fn a_spread_claim_rejected_on_review_is_graded_on_the_spread_quoted_as_of_its_horizon_and_never_on_a_later_quote()
+-> Result<()> {
+    // R12-TICK-2077. The spread series carried no time until its stamps were
+    // kept, so a spread claim graded a cycle late was settled on whatever was
+    // quoted last. That read was proven only by calling the view directly;
+    // here the claim is written by a cycle, rejected on review, and graded by
+    // a later cycle that holds a quote from each side of its horizon.
+    use qip_opportunity_engine::detector::AnomalyKind;
+    use qip_prediction::resolution::ResolutionCriteria;
+
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    // Sixty quotes a minute apart, two to three basis points wide, the last
+    // one blown out to forty.
+    let quotes: Vec<SensedRecord> = (0..60_i64)
+        .map(|i| {
+            let at = start().saturating_sub(Duration::from_mins(60 - i));
+            let spread = if i == 59 {
+                40.0
+            } else {
+                2.0 + 0.2 * (i % 5) as f64
+            };
+            quote("AAA", at, spread)
+        })
+        .collect();
+    assert_eq!(platform.observe(quotes), 60, "premise: the quotes landed");
+    let first = platform.run_cycle(start());
+    assert_eq!(
+        leading_anomaly(&platform),
+        AnomalyKind::LiquidityDeterioration,
+        "premise: the claim is read from the widened spread:\n{}",
+        first.summarise()
+    );
+    assert_eq!(
+        platform.predictions().len(),
+        1,
+        "premise: the first cycle wrote exactly one claim"
+    );
+    let prediction = platform.predictions()[0].clone();
+    assert!(prediction.is_open(), "premise: the claim is open");
+    let ResolutionCriteria::Threshold { metric, value, .. } =
+        prediction.proposition.criteria.clone()
+    else {
+        panic!("premise: the claim is a threshold on a published series");
+    };
+    assert_eq!(
+        metric, "spread:obj-AAA",
+        "premise: the claim is about the quoted spread"
+    );
+    let reference = value.to_f64();
+    assert!(
+        (reference - 40.0).abs() < 1e-6,
+        "premise: the reference is the spread quoted at the decision ({reference})"
+    );
+    let horizon = prediction.proposition.resolves_at;
+    assert!(
+        horizon > start(),
+        "premise: the claim resolves in the future"
+    );
+    assert!(
+        platform.evaluations().is_empty(),
+        "premise: nothing has been graded yet"
+    );
+
+    // One quote a minute before the horizon, sixty basis points wide; one a
+    // minute after it, ten wide. They sit on opposite sides of the reference.
+    let minute = Duration::from_mins(1);
+    assert_eq!(
+        platform.observe(vec![
+            quote("AAA", horizon.saturating_sub(minute), 60.0),
+            quote("AAA", horizon.saturating_add(minute), 10.0),
+        ]),
+        2,
+        "premise: both quotes were absorbed"
+    );
+
+    // LEARN runs a day late, holding both.
+    let graded_at = horizon.saturating_add(Duration::from_days(1));
+    let second = platform.run_cycle(graded_at);
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("graded"),
+        "LEARN did not grade the due claim: {}",
+        learn.detail
+    );
+    let remembered = platform
+        .remembered_episodes(graded_at.saturating_add(Duration::from_secs(1)))
+        .filter(|episode| episode.decision == qip_ai::memory::DecisionTaken::RejectedOnReview)
+        .count();
+    assert_eq!(
+        remembered, 1,
+        "premise: this claim was rejected on review, so it is a miss and not a trade"
+    );
+
+    let graded: Vec<_> = platform
+        .evaluations()
+        .iter()
+        .filter(|evaluation| evaluation.hypothesis_id == prediction.hypothesis)
+        .collect();
+    assert_eq!(graded.len(), 1, "the claim was not graded exactly once");
+    // (60 - 40) / 40 and (10 - 40) / 40, in basis points of the reference.
+    let expected_bps = 5_000.0;
+    let later_bps = -7_500.0;
+    assert!(
+        (graded[0].realised_move_bps - expected_bps).abs() < 1e-3,
+        "the spread claim was graded {} bps; the spread quoted as of its horizon says \
+         {expected_bps} bps and the quote after the horizon says {later_bps} bps",
+        graded[0].realised_move_bps
+    );
+    Ok(())
+}
+
+/// The jump-and-noise tape of [`bars`], with the jump on the bar `jump_at`.
+fn bars_jumping_at(symbol: &str, count: usize, jump_at: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == jump_at { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+#[test]
+fn an_opportunity_whose_anomaly_implies_no_mechanism_is_counted_unpriced_under_that_reason_and_writes_no_claim()
+-> Result<()> {
+    // R12-TICK-2077. An opportunity REASON declines to form a thesis on is
+    // never graded, and the only record that it was seen and left unpriced is
+    // `qip_opportunities_unpriced_total{reason="no_mechanism"}`. Nothing drove
+    // that label through a cycle, so deleting the count left every test green
+    // and a dashboard that read "nothing was missed".
+    use qip_financial::intelligence::MacroObservation;
+    use qip_opportunity_engine::detector::AnomalyKind;
+
+    let mut platform = platform()?;
+    // The jump is on the last bar, and a macro release on the *other* name
+    // was knowable six hours before the cycle: the event stream was watched
+    // and holds nothing that explains AAA's move.
+    platform.observe(bars_jumping_at("AAA", 120, 119));
+    let release = SensedRecord::Macro(Box::new(MacroObservation {
+        series_id: object("BBB").as_str().to_string(),
+        region: "US".to_string(),
+        value: 3.4,
+        unit: "percent".to_string(),
+        reference_date: start().saturating_sub(Duration::from_days(1)),
+        consensus: Some(3.1),
+        previous: Some(3.0),
+        is_revision: false,
+        provenance: Provenance::new(
+            "macro-desk",
+            start().saturating_sub(Duration::from_days(1)),
+            start().saturating_sub(Duration::from_mins(6 * 60)),
+        ),
+        quality: DataQuality::clean(),
+        evidence_unretrievable: false,
+    }));
+    assert_eq!(platform.observe(vec![release]), 1, "premise: it landed");
+    for reason in ["no_mechanism", "undirected_claim", "expired_unworked"] {
+        assert_eq!(unpriced(&platform, reason), 0, "premise: {reason} is zero");
+    }
+
+    let report = platform.run_cycle(start());
+    assert_eq!(
+        leading_anomaly(&platform),
+        AnomalyKind::UnexplainedMove,
+        "premise: the opportunity leads with a move nothing knowable explains:\n{}",
+        report.summarise()
+    );
+    assert!(
+        platform.predictions().is_empty(),
+        "a claim was written for an anomaly that implies no mechanism"
+    );
+    assert_eq!(
+        unpriced(&platform, "no_mechanism"),
+        1,
+        "the opportunity REASON formed no thesis on was not counted as unpriced"
+    );
+    assert_eq!(
+        unpriced(&platform, "undirected_claim"),
+        0,
+        "an opportunity with no thesis at all was filed as a thesis with no direction"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_thesis_with_no_direction_is_counted_unpriced_as_an_undirected_claim_and_writes_no_claim()
+-> Result<()> {
+    // R12-TICK-2077. A regime shift is a thesis with no side: there is no
+    // move to grade it on (ADR 0148), so it is reasoned about, written as no
+    // claim, and counted under `reason="undirected_claim"`. As with the label
+    // above, no cycle-level test read it.
+    use qip_opportunity_engine::detector::AnomalyKind;
+
+    let mut platform = platform()?;
+    // Two hundred day bars: a calm tape whose last six bars are three times
+    // as wide, with no single bar large enough to lead as a price move.
+    let count = 200usize;
+    let mut price = 100.0_f64;
+    let tape: Vec<SensedRecord> = (0..count)
+        .map(|i| {
+            let draw = (i as f64 * 0.7548776662) % 1.0 - 0.5;
+            let width = if i >= count - 6 { 0.009 } else { 0.003 };
+            let open = price;
+            price *= 1.0 + draw * 2.0 * width;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar("AAA", at, open, price)
+        })
+        .collect();
+    assert_eq!(platform.observe(tape), count, "premise: the tape landed");
+    for reason in ["no_mechanism", "undirected_claim", "expired_unworked"] {
+        assert_eq!(unpriced(&platform, reason), 0, "premise: {reason} is zero");
+    }
+
+    let report = platform.run_cycle(start());
+    assert_eq!(
+        leading_anomaly(&platform),
+        AnomalyKind::RegimeChange,
+        "premise: the opportunity leads with a regime change:\n{}",
+        report.summarise()
+    );
+    let reason = report.stage(Stage::Reason).expect("REASON ran");
+    assert!(
+        reason.detail.contains("; hypothesis "),
+        "premise: a thesis was formed, so this is not the no-mechanism path: {}",
+        reason.detail
+    );
+    assert!(
+        platform.predictions().is_empty(),
+        "a claim with no direction was written down as gradeable"
+    );
+    assert_eq!(
+        unpriced(&platform, "undirected_claim"),
+        1,
+        "the thesis with no direction was not counted as unpriced"
+    );
+    assert_eq!(
+        unpriced(&platform, "no_mechanism"),
+        0,
+        "a thesis that was formed was filed as an anomaly with no mechanism"
+    );
     Ok(())
 }
 
@@ -2659,7 +3009,7 @@ fn a_resolved_claim_is_scored_against_the_regime_it_resolved_in() -> Result<()> 
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);
@@ -2809,7 +3159,7 @@ fn per_horizon_brier_scores_are_recorded_with_horizon_label() -> Result<()> {
                 (150.0, 100.0)
             };
             let at = horizon_resolution.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);
@@ -3401,7 +3751,7 @@ fn a_resolved_prediction_updates_the_calibration_report() -> Result<()> {
             } else {
                 (150.0, 100.0)
             };
-            bar(
+            hourly_bar(
                 "AAA",
                 horizon.saturating_sub(Duration::from_mins((20 - i) * 60)),
                 open,

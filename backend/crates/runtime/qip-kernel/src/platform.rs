@@ -25147,20 +25147,21 @@ impl Platform {
     /// settled by a number the platform never measured.
     ///
     /// **As of the horizon, not as of the read** (R12-TICK-2077). A bar is in
-    /// the view when its `open_time` is at or before `horizon`, and a spread
-    /// when it was quoted at or before it; everything stamped later is left
+    /// the view when it had *closed* at or before `horizon`
+    /// ([`Bar::close_time`], the bucket's start plus its interval), and a
+    /// spread when it was quoted at or before it; everything later is left
     /// out however long ago the platform absorbed it. The closes come from
     /// `bar_history`, the only series that carries a time — `price_history`
     /// is the same closes with the stamps thrown away — so a subject with no
     /// bar in the view publishes nothing and its claim stays open.
     ///
-    /// The limit, said out loud: a bar is stamped by the bucket it covers,
-    /// and the rule is on the bucket's *start*. A bar that opened before the
-    /// horizon and closed after it is in the view, so the read can run up to
-    /// one bar interval past the horizon and no further. `Bar` carries no
-    /// instant at which it became known, and the platform absorbs a bar
-    /// whenever its feed delivers it, so the start of the bucket is the one
-    /// stamp every bar has.
+    /// The rule was on the bucket's *start* for one commit, and that leaked:
+    /// a bar that opened before the horizon and closed after it was read, so
+    /// a grade could run up to one bar interval past the horizon the claim
+    /// named — a day, on day bars. A bar's close is not a fact until the
+    /// bucket ends. The limit that remains is the bar itself: a horizon that
+    /// falls inside a bucket is settled on the last *completed* bar before
+    /// it, so the read can be up to one interval early and is never late.
     fn published_observations<'a>(
         &self,
         horizon: Timestamp,
@@ -25178,7 +25179,7 @@ impl Platform {
                     .get(subject)
                     .map(|bars| {
                         bars.iter()
-                            .filter(|bar| bar.open_time <= horizon)
+                            .filter(|bar| bar.close_time() <= horizon)
                             .map(|bar| bar.close.to_f64())
                             .collect()
                     })
@@ -37461,15 +37462,19 @@ mod retention_tests {
         let newest_spread = numeric(&newest, "spread:obj-AAA").expect("a spread");
         assert!((newest_spread - 20.0).abs() < 1e-6, "{newest_spread}");
 
-        // Ten days and five seconds back: bars 0..=30 and quotes 0..=5.
+        // Ten days back: bars 0..=29, and no quote. Bar 30 *opens* on the
+        // horizon and closes a day after it, so its close (130) was not
+        // knowable then. This asserted 130 while the rule read a bar from its
+        // open time; that was the leak, written down as the expectation.
         let horizon = start().saturating_sub(Duration::from_days(10));
         let earlier = platform.published_observations(horizon, metrics.into_iter());
         assert_eq!(
             numeric(&earlier, "close:obj-AAA"),
-            Some(130.0),
-            "the close as of the horizon is the bar that opened on it, not a later one"
+            Some(129.0),
+            "the close as of the horizon is the last bar that had closed by it, not the bar \
+             that opened on it"
         );
-        let closes: Vec<f64> = (0..=30).map(|i| 100.0 + f64::from(i)).collect();
+        let closes: Vec<f64> = (0..=29).map(|i| 100.0 + f64::from(i)).collect();
         let returns = qip_numerics::stats::log_returns(&closes);
         // Through the same `Decimal` the published observation passes through.
         let expected =
