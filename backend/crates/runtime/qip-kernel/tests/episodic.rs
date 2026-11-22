@@ -1083,37 +1083,95 @@ fn every_call_charged_to_research_memory_carries_the_regime_it_was_made_in() -> 
 /// to research memory under their regime, its finding reports the record it
 /// read rather than a pooled rate.
 ///
+/// The regime is asserted as a value, not as punctuation: until 2026-11-22
+/// this test asked that the claim contain `"; in "` and a `/`, both literals
+/// of `MetaBrain::arbitrate`'s own format string, which a brief carrying no
+/// regime at all satisfies whenever any other clause follows. It now reads
+/// the brief the audit trail recorded for the Meta Brain's run, and the
+/// delimited regime in the claim, against `Platform::regime_context`.
+///
 /// Mutations: drop the `in_regime` call where `stage_reason` builds the brief
-/// — the claim reads "every regime, pooled"; drop `with_arbiters` from
+/// — the recorded brief names no regime; drop `with_arbiters` from
 /// `Organisation::standard` — the meta brain never runs.
 #[test]
 fn the_reason_stage_runs_the_meta_brain_under_the_regime_in_force() -> Result<()> {
     let (t2, t3) = resolution_instants()?;
     let (platform, _) = three_cycles(t2, t3)?;
-    let runs = platform
-        .organisation()
-        .audit()
-        .for_agent(qip_investment_agents::ids::META);
+    let regime = platform.regime_context(object("AAA").as_str());
     assert!(
-        !runs.is_empty(),
-        "the meta brain never ran in a REASON dispatch"
+        regime
+            .split_once('/')
+            .is_some_and(|(market, volatility)| !market.is_empty() && !volatility.is_empty()),
+        "premise: the platform keys a regime as market/volatility: {regime}"
     );
-    let last = runs
-        .iter()
-        .filter_map(|run| run.finding.as_ref())
-        .next_back()
-        .expect("the meta brain's run produced a finding");
-    assert!(
-        !last.claim.contains("every regime, pooled"),
-        "the brief named no regime: {}",
-        last.claim
+    let (brief, last) = last_meta_run(&platform);
+    assert_eq!(
+        brief.as_of, t3,
+        "premise: the run read is the third cycle's REASON"
     );
-    assert!(
-        last.claim.contains("; in ") && last.claim.contains('/'),
-        "the claim does not name a market/volatility regime: {}",
+    assert_eq!(
+        brief.regime.as_deref(),
+        Some(regime.as_str()),
+        "the Meta Brain was not briefed under the regime in force"
+    );
+    assert_eq!(
+        regime_the_claim_names(&last.claim),
+        Some(regime.as_str()),
+        "the claim does not name the regime in force: {}",
         last.claim
     );
     Ok(())
+}
+
+/// The brief and the finding of the Meta Brain's most recent run that
+/// produced a finding, as the organisation's audit trail holds them.
+fn last_meta_run(
+    platform: &Platform,
+) -> (
+    &qip_agents::finding::AgentBrief,
+    &qip_agents::finding::AgentFinding,
+) {
+    platform
+        .organisation()
+        .audit()
+        .records()
+        .iter()
+        .rev()
+        .filter(|run| run.agent_id == qip_investment_agents::ids::META)
+        .find_map(|run| run.finding.as_ref().map(|finding| (&run.brief, finding)))
+        .expect("the meta brain ran in a REASON dispatch and produced a finding")
+}
+
+/// The regime a Meta Brain claim says its counts are for: the text between
+/// `in ` and the comma in the clause `in {regime}, N specialist(s) measured`,
+/// whole — never a substring test, which a neighbouring regime would pass.
+fn regime_the_claim_names(claim: &str) -> Option<&str> {
+    claim.split("; ").find_map(|clause| {
+        let (regime, rest) = clause.strip_prefix("in ")?.split_once(", ")?;
+        rest.contains("specialist(s) measured").then_some(regime)
+    })
+}
+
+/// Every fact of `finding` whose label starts with `prefix`, by label.
+fn facts_under(
+    finding: &qip_agents::finding::AgentFinding,
+    prefix: &str,
+) -> std::collections::BTreeMap<String, f64> {
+    finding
+        .facts
+        .iter()
+        .filter(|fact| fact.label.starts_with(prefix))
+        .map(|fact| (fact.label.clone(), fact.value))
+        .collect()
+}
+
+/// One fact of `finding` by its exact label.
+fn fact_of(finding: &qip_agents::finding::AgentFinding, label: &str) -> Option<f64> {
+    finding
+        .facts
+        .iter()
+        .find(|fact| fact.label == label)
+        .map(|fact| fact.value)
 }
 
 /// R12-AMBIENT-3024, the models half, through the cycle on
@@ -1132,10 +1190,10 @@ fn the_reason_stage_runs_the_meta_brain_under_the_regime_in_force() -> Result<()
 /// the kernel feeds the desk by — and must count as measured in the regime in
 /// force exactly the forecasters scored in that regime.
 ///
-/// Mutations: leave `view.regime_records` unset in
-/// `Platform::brief_the_desk_on_models` — no cell is reported; file every
-/// cell under one fixed regime in `Tournament::regime_briers` — the cells no
-/// longer match the scorecards' regimes.
+/// Mutations: delete `self.hand_the_arbiters_the_models_record();` from
+/// `stage_reason` — no cell is reported; file every cell under one fixed
+/// regime in `Tournament::regime_briers` — the cells no longer match the
+/// scorecards' regimes.
 #[test]
 fn the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in()
 -> Result<()> {
@@ -1198,6 +1256,18 @@ fn the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tourname
         expected_brier.len() >= 2,
         "premise: the second cycle's LEARN scored the first cycle's forecasters: \
          {expected_brier:?}"
+    );
+    // The premise the count below stands on. Without it `in_force` could be
+    // zero and a Meta Brain that counted no model in any regime would agree.
+    assert!(
+        in_force >= 2,
+        "premise: forecasters are scored in the regime in force ({regime_in_force}): \
+         {expected_brier:?}"
+    );
+    assert_eq!(
+        last_meta_run(&platform).0.regime.as_deref(),
+        Some(regime_in_force.as_str()),
+        "premise: the Meta Brain was briefed under `Platform::regime_context`'s key"
     );
     assert!(
         expected_brier
@@ -1391,4 +1461,477 @@ fn a_resolved_episode_remembers_the_fills_on_the_orders_that_expressed_its_claim
         assert_eq!(remembered.price, fill.price);
     }
     Ok(())
+}
+
+/// A quote on `symbol` whose spread is `bps` basis points of a hundred-dollar
+/// mid — the fixture `regime_boundary.rs` turns a subject illiquid with.
+fn quote(symbol: &str, at: Timestamp, bps: f64) -> SensedRecord {
+    let half = 100.0 * bps / 20_000.0;
+    SensedRecord::Quote(qip_market::quote::Quote {
+        object_id: object(symbol),
+        venue: "XNYS".to_string(),
+        at,
+        capture_time: at,
+        sequence: None,
+        bid: Decimal::from_f64(100.0 - half).expect("a price"),
+        ask: Decimal::from_f64(100.0 + half).expect("a price"),
+        bid_size: dec!("1000"),
+        ask_size: dec!("1000"),
+        quality: DataQuality::default(),
+    })
+}
+
+/// The latest horizon among the claims still open, where the next resolving
+/// cycle must run past.
+fn latest_open_horizon(platform: &Platform) -> Timestamp {
+    platform
+        .predictions()
+        .iter()
+        .filter(|prediction| prediction.verdict.is_none())
+        .map(|prediction| prediction.proposition.resolves_at)
+        .max()
+        .expect("premise: the cycle left a claim open")
+}
+
+/// What the tournament holds per (forecaster, regime), read through
+/// `Tournament::scorecards` — a different path from `regime_briers`, the one
+/// the kernel hands the Meta Brain by — as `model_brier:` and `model_scored:`
+/// facts would state it, with the forecasters scored in each regime.
+#[derive(Debug, Default, PartialEq)]
+struct TournamentRecord {
+    brier: std::collections::BTreeMap<String, f64>,
+    scored: std::collections::BTreeMap<String, f64>,
+    by_regime: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+impl TournamentRecord {
+    fn models(&self) -> std::collections::BTreeSet<&String> {
+        self.by_regime.values().flatten().collect()
+    }
+    fn measured_in(&self, regime: &str) -> usize {
+        self.by_regime.get(regime).map_or(0, |models| models.len())
+    }
+}
+
+fn tournament_record(
+    platform: &Platform,
+    forecasters: &std::collections::BTreeSet<String>,
+) -> TournamentRecord {
+    let mut record = TournamentRecord::default();
+    for forecaster in forecasters {
+        for card in platform.model_tournament().scorecards(forecaster) {
+            let Some(brier) = card.brier.value() else {
+                continue;
+            };
+            let cell = format!("{forecaster}@{}", card.regime);
+            record.brier.insert(format!("model_brier:{cell}"), brier);
+            record
+                .scored
+                .insert(format!("model_scored:{cell}"), card.resolved as f64);
+            record
+                .by_regime
+                .entry(card.regime.clone())
+                .or_default()
+                .insert(forecaster.clone());
+        }
+    }
+    record
+}
+
+/// R12-AMBIENT-3024, "which models are reliable **in which regimes**",
+/// through the production producer: `Tournament::regime_briers` read by
+/// `Platform::stage_reason` and handed to the Meta Brain, on
+/// `PlatformConfig::default`, across a regime that actually turns. The test
+/// beside this one runs on a tape that never leaves one regime, so a
+/// tournament that pooled a forecaster's scores across regimes and filed the
+/// pool under every label, or a Meta Brain that counted a model measured
+/// wherever it had any record, passed it — which is what two independent
+/// readers found on 2026-11-22.
+///
+/// Five cycles on one name. The first two open and resolve questions in the
+/// regime the tape starts in. A quote thirty times wider than the name's
+/// median then turns it illiquid, and stays: the third cycle's REASON runs in
+/// the new regime with every model's record earned in the old one, so the
+/// Meta Brain must count **none** measured in force and all of them
+/// unmeasured. The third and fourth cycles' questions open in the new regime
+/// and resolve, so by the fifth REASON the forecasters hold a cell in each,
+/// and every cell must be the tournament's own figure for that regime alone —
+/// one scored forecast in the old regime is not two because the model has
+/// since been scored in the new one.
+///
+/// Mutations: pool every regime's scores under each label in
+/// `Tournament::regime_briers`; count every model as measured whatever the
+/// regime (drop the `wanted == c.regime` filter in `MetaBrain::arbitrate`);
+/// delete the hand-off from `stage_reason`.
+#[test]
+fn a_model_scored_in_one_regime_is_unmeasured_when_the_tape_turns_and_is_never_pooled_across_them()
+-> Result<()> {
+    let name = object("AAA");
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    // Three tight quotes, so the median the spread is compared against is a
+    // tight one; fewer and the regime could never turn on liquidity.
+    for day in 0..3 {
+        platform.observe(vec![quote(
+            "AAA",
+            start().saturating_sub(Duration::from_days(3 - day)),
+            10.0,
+        )]);
+    }
+    let mut forecasters = std::collections::BTreeSet::new();
+    let mut cycle = |platform: &mut Platform, at: Timestamp| {
+        platform.run_cycle(at);
+        forecasters.extend(
+            platform
+                .model_tournament()
+                .open_questions()
+                .flat_map(|question| question.forecasts().keys().cloned()),
+        );
+        let horizon = latest_open_horizon(platform);
+        platform.observe(swings("AAA", horizon));
+        (
+            forecasters.clone(),
+            horizon.saturating_add(Duration::from_mins(1)),
+        )
+    };
+
+    let (_, t2) = cycle(&mut platform, start());
+    let settled = platform.regime_context(name.as_str());
+    let (known, t3) = cycle(&mut platform, t2);
+    assert_eq!(
+        platform.regime_context(name.as_str()),
+        settled,
+        "premise: the first two cycles ran in one regime"
+    );
+    let before_the_turn = tournament_record(&platform, &known);
+    assert!(
+        before_the_turn.measured_in(&settled) >= 2 && before_the_turn.by_regime.len() == 1,
+        "premise: the second cycle scored the first's forecasters, all in {settled}: \
+         {before_the_turn:?}"
+    );
+
+    // The turn.
+    platform.observe(vec![quote("AAA", t3, 300.0)]);
+    let (_, t4) = cycle(&mut platform, t3);
+    let turned = platform.regime_context(name.as_str());
+    assert_ne!(
+        settled, turned,
+        "premise: the regime key changed; without that nothing here discriminates"
+    );
+    {
+        let (brief, finding) = last_meta_run(&platform);
+        assert_eq!(brief.as_of, t3, "premise: the third cycle's REASON");
+        assert_eq!(brief.regime.as_deref(), Some(turned.as_str()));
+        assert_eq!(
+            regime_the_claim_names(&finding.claim),
+            Some(turned.as_str())
+        );
+        assert_eq!(
+            facts_under(finding, "model_brier:"),
+            before_the_turn.brier,
+            "{}",
+            finding.claim
+        );
+        // Every record was earned in the regime the tape has left.
+        assert_eq!(
+            fact_of(finding, "models_measured_in_regime"),
+            Some(0.0),
+            "a record earned in {settled} was read as a record in {turned}: {}",
+            finding.claim
+        );
+        assert_eq!(
+            fact_of(finding, "models_unmeasured_in_regime"),
+            Some(before_the_turn.models().len() as f64),
+            "{}",
+            finding.claim
+        );
+    }
+
+    let (known, t5) = cycle(&mut platform, t4);
+    assert_eq!(
+        platform.regime_context(name.as_str()),
+        turned,
+        "premise: the name stayed in the regime it turned to"
+    );
+    // What the fifth REASON can know: everything LEARN had scored by the end
+    // of the fourth cycle, so the snapshot is taken before the fifth runs.
+    let both = tournament_record(&platform, &known);
+    platform.run_cycle(t5);
+    assert!(
+        both.by_regime.contains_key(&settled) && both.by_regime.contains_key(&turned),
+        "premise: forecasts were scored in both regimes: {both:?}"
+    );
+    let in_both: Vec<&String> = both.by_regime[&settled]
+        .intersection(&both.by_regime[&turned])
+        .collect();
+    assert!(
+        in_both.iter().any(|model| model.starts_with("detector:"))
+            && in_both.iter().any(|model| model.starts_with("analyst:")),
+        "premise: a detector and an analyst each hold a cell in both regimes: {in_both:?}"
+    );
+    assert!(
+        in_both.iter().any(|model| {
+            both.brier[&format!("model_brier:{model}@{settled}")]
+                != both.brier[&format!("model_brier:{model}@{turned}")]
+        }),
+        "premise: some model's record differs between the regimes, so a pooled figure is \
+         neither: {both:?}"
+    );
+    assert!(
+        both.measured_in(&turned) < both.models().len(),
+        "premise: some model is scored only in {settled}, so a regime-blind count differs: \
+         {both:?}"
+    );
+
+    let (brief, finding) = last_meta_run(&platform);
+    assert_eq!(brief.as_of, t5, "premise: the fifth cycle's REASON");
+    assert_eq!(brief.regime.as_deref(), Some(turned.as_str()));
+    assert_eq!(
+        facts_under(finding, "model_brier:"),
+        both.brier,
+        "a cell is not the tournament's figure for its own regime: {}",
+        finding.claim
+    );
+    assert_eq!(
+        facts_under(finding, "model_scored:"),
+        both.scored,
+        "{}",
+        finding.claim
+    );
+    assert_eq!(
+        fact_of(finding, "model_regime_reliability_cells"),
+        Some(both.brier.len() as f64)
+    );
+    assert_eq!(
+        fact_of(finding, "models_measured_in_regime"),
+        Some(both.measured_in(&turned) as f64),
+        "in {turned}: {}",
+        finding.claim
+    );
+    assert_eq!(
+        fact_of(finding, "models_unmeasured_in_regime"),
+        Some((both.models().len() - both.measured_in(&turned)) as f64),
+        "in {turned}: {}",
+        finding.claim
+    );
+    eprintln!("evidence: {}", finding.claim);
+    Ok(())
+}
+
+/// Twenty swinging bars up to `horizon` that end high where `swings` ends
+/// low, so the tape the next REASON reads has just risen by half.
+fn swings_ending_high(symbol: &str, horizon: Timestamp) -> Vec<SensedRecord> {
+    (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (150.0, 100.0)
+            } else {
+                (100.0, 150.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            hourly_bar(symbol, at, open, close)
+        })
+        .collect()
+}
+
+/// R12-AMBIENT-3024, "allocating research attention" and "resolving
+/// disagreements", through `Platform::run_cycle` on `PlatformConfig::default`.
+/// Both were proven on `Organisation::standard` with a research memory the
+/// test wrote; nothing showed the cycle's own REASON reaching either with the
+/// memory the cycle's own LEARN had charged. The register recorded that the
+/// production panel is not contested on the populated fixture. In the cycle
+/// it is: the first panel on a fresh name disagrees (with no record to weigh
+/// it by, which the test asserts is said rather than resolved), and once two
+/// theses have resolved a tape that has just risen sets the equity analyst
+/// against the simulation analyst again, this time with both on the record.
+///
+/// The expected figures are arithmetic done here from two things the Meta
+/// Brain did not write: the per-(agent, regime) record research memory held
+/// before the cycle ran, and the panel's own findings as the audit trail
+/// holds them.
+///
+/// Mutations: weigh the contested panel by conviction alone (drop
+/// `* reliability` in `reliability_weighted_balance`); give every measured
+/// specialist an even share (`1.0 / measured.len()` for `reliability / total`
+/// in `MetaBrain::arbitrate`).
+#[test]
+fn the_cycle_resolves_its_own_contested_panel_and_allocates_attention_by_the_record_it_charged()
+-> Result<()> {
+    use qip_agents::finding::Direction;
+    let name = object("AAA");
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+
+    // Cycle one: contested, and nobody has a record.
+    let first = platform.run_cycle(start());
+    assert!(
+        reason_clauses(&first).contains(&"contested".to_string()),
+        "premise: the first panel is contested: {:?}",
+        reason_clauses(&first)
+    );
+    {
+        let (_, finding) = last_meta_run(&platform);
+        assert_eq!(fact_of(finding, "reliability_weighted_balance"), None);
+        assert_eq!(fact_of(finding, "attention_allocated"), None);
+        assert!(
+            finding
+                .caveats
+                .iter()
+                .any(|caveat| caveat.starts_with("contested, unresolved:")),
+            "a contested panel nobody's record can weigh was not reported unresolved: {:?}",
+            finding.caveats
+        );
+    }
+
+    // Two resolutions, then a third and fourth REASON on a tape that ends
+    // high. The fourth is the one read: by then both dissenting authors hold
+    // a record that is neither nothing nor everything.
+    let mut at = start();
+    for round in 0..3 {
+        let horizon = latest_open_horizon(&platform);
+        platform.observe(if round == 0 {
+            swings("AAA", horizon)
+        } else {
+            swings_ending_high("AAA", horizon)
+        });
+        at = horizon.saturating_add(Duration::from_mins(1));
+        if round < 2 {
+            platform.run_cycle(at);
+        }
+    }
+    let regime = platform.regime_context(name.as_str());
+    // The record REASON will read: what memory holds before the cycle runs.
+    let record: std::collections::BTreeMap<String, f64> = platform
+        .research_memory()
+        .reliability_by_regime(at)
+        .into_iter()
+        .filter(|((_, cell_regime), _)| *cell_regime == regime)
+        .filter_map(|((agent, _), cell)| Some((agent, cell.hit_rate()?)))
+        .collect();
+    assert!(
+        record.len() >= 2,
+        "premise: LEARN charged at least two analysts in {regime}: {record:?}"
+    );
+    let fourth = platform.run_cycle(at);
+    assert!(
+        reason_clauses(&fourth).contains(&"contested".to_string()),
+        "premise: the fourth panel is contested: {:?}",
+        reason_clauses(&fourth)
+    );
+    let (brief, finding) = last_meta_run(&platform);
+    assert_eq!(brief.as_of, at, "premise: the fourth cycle's REASON");
+    assert_eq!(brief.regime.as_deref(), Some(regime.as_str()));
+
+    // The panel of that dispatch, from the audit trail.
+    let panel: Vec<&qip_agents::finding::AgentFinding> = platform
+        .organisation()
+        .audit()
+        .records()
+        .iter()
+        .filter(|run| run.brief.as_of == at && run.brief.question == brief.question)
+        .filter(|run| run.agent_id != qip_investment_agents::ids::META)
+        .filter_map(|run| run.finding.as_ref())
+        .collect();
+
+    // Disagreement: sign x effective conviction x hit rate in the regime,
+    // over the authors that took a side and hold a record.
+    let mut numerator = 0.0;
+    let mut denominator = 0.0;
+    let mut signs = std::collections::BTreeSet::new();
+    for author in &panel {
+        let sign = match author.direction {
+            Direction::Positive => 1.0,
+            Direction::Negative => -1.0,
+            _ => continue,
+        };
+        let Some(rate) = record.get(&author.agent_id) else {
+            continue;
+        };
+        let weight = author.effective_conviction() * rate;
+        numerator += sign * weight;
+        denominator += weight;
+        if weight > 0.0 {
+            signs.insert(sign > 0.0);
+        }
+    }
+    assert_eq!(
+        signs.len(),
+        2,
+        "premise: authors with a record weigh in on both sides, so the balance is not ±1"
+    );
+    let expected = numerator / denominator;
+    let conviction_only: f64 = {
+        let (n, d) = panel
+            .iter()
+            .filter(|f| record.contains_key(&f.agent_id))
+            .fold((0.0, 0.0), |(n, d), f| match f.direction {
+                Direction::Positive => (n + f.effective_conviction(), d + f.effective_conviction()),
+                Direction::Negative => (n - f.effective_conviction(), d + f.effective_conviction()),
+                _ => (n, d),
+            });
+        n / d
+    };
+    assert!(
+        (expected - conviction_only).abs() > 1e-3,
+        "premise: the record moves the balance ({expected} against {conviction_only} unweighed)"
+    );
+    let resolved =
+        fact_of(finding, "reliability_weighted_balance").expect("the contested panel was resolved");
+    assert!(
+        (resolved - expected).abs() < 1e-12,
+        "resolved to {resolved}, expected {expected}: {}",
+        finding.claim
+    );
+
+    // Attention: each measured author's hit rate over the measured total.
+    let authors: std::collections::BTreeSet<&String> = panel.iter().map(|f| &f.agent_id).collect();
+    let measured: std::collections::BTreeMap<&String, f64> = record
+        .iter()
+        .filter(|(agent, _)| authors.contains(agent))
+        .map(|(agent, rate)| (agent, *rate))
+        .collect();
+    let total: f64 = measured.values().sum();
+    let rates: std::collections::BTreeSet<String> =
+        measured.values().map(|rate| format!("{rate:.6}")).collect();
+    assert!(
+        measured.len() >= 2 && rates.len() >= 2,
+        "premise: two measured authors with different records, so an even split is wrong: \
+         {measured:?}"
+    );
+    assert_eq!(
+        fact_of(finding, "attention_allocated"),
+        Some(measured.len() as f64),
+        "{}",
+        finding.claim
+    );
+    let weights = facts_under(finding, "attention_weight:");
+    assert_eq!(
+        weights.keys().cloned().collect::<Vec<_>>(),
+        measured
+            .keys()
+            .map(|agent| format!("attention_weight:{agent}"))
+            .collect::<Vec<_>>(),
+        "attention went to someone other than the measured authors"
+    );
+    for (agent, rate) in &measured {
+        let weight = weights[&format!("attention_weight:{agent}")];
+        assert!(
+            (weight - rate / total).abs() < 1e-12,
+            "{agent} was given {weight}, its record is {rate} of {total}"
+        );
+    }
+    eprintln!("evidence: {}", finding.claim);
+    Ok(())
+}
+
+/// The REASON stage's detail split into its clauses, so `contested` is
+/// matched as a whole clause and not as a substring of another.
+fn reason_clauses(report: &qip_kernel::cycle::CycleReport) -> Vec<String> {
+    report
+        .stage(Stage::Reason)
+        .expect("REASON ran")
+        .detail
+        .split([',', ';'])
+        .map(|clause| clause.trim().to_string())
+        .collect()
 }

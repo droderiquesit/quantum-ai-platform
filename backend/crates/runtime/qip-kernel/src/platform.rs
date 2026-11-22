@@ -151,11 +151,11 @@ use qip_financial::intelligence::MacroObservation;
 use qip_financial::ladder::{LadderEntry, LiquidityLadder, PlanLeg, Rung};
 use qip_financial::universe::{CatalogueOrigin, Universe};
 use qip_investment_agents::Organisation;
+use qip_investment_agents::chief::ModelRegimeRecord;
 use qip_investment_agents::desk::{
     ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
     ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
-    ModelRegimeRecord, ModelsView, PoolReading, PrivateMarketsView, RiskView, SymbolicView,
-    TradeSide,
+    ModelsView, PoolReading, PrivateMarketsView, RiskView, SymbolicView, TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -12991,6 +12991,36 @@ impl Platform {
         self.executions.update(|view| view.executions = records);
     }
 
+    /// Hand the organisation's arbiters every forecaster's record by the
+    /// regime its questions were opened in, as the model tournament holds it
+    /// now (R12-AMBIENT-3024, ADR 0724), before the panel is convened.
+    ///
+    /// Handed with the panel and not written to the desk's model-registry
+    /// slot: the Meta Brain's manifest grants research memory and nothing
+    /// else (ADR 0466, decision 2), and that slot opens the whole
+    /// `ModelsView`. Not limited to open questions as the probe's
+    /// `forecasters` are: the record a model earned in a regime stands
+    /// whether or not it is being asked anything now. Only questions LEARN
+    /// already resolved are in it, so it holds nothing this REASON could not
+    /// have known. Rebuilt whole each time.
+    fn hand_the_arbiters_the_models_record(&mut self) {
+        let records: Vec<ModelRegimeRecord> = self
+            .tournament
+            .tournament()
+            .regime_briers()
+            .into_iter()
+            .map(
+                |((model, regime), (mean_brier, scored))| ModelRegimeRecord {
+                    model,
+                    regime,
+                    mean_brier,
+                    scored,
+                },
+            )
+            .collect();
+        self.organisation.hand_model_records(records);
+    }
+
     /// Write the platform's forecaster records and drift report into the
     /// slot the desk's model-failure probe reads, before the panel is
     /// convened (R12-REASON-3023). Forecasters are the ones the tournament
@@ -13023,28 +13053,9 @@ impl Platform {
         }
         let forecasters: Vec<ForecasterHealth> = seen.into_values().collect();
         let drifted: Vec<String> = self.drifted_models.iter().cloned().collect();
-        // Every forecaster's record by the regime its questions were opened
-        // in, for the Meta Brain (R12-AMBIENT-3024). Not limited to open
-        // questions as `forecasters` is: the record a model earned in a
-        // regime stands whether or not it is being asked anything now. Only
-        // questions LEARN already resolved are in it, so it holds nothing
-        // this REASON could not have known.
-        let regime_records: Vec<ModelRegimeRecord> = tournament
-            .regime_briers()
-            .into_iter()
-            .map(
-                |((model, regime), (mean_brier, scored))| ModelRegimeRecord {
-                    model,
-                    regime,
-                    mean_brier,
-                    scored,
-                },
-            )
-            .collect();
         self.models.update(|view| {
             view.forecasters = forecasters;
             view.drifted = drifted;
-            view.regime_records = regime_records;
         });
     }
 
@@ -18238,6 +18249,7 @@ impl Platform {
         self.brief_the_desk_on_book();
         self.brief_the_desk_on_executions();
         self.brief_the_desk_on_models();
+        self.hand_the_arbiters_the_models_record();
         self.brief_the_desk_on_chain();
         self.brief_the_desk_on_private_markets(now);
         self.brief_the_desk_on_company();

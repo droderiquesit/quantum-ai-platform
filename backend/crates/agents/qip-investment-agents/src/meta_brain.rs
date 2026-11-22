@@ -11,7 +11,9 @@
 //!   Models are measured the same way and from their own source: the model
 //!   tournament files every scored forecast under the regime its question
 //!   was opened in, and the kernel hands the per-(model, regime) mean Brier
-//!   through the desk's model-registry gate (`ModelsView::regime_records`).
+//!   with the panel (`PanelView::model_records`, ADR 0724) — handed, as the
+//!   panel's findings are, so the manifest still grants research memory and
+//!   nothing else (ADR 0466, decision 2).
 //!   A model's record in one regime is never counted as its record in
 //!   another, and a model with no scored forecast in the regime in force is
 //!   counted unmeasured there rather than read at its record elsewhere.
@@ -31,8 +33,8 @@
 //! resolution beside the panel's balance; acting on either is REASON's
 //! decision.
 
-use crate::chief::{Arbiter, PanelView};
-use crate::desk::{Desk, ModelRegimeRecord};
+use crate::chief::{Arbiter, ModelRegimeRecord, PanelView};
+use crate::desk::Desk;
 use crate::support::{FindingBuilder, computed};
 use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
@@ -128,10 +130,7 @@ impl Arbiter for MetaBrain {
             let memory = self.desk.memory.get(ctx)?;
             memory.reliability_by_regime(brief.as_of)
         };
-        let model_cells: Vec<ModelRegimeRecord> = {
-            let models = self.desk.models.get(ctx)?;
-            models.regime_records.clone()
-        };
+        let model_cells: &[ModelRegimeRecord] = &panel.model_records;
         let regime = brief.regime.as_deref();
         let records = records_in(&cells, regime);
         let regimes: BTreeSet<&str> = cells.keys().map(|(_, r)| r.as_str()).collect();
@@ -250,7 +249,7 @@ impl Arbiter for MetaBrain {
                 "count",
                 &["model_tournament"],
             ));
-            for cell in &model_cells {
+            for cell in model_cells {
                 facts.push((
                     format!("model_brier:{}@{}", cell.model, cell.regime),
                     cell.mean_brier,

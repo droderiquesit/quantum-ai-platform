@@ -36,7 +36,7 @@ use qip_financial::universe::Universe;
 use qip_investment_agents::coverage::Scope;
 use qip_investment_agents::desk::{
     BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
-    ModelRegimeRecord, ModelsView, RiskView, TradeSide,
+    ModelsView, RiskView, TradeSide,
 };
 use qip_investment_agents::{Organisation, ids, manifests};
 use qip_market::bar::{Bar, Interval};
@@ -648,7 +648,6 @@ fn fixture_models() -> ModelsView {
             predicted_failure: 0.2,
         }],
         drifted: Vec::new(),
-        regime_records: Vec::new(),
     }
 }
 
@@ -3869,7 +3868,6 @@ fn the_model_failure_probe_reports_a_forecaster_worse_than_chance_and_a_drifted_
             predicted_failure: 0.2,
         }],
         drifted: vec!["ridge-ACME@3".to_string()],
-        regime_records: Vec::new(),
     };
     let desk = adversary_desk(
         MarketSnapshot::new(now()),
@@ -5148,8 +5146,13 @@ fn the_temporal_reasoner_is_derived_only_when_a_link_held() -> Result<()> {
 }
 
 /// A model's record as the tournament files it, one cell per regime.
-fn model_cell(model: &str, regime: &str, mean_brier: f64, scored: usize) -> ModelRegimeRecord {
-    ModelRegimeRecord {
+fn model_cell(
+    model: &str,
+    regime: &str,
+    mean_brier: f64,
+    scored: usize,
+) -> qip_investment_agents::chief::ModelRegimeRecord {
+    qip_investment_agents::chief::ModelRegimeRecord {
         model: model.to_string(),
         regime: regime.to_string(),
         mean_brier,
@@ -5157,20 +5160,22 @@ fn model_cell(model: &str, regime: &str, mean_brier: f64, scored: usize) -> Mode
     }
 }
 
-/// An empty desk — research memory holds no call at all — whose model
-/// registry holds three cells: the momentum detector sharp in a trending
-/// tape and worse than a coin in a calm one, and a card scored only in the
-/// calm one.
-fn desk_with_model_records() -> Arc<Desk> {
-    Arc::new(Desk::empty(now()).with_models(ModelsView {
-        forecasters: Vec::new(),
-        drifted: Vec::new(),
-        regime_records: vec![
-            model_cell("detector:momentum", TRENDING, 0.10, 12),
-            model_cell("detector:momentum", CALM, 0.40, 7),
-            model_cell("model:ridge-ACME@3", CALM, 0.20, 5),
-        ],
-    }))
+/// Three cells as the kernel hands them with the panel: the momentum
+/// detector sharp in a trending tape and worse than a coin in a calm one,
+/// and a card scored only in the calm one.
+fn handed_model_records() -> Vec<qip_investment_agents::chief::ModelRegimeRecord> {
+    vec![
+        model_cell("detector:momentum", TRENDING, 0.10, 12),
+        model_cell("detector:momentum", CALM, 0.40, 7),
+        model_cell("model:ridge-ACME@3", CALM, 0.20, 5),
+    ]
+}
+
+/// An empty desk: research memory holds no call at all, and the model
+/// registry slot is unset — a read of it through the gate would fail, so a
+/// Meta Brain that reported model cells here was handed them.
+fn empty_desk() -> Arc<Desk> {
+    Arc::new(Desk::empty(now()))
 }
 
 /// Every `model_brier:` fact a finding carries, by its `{model}@{regime}`.
@@ -5199,10 +5204,15 @@ fn model_briers(finding: &qip_agents::finding::AgentFinding) -> BTreeMap<String,
 /// only in the calm tape is unmeasured in the trending one, not read at its
 /// record elsewhere. Removing the Meta Brain drops the scope.
 ///
+/// The records are handed with the panel (`Organisation::hand_model_records`,
+/// ADR 0724), not read through the model-registry gate: the desk's models
+/// slot is empty here, and an organisation handed nothing reports no model
+/// cell and does not cover the scope.
+///
 /// Mutations: count every model as measured whatever the regime (drop the
 /// `wanted == c.regime` filter in `MetaBrain::arbitrate`) — trending reads 2
-/// measured, expected 1; never read the registry (`model_cells` empty) — the
-/// scope is not covered and no cell is reported.
+/// measured, expected 1; drop `model_records` where `dispatch_panel` builds
+/// the `PanelView` — no cell is reported and the scope is not covered.
 #[test]
 fn the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earned_in() -> Result<()>
 {
@@ -5212,7 +5222,17 @@ fn the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earne
         (format!("model:ridge-ACME@3@{CALM}"), 0.20),
     ]);
     for (regime, measured, unmeasured) in [(TRENDING, 1.0, 1.0), (CALM, 2.0, 0.0)] {
-        let mut org = organisation(desk_with_model_records())?;
+        let mut org = organisation(empty_desk())?;
+        // Premise: before anything is handed, the same organisation on the
+        // same desk reports no model cell and the scope is uncovered — so
+        // every cell below came through the hand-off and from nowhere else.
+        let before = org.dispatch(&brief().in_regime(regime), now(), &lineage());
+        assert_eq!(model_briers(meta_finding(&before)), BTreeMap::new());
+        assert!(
+            !before.covered_scopes().contains(&Scope::RegimeReliability),
+            "{regime}: premise: nothing handed, nothing measured"
+        );
+        org.hand_model_records(handed_model_records());
         let report = org.dispatch(&brief().in_regime(regime), now(), &lineage());
         let meta = meta_finding(&report);
         assert_eq!(
@@ -5256,7 +5276,8 @@ fn the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earne
             "{regime}: the model record does not evidence the scope"
         );
 
-        let mut lacking = organisation_without(desk_with_model_records(), ids::META)?;
+        let mut lacking = organisation_without(empty_desk(), ids::META)?;
+        lacking.hand_model_records(handed_model_records());
         let without = lacking
             .dispatch(&brief().in_regime(regime), now(), &lineage())
             .covered_scopes();
@@ -5265,6 +5286,41 @@ fn the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earne
             "{regime}: covered without the meta brain: {without:?}"
         );
     }
+    Ok(())
+}
+
+/// ADR 0466, decision 2, pinned: the Meta Brain's manifest grants
+/// `read_research_memory` and nothing else. On 2026-11-22 a change gave it
+/// `read_model_registry` to reach the tournament's per-regime record, which
+/// opened the whole `ModelsView` to an agent that needed one list from it,
+/// against an accepted record. The list is handed with the panel instead
+/// (ADR 0724), and this is the test that would have refused the grant.
+///
+/// Mutation: add `Capability::ReadModelRegistry` to `manifests::meta_brain`
+/// — the set no longer equals the one capability.
+#[test]
+fn the_meta_brain_holds_the_research_memory_capability_and_no_other() -> Result<()> {
+    let manifest = manifests::meta_brain(now());
+    assert_eq!(
+        manifest.id.as_str(),
+        ids::META,
+        "premise: the right manifest"
+    );
+    let held: Vec<Capability> = manifest.capabilities.iter().collect();
+    assert_eq!(
+        held,
+        vec![Capability::ReadResearchMemory],
+        "the Meta Brain's grant is not research memory alone"
+    );
+    // The production organisation rosters that manifest once, not a wider one.
+    let org = organisation(empty_desk())?;
+    let on_roster: Vec<Vec<Capability>> = org
+        .roster()
+        .iter()
+        .filter(|m| m.id.as_str() == ids::META)
+        .map(|m| m.capabilities.iter().collect())
+        .collect();
+    assert_eq!(on_roster, vec![vec![Capability::ReadResearchMemory]]);
     Ok(())
 }
 

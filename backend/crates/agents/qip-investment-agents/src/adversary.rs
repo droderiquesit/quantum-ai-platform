@@ -1151,7 +1151,6 @@ mod tests {
                 },
             ],
             drifted: vec!["ridge-ACME@3".into()],
-            regime_records: Vec::new(),
         };
         let findings = probe_models(&view, &ModelFailureThresholds::default());
         let kinds: Vec<(&str, ModelFailureKind)> = findings

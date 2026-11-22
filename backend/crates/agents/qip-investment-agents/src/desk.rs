@@ -205,30 +205,6 @@ pub struct ModelsView {
     pub forecasters: Vec<ForecasterHealth>,
     /// `{name}@{version}` references past their drift threshold.
     pub drifted: Vec<String>,
-    /// Every forecaster's record in every regime the tournament has scored
-    /// it in, as the Meta Brain reads it (R12-AMBIENT-3024). Unlike
-    /// `forecasters` this is not limited to those with an open question: a
-    /// model's record in a regime does not lapse because nothing is being
-    /// asked of it this cycle.
-    pub regime_records: Vec<ModelRegimeRecord>,
-}
-
-/// One forecaster's resolved record in one regime (R12-AMBIENT-3024): the
-/// regime is the one its questions were *opened* in, so a record earned in a
-/// calm tape is never read as a record in a stressed one.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ModelRegimeRecord {
-    /// The tournament's name for it: `detector:<class>`, `analyst:<agent>`,
-    /// `model:<reference>`.
-    pub model: String,
-    /// `{market}/{volatility}`, as `Platform::regime_context` keys it.
-    pub regime: String,
-    /// Mean Brier over the forecasts scored in this regime. Lower is better;
-    /// a coin scores 0.25 on a binary question.
-    pub mean_brier: f64,
-    /// How many scored forecasts the mean is over. Never zero: a cell with
-    /// no scored forecast is absent, not recorded at a default.
-    pub scored: usize,
 }
 
 /// One automated-market-maker pool as the confirmed chain holds it.
