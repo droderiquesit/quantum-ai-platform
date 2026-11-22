@@ -22,11 +22,12 @@ use crate::attribution::AttributionPass;
 use qip_core::Decimal;
 use qip_core::error::Result;
 use qip_learning_engine::keyed_attribution::{Dimension, UNATTRIBUTED};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// One source's share of one LEARN pass: the P&L of the positions whose
 /// decisions consumed it, and how many positions those were.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionContribution {
     /// The exact P&L credited to the source; positions that carry several
     /// sources split evenly, as [`KeyedAttribution::by`] does.

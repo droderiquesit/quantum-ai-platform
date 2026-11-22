@@ -8,11 +8,13 @@
 //! a replay could read back to explain why.
 
 use crate::platform::Platform;
+use crate::source_decision_attribution::DecisionContribution;
 use qip_core::Timestamp;
 use qip_core::error::Result;
 use qip_data_finder::source_alpha::SourceAlpha;
 use qip_events::{EventBody, EventFilter, Topic};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// One source scored on one subject, or why it could not be.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -32,6 +34,14 @@ pub struct SourceAlphaScored {
     pub cycle: u64,
     pub at: Timestamp,
     pub scores: Vec<ScoredSource>,
+    /// What each evidence source earned in the decisions that consumed it,
+    /// as the LEARN pass before this round attributed it (R12-DATA-2025).
+    /// The desk carried these figures on the round in memory and the record
+    /// dropped them, so the one score that reads a strategy outcome was the
+    /// one a replay could not read back. Defaulted, so a round written
+    /// before the field decodes as a round that attributed nothing.
+    #[serde(default)]
+    pub attributed: BTreeMap<String, DecisionContribution>,
 }
 
 impl EventBody for SourceAlphaScored {

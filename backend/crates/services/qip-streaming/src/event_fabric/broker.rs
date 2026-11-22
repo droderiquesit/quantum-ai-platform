@@ -528,6 +528,11 @@ type QuotaSpend = BTreeMap<(String, String), (i64, u64, u64)>;
 /// policy sizes its stream in (FABRIC-049).
 const QUOTA_WINDOW_NS: i64 = 1_000_000_000;
 
+/// What one retention pass needs of a declared stream: its name, partition
+/// count, whether it must be archived first, its batch window if it has one
+/// and its age limit if it has one.
+type DeclaredRetention = (String, u32, bool, Option<u64>, Option<qip_core::Duration>);
+
 /// The hot window, in batches, a stream of `class` keeps on local disk when
 /// the operator configured `keep_batches`.
 ///
@@ -541,6 +546,18 @@ pub fn hot_window(class: qip_events::RetentionClass, keep_batches: u64) -> u64 {
         1
     } else {
         keep_batches
+    }
+}
+
+/// [`hot_window`] when the operator may have configured no window at all:
+/// a class retained nowhere beyond its ring still keeps exactly one batch,
+/// because that bound is the class's own and needs no operator figure, and
+/// every other class has a batch window only if the operator gave one.
+pub fn policy_window(class: qip_events::RetentionClass, keep_batches: Option<u64>) -> Option<u64> {
+    match keep_batches {
+        Some(keep) => Some(hot_window(class, keep)),
+        None if class.retention() == qip_events::Retention::Never => Some(1),
+        None => None,
     }
 }
 
@@ -2051,19 +2068,42 @@ impl Broker {
     /// figure to a stream whose policy says its records are gone in seconds,
     /// so the log held what the policy had already let go.
     pub fn retain_hot(&self, keep_batches: u64) -> Result<u64> {
-        let reader = self.archive.as_ref().ok_or_else(|| {
-            Error::invalid(
-                "retain_hot was called on a broker with no archive reader; without one a \
-                 deleted segment could never be read again",
-            )
-        })?;
         if keep_batches == 0 {
             return Err(Error::invalid(
                 "a hot window of zero batches would delete the segment the next produce chains \
                  to; keep at least one",
             ));
         }
-        let declared: Vec<(String, u32, bool, u64, Option<qip_core::Duration>)> = {
+        self.retain(Some(keep_batches))
+    }
+
+    /// [`Self::retain_hot`] with no operator window: every stream is trimmed
+    /// by what its own retention class says and by nothing else
+    /// (FABRIC-7034).
+    ///
+    /// A class retained nowhere beyond its ring keeps the one batch the next
+    /// produce chains to; a class whose retention is a span ([`age_limit`])
+    /// lets go of every leading sealed segment older than that span, once it
+    /// is archived and indexed; and a class bounded by neither (permanent,
+    /// a series, a manifest, a fixed in-memory size) keeps every segment,
+    /// because its policy names no bound this broker could apply without
+    /// inventing one. Retention used to run only when the operator set a
+    /// batch window, and no deployment set one, so a broker's disk held raw
+    /// ticks and ninety-day-old book state for as long as it had room.
+    pub fn retain_by_policy(&self) -> Result<u64> {
+        self.retain(None)
+    }
+
+    /// The pass both retention entry points share. `window` is the
+    /// operator's batch window when one is configured.
+    fn retain(&self, window: Option<u64>) -> Result<u64> {
+        let reader = self.archive.as_ref().ok_or_else(|| {
+            Error::invalid(
+                "retention was called on a broker with no archive reader; without one a \
+                 deleted segment could never be read again",
+            )
+        })?;
+        let declared: Vec<DeclaredRetention> = {
             let declared = self.declared.lock().unwrap_or_else(|e| e.into_inner());
             declared
                 .iter()
@@ -2072,7 +2112,7 @@ impl Broker {
                         name.clone(),
                         d.partition_count,
                         d.policy.archive_required(),
-                        hot_window(d.policy.retention(), keep_batches),
+                        policy_window(d.policy.retention(), window),
                         age_limit(d.policy.retention()),
                     )
                 })
@@ -2083,7 +2123,11 @@ impl Broker {
         for (stream, partition_count, archive_required, keep, age) in declared {
             for partition in 0..partition_count {
                 let state = self.partition_state(&stream, partition)?;
-                let mut boundary = state.log.high_water().saturating_sub(keep);
+                // No window for this class means batch count removes
+                // nothing: the boundary starts at the log's first offset and
+                // only the class's age, below, can move it.
+                let mut boundary =
+                    keep.map_or(0, |keep| state.log.high_water().saturating_sub(keep));
                 // A time-bounded class (EventAnchored's rolling window,
                 // FallbackSeries' span) also lets go of every leading sealed
                 // segment older than its window, however few batches that
