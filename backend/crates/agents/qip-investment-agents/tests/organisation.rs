@@ -36,7 +36,7 @@ use qip_financial::universe::Universe;
 use qip_investment_agents::coverage::Scope;
 use qip_investment_agents::desk::{
     BookView, ComplianceView, Desk, ExecutionRecord, ExecutionView, ForecasterHealth, MarketView,
-    ModelsView, RiskView, TradeSide,
+    ModelRegimeRecord, ModelsView, RiskView, TradeSide,
 };
 use qip_investment_agents::{Organisation, ids, manifests};
 use qip_market::bar::{Bar, Interval};
@@ -648,6 +648,7 @@ fn fixture_models() -> ModelsView {
             predicted_failure: 0.2,
         }],
         drifted: Vec::new(),
+        regime_records: Vec::new(),
     }
 }
 
@@ -3868,6 +3869,7 @@ fn the_model_failure_probe_reports_a_forecaster_worse_than_chance_and_a_drifted_
             predicted_failure: 0.2,
         }],
         drifted: vec!["ridge-ACME@3".to_string()],
+        regime_records: Vec::new(),
     };
     let desk = adversary_desk(
         MarketSnapshot::new(now()),
@@ -5142,5 +5144,269 @@ fn the_temporal_reasoner_is_derived_only_when_a_link_held() -> Result<()> {
     assert_eq!(derived_with(0, 0)?, 0, "no link asked");
     assert_eq!(derived_with(2, 2)?, 0, "every link refused");
     assert_eq!(derived_with(2, 1)?, 1, "one link held");
+    Ok(())
+}
+
+/// A model's record as the tournament files it, one cell per regime.
+fn model_cell(model: &str, regime: &str, mean_brier: f64, scored: usize) -> ModelRegimeRecord {
+    ModelRegimeRecord {
+        model: model.to_string(),
+        regime: regime.to_string(),
+        mean_brier,
+        scored,
+    }
+}
+
+/// An empty desk — research memory holds no call at all — whose model
+/// registry holds three cells: the momentum detector sharp in a trending
+/// tape and worse than a coin in a calm one, and a card scored only in the
+/// calm one.
+fn desk_with_model_records() -> Arc<Desk> {
+    Arc::new(Desk::empty(now()).with_models(ModelsView {
+        forecasters: Vec::new(),
+        drifted: Vec::new(),
+        regime_records: vec![
+            model_cell("detector:momentum", TRENDING, 0.10, 12),
+            model_cell("detector:momentum", CALM, 0.40, 7),
+            model_cell("model:ridge-ACME@3", CALM, 0.20, 5),
+        ],
+    }))
+}
+
+/// Every `model_brier:` fact a finding carries, by its `{model}@{regime}`.
+fn model_briers(finding: &qip_agents::finding::AgentFinding) -> BTreeMap<String, f64> {
+    finding
+        .facts
+        .iter()
+        .filter_map(|fact| {
+            fact.label
+                .strip_prefix("model_brier:")
+                .map(|cell| (cell.to_string(), fact.value))
+        })
+        .collect()
+}
+
+/// R12-AMBIENT-3024, the *models* half of "which brains/models are reliable
+/// in which regimes". Until 2026-11-22 the Meta Brain read research memory
+/// and nothing else, so it measured analysts by regime and said nothing of a
+/// forecaster the tournament had scored: the clause named two populations and
+/// one was measured.
+///
+/// The production organisation, on a desk whose research memory is empty (so
+/// nothing but the model record can evidence the scope). Each cell is
+/// reported under its own regime at its own figure, and the count of models
+/// measured *in the regime in force* reads that regime alone: the card scored
+/// only in the calm tape is unmeasured in the trending one, not read at its
+/// record elsewhere. Removing the Meta Brain drops the scope.
+///
+/// Mutations: count every model as measured whatever the regime (drop the
+/// `wanted == c.regime` filter in `MetaBrain::arbitrate`) — trending reads 2
+/// measured, expected 1; never read the registry (`model_cells` empty) — the
+/// scope is not covered and no cell is reported.
+#[test]
+fn the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earned_in() -> Result<()>
+{
+    let expected: BTreeMap<String, f64> = BTreeMap::from([
+        (format!("detector:momentum@{TRENDING}"), 0.10),
+        (format!("detector:momentum@{CALM}"), 0.40),
+        (format!("model:ridge-ACME@3@{CALM}"), 0.20),
+    ]);
+    for (regime, measured, unmeasured) in [(TRENDING, 1.0, 1.0), (CALM, 2.0, 0.0)] {
+        let mut org = organisation(desk_with_model_records())?;
+        let report = org.dispatch(&brief().in_regime(regime), now(), &lineage());
+        let meta = meta_finding(&report);
+        assert_eq!(
+            fact_value(meta, "regime_reliability_cells"),
+            None,
+            "premise: research memory measured nobody, so only models can evidence the scope"
+        );
+        // Every cell, each under its own regime, at exactly its own figure.
+        assert_eq!(model_briers(meta), expected, "{regime}");
+        assert_eq!(
+            fact_value(meta, "model_scored:detector:momentum@trending/high"),
+            Some(12.0)
+        );
+        assert_eq!(
+            fact_value(meta, "model_scored:detector:momentum@calm/low"),
+            Some(7.0)
+        );
+        assert_eq!(
+            fact_value(meta, "model_scored:model:ridge-ACME@3@calm/low"),
+            Some(5.0)
+        );
+        assert_eq!(
+            fact_value(meta, "model_regime_reliability_cells"),
+            Some(3.0),
+            "{regime}"
+        );
+        assert_eq!(
+            fact_value(meta, "models_measured_in_regime"),
+            Some(measured),
+            "{regime}: {}",
+            meta.claim
+        );
+        assert_eq!(
+            fact_value(meta, "models_unmeasured_in_regime"),
+            Some(unmeasured),
+            "{regime}: {}",
+            meta.claim
+        );
+        assert!(
+            report.covered_scopes().contains(&Scope::RegimeReliability),
+            "{regime}: the model record does not evidence the scope"
+        );
+
+        let mut lacking = organisation_without(desk_with_model_records(), ids::META)?;
+        let without = lacking
+            .dispatch(&brief().in_regime(regime), now(), &lineage())
+            .covered_scopes();
+        assert!(
+            !without.contains(&Scope::RegimeReliability),
+            "{regime}: covered without the meta brain: {without:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The populated desk with research memory holding ten resolved calls per
+/// (analyst, regime) for the four specialists that take a side on it: the
+/// simulation analyst right 9 of 10 in a trending tape and 1 of 10 in a calm
+/// one, the credit, derivatives and risk specialists the reverse.
+fn contested_standard_desk() -> Arc<Desk> {
+    let mut memory = ResearchMemory::new();
+    let mut n = 0i64;
+    for (agent, trending, calm) in [
+        (ids::SIMULATION, 9, 1),
+        (ids::CREDIT, 1, 9),
+        (ids::DERIVATIVES, 1, 9),
+        (ids::RISK, 1, 9),
+    ] {
+        for (regime, correct) in [(TRENDING, trending), (CALM, calm)] {
+            for i in 0..10 {
+                n += 1;
+                memory.record_episode(Episode {
+                    run_id: AgentRunId::from_string(format!("run-standard-{n}")),
+                    agent_id: agent.to_string(),
+                    occurred_at: now().saturating_sub(Duration::from_days(60)),
+                    question: "which way".to_string(),
+                    conclusion: "positive".to_string(),
+                    evidence: vec![],
+                    conviction: 0.5,
+                    regime: Some(regime.to_string()),
+                    outcome: Some(EpisodeOutcome {
+                        resolved_at: now().saturating_sub(Duration::from_days(30)),
+                        correct: i < correct,
+                        realised_bps: Some(10.0),
+                        explanation: "fixture".to_string(),
+                    }),
+                });
+            }
+        }
+    }
+    let mut desk = populated_desk();
+    let inner = Arc::get_mut(&mut desk).expect("the fixture desk is not shared yet");
+    inner.memory =
+        qip_agents::runtime::Gated::new(memory, inner.memory.required(), inner.memory.label());
+    desk
+}
+
+/// R12-AMBIENT-3024's removal clause for the third scope, **in the
+/// production organisation**. The register recorded that the standard panel
+/// is not contested on the populated fixture, so disagreement resolution's
+/// removal was proven only on a two-agent stand-in. It is contested: the
+/// simulation analyst leans one way and credit, derivatives and risk the
+/// other. With a record for each in the regime, `Organisation::standard`
+/// resolves it and covers the scope; the same organisation without the Meta
+/// Brain does not.
+///
+/// The resolution is checked against arithmetic done here from the panel's
+/// own findings and the fixture's hit rates, in both regimes, so a
+/// regime-blind weighing (every author 10 of 20) is refused: it would give
+/// the panel's own balance in both.
+///
+/// Mutations: `records_in` ignores the regime — both regimes resolve to the
+/// pooled figure; `standard_arbiters` returns no arbiter — the scope is not
+/// covered with it.
+#[test]
+fn removing_the_meta_brain_from_the_standard_organisation_drops_the_resolution_of_its_contested_panel()
+-> Result<()> {
+    let mut resolved = Vec::new();
+    for (regime, simulation_rate, others_rate) in [(TRENDING, 0.9, 0.1), (CALM, 0.1, 0.9)] {
+        let mut standard = organisation(contested_standard_desk())?;
+        let mut lacking = organisation_without(contested_standard_desk(), ids::META)?;
+        assert_eq!(
+            lacking.len() + 1,
+            standard.len(),
+            "premise: only the meta brain is left out"
+        );
+        let report = standard.dispatch(&brief().in_regime(regime), now(), &lineage());
+        assert!(
+            report.is_contested(),
+            "premise: the standard panel disagrees on the populated desk"
+        );
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+        let mut weighed = 0usize;
+        for finding in &report.findings {
+            if finding.direction == Direction::Neutral {
+                continue;
+            }
+            let rate = if finding.agent_id == ids::SIMULATION {
+                simulation_rate
+            } else {
+                assert!(
+                    [ids::CREDIT, ids::DERIVATIVES, ids::RISK].contains(&finding.agent_id.as_str()),
+                    "premise: {} takes a side and the fixture gave it no record",
+                    finding.agent_id
+                );
+                others_rate
+            };
+            let weight = finding.effective_conviction() * rate;
+            numerator += finding.direction.sign() * weight;
+            denominator += weight;
+            weighed += 1;
+        }
+        assert_eq!(weighed, 4, "premise: four specialists take a side");
+        let expected = numerator / denominator;
+
+        let meta = meta_finding(&report);
+        let balance = fact_value(meta, "reliability_weighted_balance")
+            .unwrap_or_else(|| panic!("no resolution in {regime}: {}", meta.claim));
+        assert!(
+            (balance - expected).abs() < 1e-9,
+            "{regime}: resolved to {balance}, expected {expected}"
+        );
+        assert_eq!(
+            fact_value(meta, "disagreement_weighed_findings"),
+            Some(4.0),
+            "{regime}"
+        );
+        assert!(
+            (balance - report.balance()).abs() > 0.05,
+            "{regime}: the resolution {balance} is the panel's own balance {}",
+            report.balance()
+        );
+        resolved.push(balance);
+
+        let with = report.covered_scopes();
+        let without_report = lacking.dispatch(&brief().in_regime(regime), now(), &lineage());
+        assert!(
+            without_report.is_contested(),
+            "premise: the panel is contested without it too"
+        );
+        let without = without_report.covered_scopes();
+        for scope in [
+            Scope::AttentionAllocation,
+            Scope::RegimeReliability,
+            Scope::DisagreementResolution,
+        ] {
+            assert!(with.contains(&scope), "{regime} {scope:?}: {with:?}");
+            assert!(!without.contains(&scope), "{regime} {scope:?}: {without:?}");
+        }
+    }
+    assert!(
+        (resolved[0] - resolved[1]).abs() > 0.05,
+        "the two regimes resolve alike ({resolved:?}): the record was not read by regime"
+    );
     Ok(())
 }

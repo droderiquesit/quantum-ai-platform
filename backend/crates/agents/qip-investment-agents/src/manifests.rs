@@ -318,11 +318,18 @@ pub fn meta_brain(reviewed_at: Timestamp) -> AgentManifest {
         "measures which specialists are reliable in which regime, allocates research attention by that record, and resolves a contested panel by re-weighing its findings by their authors' records",
         reviewed_at,
     )
-    .with_capabilities(CapabilitySet::of([Capability::ReadResearchMemory]))
+    // The model registry is read for the tournament's per-regime record of
+    // each forecaster: the requirement's clause is brains *and models*, and
+    // research memory holds only analyst calls.
+    .with_capabilities(CapabilitySet::of([
+        Capability::ReadResearchMemory,
+        Capability::ReadModelRegistry,
+    ]))
     .with_owner(owners::QUANTITATIVE)
     .escalating_to(ids::CHIEF)
     .with_competencies(vec![
         "per-(agent, regime) hit rates over resolved calls".into(),
+        "per-(model, regime) mean Brier over the tournament's scored forecasts".into(),
         "attention weights proportional to the record in the regime in force".into(),
         "a reliability-weighted balance over a contested panel".into(),
     ])

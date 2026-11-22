@@ -225,7 +225,9 @@ impl Scope {
             Self::ManagementGuidance => &["guidance_gap", "guidance_outstanding"],
             Self::CapitalStructure => &["net_debt", "net_leverage", "debt_due_within_year"],
             Self::AttentionAllocation => &["attention_allocated"],
-            Self::RegimeReliability => &["regime_reliability_cells"],
+            Self::RegimeReliability => {
+                &["regime_reliability_cells", "model_regime_reliability_cells"]
+            }
             Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
             Self::SymbolicReasoning => &["reasoners_derived"],

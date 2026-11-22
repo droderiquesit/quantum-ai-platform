@@ -154,7 +154,8 @@ use qip_investment_agents::Organisation;
 use qip_investment_agents::desk::{
     ArbitrationView, BookPurpose, BookView, ChainView, CompanyView, ComplianceView, Desk,
     ExecutionRecord, ExecutionView, ForecasterHealth, HedgeStanding, HeldHorizon, MarketView,
-    ModelsView, PoolReading, PrivateMarketsView, RiskView, SymbolicView, TradeSide,
+    ModelRegimeRecord, ModelsView, PoolReading, PrivateMarketsView, RiskView, SymbolicView,
+    TradeSide,
 };
 use qip_learning_engine::attribution::Attributor;
 use qip_learning_engine::evaluation::{
@@ -13022,9 +13023,28 @@ impl Platform {
         }
         let forecasters: Vec<ForecasterHealth> = seen.into_values().collect();
         let drifted: Vec<String> = self.drifted_models.iter().cloned().collect();
+        // Every forecaster's record by the regime its questions were opened
+        // in, for the Meta Brain (R12-AMBIENT-3024). Not limited to open
+        // questions as `forecasters` is: the record a model earned in a
+        // regime stands whether or not it is being asked anything now. Only
+        // questions LEARN already resolved are in it, so it holds nothing
+        // this REASON could not have known.
+        let regime_records: Vec<ModelRegimeRecord> = tournament
+            .regime_briers()
+            .into_iter()
+            .map(
+                |((model, regime), (mean_brier, scored))| ModelRegimeRecord {
+                    model,
+                    regime,
+                    mean_brier,
+                    scored,
+                },
+            )
+            .collect();
         self.models.update(|view| {
             view.forecasters = forecasters;
             view.drifted = drifted;
+            view.regime_records = regime_records;
         });
     }
 

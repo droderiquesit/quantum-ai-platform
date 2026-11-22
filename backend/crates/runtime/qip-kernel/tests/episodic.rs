@@ -1116,6 +1116,145 @@ fn the_reason_stage_runs_the_meta_brain_under_the_regime_in_force() -> Result<()
     Ok(())
 }
 
+/// R12-AMBIENT-3024, the models half, through the cycle on
+/// `PlatformConfig::default`: the Meta Brain measures which *models* are
+/// reliable in which regime, not only which analysts. The model tournament
+/// files every scored forecast under the regime its question was opened in;
+/// before 2026-11-22 nothing handed that record to the Meta Brain, which read
+/// research memory alone, so a detector the platform had scored for months
+/// was never named in the one finding whose scope is reliability by regime.
+///
+/// Three cycles: the first opens a question every forecaster answers, the
+/// second resolves it in LEARN, and the third's REASON briefs the desk. The
+/// Meta Brain's finding from that REASON must carry one cell per (forecaster,
+/// regime) the tournament scored — every one, at the tournament's own figure
+/// read here through `Tournament::scorecards`, a different path from the one
+/// the kernel feeds the desk by — and must count as measured in the regime in
+/// force exactly the forecasters scored in that regime.
+///
+/// Mutations: leave `view.regime_records` unset in
+/// `Platform::brief_the_desk_on_models` — no cell is reported; file every
+/// cell under one fixed regime in `Tournament::regime_briers` — the cells no
+/// longer match the scorecards' regimes.
+#[test]
+fn the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in()
+-> Result<()> {
+    let (t2, t3) = resolution_instants()?;
+    // `three_cycles`, with the forecasters read off the open questions after
+    // the first cycle and again after the third: the detector that answers
+    // the third cycle's question need not be the class that answered the
+    // first, and the first cycle's is the one LEARN has scored.
+    let asked = |platform: &Platform| -> Vec<String> {
+        platform
+            .model_tournament()
+            .open_questions()
+            .flat_map(|question| question.forecasts().keys().cloned())
+            .collect()
+    };
+    let mut platform = fresh()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let mut forecasters: std::collections::BTreeSet<String> =
+        asked(&platform).into_iter().collect();
+    let horizon = platform.predictions()[0].proposition.resolves_at;
+    assert!(
+        t2 > horizon,
+        "premise: the second cycle runs past the horizon"
+    );
+    platform.observe(swings("AAA", horizon));
+    platform.run_cycle(t2);
+    platform.run_cycle(t3);
+    forecasters.extend(asked(&platform));
+    let tournament = platform.model_tournament();
+    assert!(
+        forecasters.iter().any(|f| f.starts_with("detector:"))
+            && forecasters.iter().any(|f| f.starts_with("analyst:")),
+        "premise: a detector and an analyst both forecast: {forecasters:?}"
+    );
+    // What the tournament holds for each, by regime, through its scorecards.
+    let mut expected_brier = std::collections::BTreeMap::new();
+    let mut expected_scored = std::collections::BTreeMap::new();
+    let regime_in_force = platform.regime_context(object("AAA").as_str());
+    let mut in_force = 0usize;
+    let mut scored_forecasters = 0usize;
+    for forecaster in &forecasters {
+        let cards = tournament.scorecards(forecaster);
+        let mut any = false;
+        for card in &cards {
+            let Some(brier) = card.brier.value() else {
+                continue;
+            };
+            any = true;
+            let cell = format!("{forecaster}@{}", card.regime);
+            expected_brier.insert(format!("model_brier:{cell}"), brier);
+            expected_scored.insert(format!("model_scored:{cell}"), card.resolved as f64);
+            if card.regime == regime_in_force {
+                in_force += 1;
+            }
+        }
+        scored_forecasters += usize::from(any);
+    }
+    assert!(
+        expected_brier.len() >= 2,
+        "premise: the second cycle's LEARN scored the first cycle's forecasters: \
+         {expected_brier:?}"
+    );
+    assert!(
+        expected_brier
+            .keys()
+            .any(|cell| cell.starts_with("model_brier:detector:")),
+        "premise: a detector, not only analysts, holds a scored cell: {expected_brier:?}"
+    );
+
+    let runs = platform
+        .organisation()
+        .audit()
+        .for_agent(qip_investment_agents::ids::META);
+    let last = runs
+        .iter()
+        .filter_map(|run| run.finding.as_ref())
+        .next_back()
+        .expect("the meta brain's run produced a finding");
+    let facts = |prefix: &str| -> std::collections::BTreeMap<String, f64> {
+        last.facts
+            .iter()
+            .filter(|fact| fact.label.starts_with(prefix))
+            .map(|fact| (fact.label.clone(), fact.value))
+            .collect()
+    };
+    assert_eq!(
+        facts("model_brier:"),
+        expected_brier,
+        "the Meta Brain's model cells are not the tournament's: {}",
+        last.claim
+    );
+    assert_eq!(facts("model_scored:"), expected_scored, "{}", last.claim);
+    let fact = |label: &str| {
+        last.facts
+            .iter()
+            .find(|fact| fact.label == label)
+            .map(|fact| fact.value)
+    };
+    assert_eq!(
+        fact("model_regime_reliability_cells"),
+        Some(expected_brier.len() as f64)
+    );
+    assert_eq!(
+        fact("models_measured_in_regime"),
+        Some(in_force as f64),
+        "in {regime_in_force}: {}",
+        last.claim
+    );
+    assert_eq!(
+        fact("models_unmeasured_in_regime"),
+        Some((scored_forecasters - in_force) as f64),
+        "in {regime_in_force}: {}",
+        last.claim
+    );
+    eprintln!("evidence: {}", last.claim);
+    Ok(())
+}
+
 /// R12-REASON-3109 at the kernel seam: a hypothesis the red team refuses on
 /// review never reaches DECIDE. The refusal was proven inside
 /// `qip-reasoning-engine`, where the review verdict is formed, and nothing

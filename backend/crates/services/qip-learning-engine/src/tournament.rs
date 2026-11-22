@@ -1619,6 +1619,28 @@ impl Tournament {
         Measure::mean(&briers, "").value()
     }
 
+    /// Every forecaster's mean Brier **by the regime its questions were
+    /// opened in**, with the resolved forecasts that mean is over
+    /// (R12-AMBIENT-3024): `(forecaster, regime) -> (mean Brier, scored)`.
+    ///
+    /// The cross-regime mean of [`Self::mean_brier`] describes a model sharp
+    /// in a calm tape and wrong in a stressed one as mediocre in both. A
+    /// cell whose forecasts stated no probability is absent rather than
+    /// zero: a Brier of zero is a perfect record, not a missing one. Bounded
+    /// by [`MAX_FORECASTERS`] and [`MAX_REGIMES`], as the tournament is.
+    pub fn regime_briers(&self) -> BTreeMap<(String, String), (f64, usize)> {
+        let mut cells = BTreeMap::new();
+        for (name, entry) in &self.forecasters {
+            for (regime, scores) in &entry.regimes {
+                let briers: Vec<f64> = scores.iter().filter_map(|s| s.brier).collect();
+                if let Some(mean) = Measure::mean(&briers, "").value() {
+                    cells.insert((name.clone(), regime.clone()), (mean, briers.len()));
+                }
+            }
+        }
+        cells
+    }
+
     /// Directional hit rate and sample per realised outcome, for the
     /// verifier society's bias critics.
     pub fn hit_rates_by_outcome(&self, forecaster: &str) -> BTreeMap<String, (f64, usize)> {

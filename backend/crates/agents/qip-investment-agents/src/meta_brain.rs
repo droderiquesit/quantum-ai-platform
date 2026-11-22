@@ -8,6 +8,13 @@
 //!   regime it was made in (`ResearchMemory::reliability_by_regime`). One
 //!   pooled hit rate describes an analyst right in a calm tape and wrong in a
 //!   stressed one as mediocre in both, which is true of neither.
+//!   Models are measured the same way and from their own source: the model
+//!   tournament files every scored forecast under the regime its question
+//!   was opened in, and the kernel hands the per-(model, regime) mean Brier
+//!   through the desk's model-registry gate (`ModelsView::regime_records`).
+//!   A model's record in one regime is never counted as its record in
+//!   another, and a model with no scored forecast in the regime in force is
+//!   counted unmeasured there rather than read at its record elsewhere.
 //! * **Where research attention should go.** The specialists measured in the
 //!   regime in force, weighted by their record there. A specialist with no
 //!   resolved call in that regime is *named* unmeasured and given no weight:
@@ -25,7 +32,7 @@
 //! decision.
 
 use crate::chief::{Arbiter, PanelView};
-use crate::desk::Desk;
+use crate::desk::{Desk, ModelRegimeRecord};
 use crate::support::{FindingBuilder, computed};
 use qip_agents::finding::{AgentBrief, AgentFinding, Direction};
 use qip_agents::manifest::AgentManifest;
@@ -121,6 +128,10 @@ impl Arbiter for MetaBrain {
             let memory = self.desk.memory.get(ctx)?;
             memory.reliability_by_regime(brief.as_of)
         };
+        let model_cells: Vec<ModelRegimeRecord> = {
+            let models = self.desk.models.get(ctx)?;
+            models.regime_records.clone()
+        };
         let regime = brief.regime.as_deref();
         let records = records_in(&cells, regime);
         let regimes: BTreeSet<&str> = cells.keys().map(|(_, r)| r.as_str()).collect();
@@ -201,6 +212,57 @@ impl Arbiter for MetaBrain {
                         &["research_memory"],
                     ));
                 }
+            }
+        }
+
+        // Models, from the tournament's own per-regime record. Evidenced
+        // only by a cell, for the reason above. The count in force reads the
+        // regime the brief names and no other: a model sharp in a calm tape
+        // is not thereby measured in a stressed one.
+        if !model_cells.is_empty() {
+            let models: BTreeSet<&str> = model_cells.iter().map(|c| c.model.as_str()).collect();
+            let in_force: BTreeSet<&str> = model_cells
+                .iter()
+                .filter(|c| regime.is_none_or(|wanted| wanted == c.regime))
+                .map(|c| c.model.as_str())
+                .collect();
+            claim.push_str(&format!(
+                "; {} (model, regime) record(s) over {} model(s), {} measured in {regime_named}",
+                model_cells.len(),
+                models.len(),
+                in_force.len()
+            ));
+            facts.push((
+                "model_regime_reliability_cells".into(),
+                model_cells.len() as f64,
+                "count",
+                &["model_tournament"],
+            ));
+            facts.push((
+                "models_measured_in_regime".into(),
+                in_force.len() as f64,
+                "count",
+                &["model_tournament"],
+            ));
+            facts.push((
+                "models_unmeasured_in_regime".into(),
+                (models.len() - in_force.len()) as f64,
+                "count",
+                &["model_tournament"],
+            ));
+            for cell in &model_cells {
+                facts.push((
+                    format!("model_brier:{}@{}", cell.model, cell.regime),
+                    cell.mean_brier,
+                    "brier",
+                    &["model_tournament"],
+                ));
+                facts.push((
+                    format!("model_scored:{}@{}", cell.model, cell.regime),
+                    cell.scored as f64,
+                    "count",
+                    &["model_tournament"],
+                ));
             }
         }
 
