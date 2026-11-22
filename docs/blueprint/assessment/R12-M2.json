@@ -582,14 +582,16 @@
   {
     "id": "R12-DATA-2025",
     "status": "PARTIAL",
-    "current": "realised_contribution now runs in the deep brain against the own stream's next price change; a leading source earns a positive contribution.",
+    "current": "realised_contribution now runs in the deep brain against the own stream's next price change; a leading source earns a positive contribution. Since 2026-11-22 the deep brain journals what each source's decisions earned on a node with no connector arm: EvolutionEngine::maybe_score_sources records the round when LEARN's attribution names a source, and SourceAlphaScored carries the attributed figures.",
     "evidence": [
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:77 realised_contribution",
       "backend/crates/services/qip-data-finder/src/source_alpha.rs:91 SourceAlphaHistory",
       "backend/crates/services/qip-data-finder/tests/source_alpha.rs:71 a_sources_scores_are_recorded_over_time_within_a_bound",
-      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score"
+      "backend/crates/apps/qip-deepbrain/src/source_alpha.rs::SourceAlphaDesk::score",
+      "backend/crates/apps/qip-deepbrain/src/evolution.rs EvolutionEngine::maybe_score_sources; evolution::tests::a_source_a_decision_used_is_journaled_with_what_that_decision_earned_on_a_node_with_no_connector",
+      "backend/crates/runtime/qip-kernel/src/source_alpha_record.rs SourceAlphaScored.attributed"
     ],
-    "gap": "2026-10-24 (re-read against the tree): SourceAlphaDesk::score's outcome is the own stream's next price change (qip-deepbrain source_alpha.rs), not a strategy outcome or LEARN attribution, and is not conditioned on the source having been used by a decision; its scores feed no routing or DataFinder score. The desk is gated by QIP_DEEPBRAIN_SOURCE_ALPHA_EVERY (default 0, absent from catalogue.tf) and needs connector arms no environment configures. Needs code (score on attribution of decisions that consumed the source), a Terraform/tfvar addition, and a connector enabled with the owner's egress decision.",
+    "gap": "2026-11-22 (round 65; the build agent's own report, which stops at PARTIAL; not read by an independent reader): the attribution-based score is computed every cycle by default (decision_contributions from LEARN's evidence-source grouping) and is now journalled without a connector arm. Still unmet: it is not shown that a deployed deep brain's own ACT stage releases a filling order, so the journal may stay empty in deployment (the test's order cites a REASON-formed hypothesis but is sent through Platform::submit_order, and on the test tape the cycle proposed nothing); and the scores feed no routing and no DataFinder score.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -1915,14 +1917,16 @@
   {
     "id": "R12-TICK-2077",
     "status": "PARTIAL",
-    "current": "LEARN stage's score_declined and score_filled call evaluate_alternatives on the qip-twin CounterfactualEngine (nine alternatives, as-of view, simulated taint). Missed opportunities are captured by OutcomeCapture but no production pass prices them; bar-level only.",
+    "current": "LEARN stage's score_declined and score_filled call evaluate_alternatives on the qip-twin CounterfactualEngine (nine alternatives, as-of view, simulated taint). Missed opportunities are captured by OutcomeCapture but no production pass prices them; bar-level only. Since 2026-11-22 a claim rejected on review is graded in basis points on the tape as of its own horizon: stage_learn's calibrate_resolved reads published_observations(horizon), and the spread stamps are kept so a spread claim is read as of the horizon too.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/platform.rs:17244 score_declined",
       "backend/crates/runtime/qip-kernel/src/platform.rs:17410 score_filled",
       "backend/crates/runtime/qip-kernel/tests/learning.rs:422 a_refused_order_is_priced_once_its_horizon_has_passed_and_charged_to_its_gate",
-      "backend/crates/services/qip-twin/tests/twin.rs:504 a_missed_opportunity_is_captured_with_its_value_and_is_not_a_trade"
+      "backend/crates/services/qip-twin/tests/twin.rs:504 a_missed_opportunity_is_captured_with_its_value_and_is_not_a_trade",
+      "backend/crates/runtime/qip-kernel/src/platform.rs calibrate_resolved, published_observations, push_spread",
+      "backend/crates/runtime/qip-kernel/tests/learning.rs a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_own_horizon_and_never_on_later_bars"
     ],
-    "gap": "No missed-opportunity record exists to price. Nothing in the kernel captures Action::MissedOpportunity: capture_unworked records Action::ExpiredOpportunity for a lapsed opportunity and deliberately does not price it, because no side or size was ever proposed for it (qip-twin capture.rs documents why a zero there would be a number nobody computed). The closure as written (price OutcomeCapture's missed records) therefore has no input. Needs a design decision on what trade a missed opportunity is priced as (the opportunity's own direction at a reference size? REASON's declined hypothesis?) and a capture site for it, before a Platform::score_missed can exist; bar-level information sets remain.",
+    "gap": "2026-11-22 (round 65; the build agent's own report, which stops at PARTIAL; not read by an independent reader): the rejected-claim grade no longer reads bars after the claim's horizon. Still unmet: the as-of rule is on a bar's open time, so a bar that opened before the horizon and closed after it is still read (a leak bounded to one bar interval; a close-time rule breaks existing fixtures and was not attempted); there is no cycle-level test for the no_mechanism and undirected_claim labels; the spread as-of read is proven at published_observations only; and bar-level information sets remain.",
     "implemented": true,
     "tested": true,
     "integrated": true,
