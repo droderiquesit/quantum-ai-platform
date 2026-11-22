@@ -987,8 +987,18 @@ impl CommerceResearch {
             };
             if elapsed >= held.days_to_sale {
                 let sale = format!("sale-{unit}");
+                // Reserved for this sale before it is sold, so the ledger
+                // records which sale holds the unit and a second sale of the
+                // same unit is refused at the reservation rather than at the
+                // marketplace (R12-COMMERCE-5096). Before this the running
+                // plane sold every unit unreserved and the ledger's
+                // reservation events had no caller outside the library tests.
+                self.plane_apply(LedgerEvent::Reserved {
+                    unit: unit.clone(),
+                    reservation: sale.clone(),
+                })?;
                 self.plane
-                    .sell(&sale, &unit, PAPER_BUYER, listed.price, None)?;
+                    .sell(&sale, &unit, PAPER_BUYER, listed.price, Some(sale.clone()))?;
                 self.plane.settle(&sale)?;
                 let warehouse = self
                     .logistics

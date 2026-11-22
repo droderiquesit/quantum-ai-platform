@@ -947,3 +947,148 @@ fn every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highe
     }
     Ok(())
 }
+
+/// R12-COMMERCE-5096, through the deep brain's own `breadth::install` on the
+/// committed dev plan and a file-backed event log: the inventory ledger
+/// records each unit's condition, location, cost basis, reservation and
+/// owner, and a restarted process holds the same ledger from the log alone.
+/// A restart used to open an empty ledger and reissue unit ids, and the
+/// running plane sold every unit unreserved, so the ledger's reservation
+/// events had no caller outside library tests.
+///
+/// Mutations: sell with no reservation in `CommerceResearch::work_listed`
+/// and the reservation assertion fails; drop `resume_commerce_ledger` from
+/// `Platform::install_breadth` and the restarted ledger is empty.
+#[test]
+fn the_committed_plans_ledger_reserves_each_unit_for_its_sale_and_a_restart_resumes_every_unit_record_from_the_log()
+-> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-deepbrain-commerce-ledger-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let log = directory.join("events.jsonl");
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), committed_plan_path())]);
+    let boot = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&log);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        install(
+            &mut platform,
+            &|name| environment.get(name).cloned(),
+            start(),
+        )?
+        .expect("a plan was set");
+        Ok(platform)
+    };
+
+    let first = {
+        let mut platform = boot()?;
+        let mut at = start();
+        for _ in 0..24 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        platform
+            .commerce_research()
+            .expect("installed")
+            .ledger()
+            .clone()
+    };
+    assert!(!first.units().is_empty(), "premise: units were received");
+    let plan = committed_commerce_plan()?;
+    for (unit, record) in first.units() {
+        assert_eq!(record.unit, *unit);
+        assert!(!record.sku.is_empty(), "{unit} has no SKU");
+        assert_eq!(record.location, plan.logistics.warehouse, "{unit}");
+        assert!(record.cost_basis.is_positive(), "{unit} has no cost basis");
+        match &record.state {
+            UnitState::Sold { .. } => assert_eq!(record.owner, "paper-buyer", "{unit}"),
+            _ => {
+                assert_eq!(record.owner, plan.owner, "{unit}");
+            }
+        }
+    }
+    assert!(
+        first
+            .units()
+            .values()
+            .any(|u| u.condition == Condition::New),
+        "premise: a unit is still as received"
+    );
+
+    // Reservations: every sale was made by the holder of a reservation the
+    // ledger recorded for that unit immediately before it.
+    let events = first.events();
+    let sold: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, LedgerEvent::Sold { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert!(!sold.is_empty(), "premise: the committed plan sold a unit");
+    for index in sold {
+        let LedgerEvent::Sold {
+            unit,
+            reservation,
+            sale,
+            ..
+        } = &events[index]
+        else {
+            unreachable!("filtered to sales");
+        };
+        assert_eq!(
+            reservation.as_deref(),
+            Some(sale.as_str()),
+            "unit {unit} was sold without the reservation its sale holds"
+        );
+        assert_eq!(
+            events[index - 1],
+            LedgerEvent::Reserved {
+                unit: unit.clone(),
+                reservation: sale.clone(),
+            },
+            "unit {unit} was not reserved for {sale} before it was sold"
+        );
+    }
+
+    // Replayable, across a restart, from the log alone.
+    let mut restarted = boot()?;
+    let resumed = restarted.commerce_research().expect("installed").ledger();
+    assert_eq!(
+        resumed, &first,
+        "the restarted ledger is not the one the first process left in the log"
+    );
+    assert_eq!(&Ledger::replay(first.events())?, &first);
+    let mut at = start().saturating_add(Duration::from_hours(25));
+    let mut problems = Vec::new();
+    for _ in 0..12 {
+        let report = restarted.run_cycle(at);
+        for stage in &report.stages {
+            problems.extend(stage.problems.iter().cloned());
+        }
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    assert!(
+        !problems.iter().any(|p| p.contains("already in the ledger")),
+        "a unit id was reissued after the restart: {problems:?}"
+    );
+    let after = restarted.commerce_research().expect("installed").ledger();
+    assert!(
+        after.units().len() > first.units().len(),
+        "premise: the restarted plane received new units"
+    );
+    for (unit, record) in first.units() {
+        let kept = after.units().get(unit).expect("a unit was lost");
+        assert_eq!(kept.cost_basis, record.cost_basis, "{unit}");
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
