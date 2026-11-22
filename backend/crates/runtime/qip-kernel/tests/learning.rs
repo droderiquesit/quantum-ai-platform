@@ -740,6 +740,181 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
 
 // --- counterfactual scoring of declined paths -------------------------------
 
+/// Bars for `symbol`, one an hour, the last opening an hour before `until`,
+/// closing at each of `closes` in turn.
+fn hourly_bars_until(symbol: &str, until: Timestamp, closes: &[f64]) -> Vec<SensedRecord> {
+    let count = closes.len() as i64;
+    closes
+        .iter()
+        .enumerate()
+        .map(|(i, close)| {
+            let at = until.saturating_sub(Duration::from_mins((count - i as i64) * 60));
+            bar(symbol, at, *close, *close)
+        })
+        .collect()
+}
+
+/// The volatility a claim is settled on: the standard deviation of the last
+/// twenty log returns of `closes`, through the same `Decimal` the published
+/// observation passes through.
+fn claim_volatility(closes: &[f64]) -> f64 {
+    let returns = qip_numerics::stats::log_returns(closes);
+    assert!(returns.len() >= 20, "premise: a full volatility window");
+    Decimal::from_f64(qip_numerics::stats::stddev(&returns[returns.len() - 20..]))
+        .expect("a volatility")
+        .to_f64()
+}
+
+#[test]
+fn a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_own_horizon_and_never_on_later_bars()
+-> Result<()> {
+    // R12-TICK-2077, ADR 0148 decision 1. A missed opportunity is a claim the
+    // review rejected, graded on "the move the claim named, over the claim's
+    // own horizon" — in basis points of the reference fixed when the claim was
+    // written, never in money.
+    //
+    // The failure this guards: the grade read "the last value held" at
+    // whichever cycle did the grading. LEARN running a day late — a gap in the
+    // schedule, a restart — settled the claim on bars from after its horizon,
+    // so a rejected thesis was marked by a move it never claimed. Here the
+    // tape swings violently up to the horizon and lies dead flat afterwards,
+    // and both are held when the grading cycle runs; only the first may be
+    // read.
+    use qip_prediction::resolution::ResolutionCriteria;
+
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    assert_eq!(
+        platform.predictions().len(),
+        1,
+        "premise: the first cycle wrote exactly one claim:\n{}",
+        first.summarise()
+    );
+    let prediction = platform.predictions()[0].clone();
+    assert!(prediction.is_open(), "premise: the claim is open");
+    let ResolutionCriteria::Threshold { metric, value, .. } =
+        prediction.proposition.criteria.clone()
+    else {
+        panic!("premise: the claim is a threshold on a published series");
+    };
+    assert_eq!(
+        metric, "volatility:obj-AAA",
+        "premise: this tape's claim is about realised volatility, the series this test moves"
+    );
+    let reference = value.to_f64();
+    assert!(
+        reference > 0.0,
+        "premise: the reference is a volatility, fixed at the decision ({reference})"
+    );
+    let horizon = prediction.proposition.resolves_at;
+    assert!(
+        horizon > start(),
+        "premise: the claim resolves in the future"
+    );
+    assert!(
+        platform.evaluations().is_empty(),
+        "premise: nothing has been graded yet"
+    );
+
+    // Up to the horizon: twenty-four hourly bars swinging between 100 and 150.
+    let swinging: Vec<f64> = (0..24)
+        .map(|i| if i % 2 == 0 { 150.0 } else { 100.0 })
+        .collect();
+    assert_eq!(
+        platform.observe(hourly_bars_until("AAA", horizon, &swinging)),
+        24,
+        "premise: the bars up to the horizon were absorbed"
+    );
+    let as_of_horizon = claim_volatility(&platform.price_history()["obj-AAA"]);
+
+    // After it: twenty-four hourly bars at one price, so the window the last
+    // value held describes has no movement in it at all.
+    let flat = [100.0_f64; 24];
+    let later = hourly_bars_until(
+        "AAA",
+        horizon.saturating_add(Duration::from_mins(26 * 60)),
+        &flat,
+    );
+    for record in &later {
+        let SensedRecord::Bar(bar) = record else {
+            panic!("the fixture builds bars");
+        };
+        assert!(
+            bar.open_time > horizon,
+            "premise: every later bar opens after the horizon"
+        );
+    }
+    assert_eq!(
+        platform.observe(later),
+        24,
+        "premise: the bars after the horizon were absorbed too"
+    );
+    let newest_held = claim_volatility(&platform.price_history()["obj-AAA"]);
+    // The two readings sit on opposite sides of the reference, so a grade
+    // taken from the later tape has the opposite sign, not merely another
+    // size.
+    assert!(
+        newest_held < reference && reference < as_of_horizon,
+        "premise: the reference {reference} lies between the tape after the horizon \
+         ({newest_held}) and the tape as of it ({as_of_horizon})"
+    );
+
+    // LEARN runs a day late.
+    let graded_at = horizon.saturating_add(Duration::from_days(1));
+    let second = platform.run_cycle(graded_at);
+    let learn = second.stage(Stage::Learn).expect("learn ran");
+    assert!(
+        learn.detail.contains("graded"),
+        "LEARN did not grade the due claim: {}",
+        learn.detail
+    );
+
+    // It is a miss: the review rejected it, and the platform remembers it as
+    // declined rather than as something it did.
+    let remembered: Vec<_> = platform
+        .remembered_episodes(graded_at.saturating_add(Duration::from_secs(1)))
+        .filter(|episode| episode.decision == qip_ai::memory::DecisionTaken::RejectedOnReview)
+        .collect();
+    assert_eq!(
+        remembered.len(),
+        1,
+        "premise: this tape's hypothesis is rejected on review, and its episode says so"
+    );
+
+    // Graded under the id it was decided under, in basis points of the
+    // reference fixed at the decision, on the close as of the horizon.
+    let graded: Vec<_> = platform
+        .evaluations()
+        .iter()
+        .filter(|evaluation| evaluation.hypothesis_id == prediction.hypothesis)
+        .collect();
+    assert_eq!(graded.len(), 1, "the claim was not graded exactly once");
+    let expected_bps = (as_of_horizon - reference) / reference.abs() * 10_000.0;
+    let later_bps = (newest_held - reference) / reference.abs() * 10_000.0;
+    assert!(
+        expected_bps > 0.0 && later_bps < 0.0,
+        "premise: the two tapes grade the claim in opposite directions"
+    );
+    assert!(
+        (graded[0].realised_move_bps - expected_bps).abs() < 1e-6 * expected_bps.abs(),
+        "the miss was graded {} bps; the tape as of its horizon says {expected_bps} bps, and the \
+         bars after the horizon say {later_bps} bps",
+        graded[0].realised_move_bps
+    );
+
+    // The reference did not move: the view the claim is measured from was
+    // fixed when it was written.
+    let settled = &platform.predictions()[0];
+    assert_eq!(settled.hypothesis, prediction.hypothesis);
+    assert_eq!(
+        settled.proposition.criteria, prediction.proposition.criteria,
+        "grading rewrote the claim it was grading"
+    );
+    assert!(settled.verdict.is_some(), "the claim was not settled");
+    Ok(())
+}
+
 /// Offer an order the controls refuse — it traces to no hypothesis — and hand
 /// back its id. The refusal is the premise of every test below.
 fn refuse_one(platform: &mut Platform, proposal: &str, at: Timestamp) -> Result<OrderId> {
