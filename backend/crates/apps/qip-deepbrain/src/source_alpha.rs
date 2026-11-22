@@ -55,9 +55,11 @@ pub const MIN_SAMPLES: usize = MIN_OBSERVATIONS + 2;
 
 /// The default cadence when the variable is unset: every cycle
 /// (R12-EXPAND-6027). Scoring reads only what the connectors and the own
-/// stream already observed and opens nothing, and a node with no connector
-/// arm scores no pair and records nothing, so the default costs a map walk;
-/// `0` still disables it by name.
+/// stream already observed and opens nothing. A node with no connector arm
+/// scores no pair, and journals a round only when what LEARN attributed to
+/// the sources its decisions used has changed (R12-DATA-2025), so the
+/// default costs a map walk on every other cycle; `0` still disables it by
+/// name.
 pub const DEFAULT_SOURCE_ALPHA_EVERY: u64 = 1;
 
 /// The scoring cadence in cycles; [`DEFAULT_SOURCE_ALPHA_EVERY`] when unset,
@@ -153,6 +155,7 @@ impl SourceAlphaRound {
                     outcome: score.outcome.clone(),
                 })
                 .collect(),
+            attributed: self.attributed.clone(),
         }
     }
 
@@ -185,6 +188,11 @@ pub struct SourceAlphaDesk {
     /// each pass attributes every fill so far, so summing passes would count
     /// a fill once per cycle.
     attributed: BTreeMap<String, DecisionContribution>,
+    /// The decision figures the log last took. A round that scored no
+    /// connector pair is journaled only when its figures differ from these,
+    /// so a node with no arm writes one record per change in what LEARN
+    /// attributed and not one per cycle.
+    journaled_attribution: BTreeMap<String, DecisionContribution>,
 }
 
 impl SourceAlphaDesk {
@@ -210,6 +218,18 @@ impl SourceAlphaDesk {
     /// What `source` earned in the decisions that consumed it, if any did.
     pub fn attributed(&self, source: &str) -> Option<&DecisionContribution> {
         self.attributed.get(source)
+    }
+
+    /// Whether `round` carries decision figures the log does not hold yet:
+    /// some source was attributed, and the figures differ from the ones last
+    /// journaled.
+    pub fn attribution_unjournaled(&self, round: &SourceAlphaRound) -> bool {
+        !round.attributed.is_empty() && round.attributed != self.journaled_attribution
+    }
+
+    /// The log took `round`; its decision figures are the ones it now holds.
+    pub fn note_journaled(&mut self, round: &SourceAlphaRound) {
+        self.journaled_attribution = round.attributed.clone();
     }
 
     /// The own stream's records this sense.

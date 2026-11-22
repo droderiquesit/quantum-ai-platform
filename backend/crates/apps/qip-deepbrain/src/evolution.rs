@@ -660,13 +660,33 @@ impl EvolutionEngine {
             .source_alpha
             .as_mut()
             .and_then(|desk| desk.maybe_score(cycle, now));
-        // A round that scored no pair is not journaled: on a node with no
-        // connector arm that is every round, the topic is kept indefinitely,
-        // and an empty record a cycle is log growth that explains nothing.
-        let journaled = match round.as_ref().filter(|round| !round.scores.is_empty()) {
-            Some(round) => platform
-                .journal_source_alpha_round(round.record(cycle, now))
-                .map(|_| ()),
+        // A round that scored no pair and carries no new decision figure is
+        // not journaled: on a node with no connector arm that is most
+        // rounds, the topic is kept indefinitely, and an empty record a
+        // cycle is log growth that explains nothing. A round whose
+        // attributed figures changed is journaled even with no pair scored
+        // (R12-DATA-2025): no committed environment configures an arm, so
+        // gating on scored pairs alone computed each source's realised
+        // contribution to its decisions every cycle and dropped it.
+        let due = round.as_ref().filter(|round| {
+            !round.scores.is_empty()
+                || self
+                    .source_alpha
+                    .as_ref()
+                    .is_some_and(|desk| desk.attribution_unjournaled(round))
+        });
+        let journaled = match due {
+            Some(round) => {
+                let written = platform
+                    .journal_source_alpha_round(round.record(cycle, now))
+                    .map(|_| ());
+                if written.is_ok()
+                    && let Some(desk) = self.source_alpha.as_mut()
+                {
+                    desk.note_journaled(round);
+                }
+                written
+            }
             None => Ok(()),
         };
         (round, journaled)
@@ -4720,6 +4740,7 @@ mod tests {
                 cycle,
                 at: at.saturating_add(Duration::from_mins(cycle as i64)),
                 scores: vec![scored(gain), refused.clone()],
+                attributed: BTreeMap::new(),
             };
             assert!(platform.journal_source_alpha_round(round)?);
         }
@@ -5319,6 +5340,246 @@ mod tests {
                 "a candidate was refused for too small a sample, which means the search ran \
                  before it had the history its gate requires: {refusal}"
             );
+        }
+        Ok(())
+    }
+
+    /// A default platform over one listed name, with the kernel's founding
+    /// tape observed — noise with a jump two thirds of the way in — so REASON
+    /// forms a hypothesis on the first cycle.
+    fn platform_with_a_formed_hypothesis() -> Result<(Platform, String)> {
+        use qip_financial::asset_class::{InstrumentType, Sector};
+        use qip_financial::object::FinancialObject;
+        use qip_financial::quality::Provenance;
+
+        let config = PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut universe = Universe::new();
+        universe.insert(
+            FinancialObject::builder(
+                qip_core::ObjectId::from_string("obj-AAA"),
+                "AAA",
+                InstrumentType::CommonStock,
+                qip_financial::costs::LiquidityProfile::listed(Decimal::from_int(5_000_000), 3.0),
+            )
+            .venue("XNYS")
+            .sector(Sector::InformationTechnology)
+            .price(Decimal::from_int(100))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())?,
+        )?;
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            universe,
+            LimitSet::conservative_default(),
+        )?;
+        let mut price = 100.0_f64;
+        let tape: Vec<SensedRecord> = (0..120_usize)
+            .map(|i| {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let jump = if i == 80 { 0.09 } else { 0.0 };
+                let open = price;
+                price *= 1.0 + noise + jump;
+                daily_bar(
+                    start().saturating_sub(Duration::from_days((120 - i) as i64)),
+                    open,
+                    price,
+                )
+            })
+            .collect::<Result<_>>()?;
+        platform.observe(tape);
+        let first = platform.run_cycle(start());
+        let hypothesis = platform
+            .model_tournament()
+            .open_questions()
+            .next()
+            .and_then(|question| question.spec().id.strip_prefix("q-").map(str::to_string))
+            .ok_or_else(|| {
+                Error::not_found(format!(
+                    "premise: the first cycle formed no hypothesis:\n{}",
+                    first.summarise()
+                ))
+            })?;
+        Ok((platform, hypothesis))
+    }
+
+    fn daily_bar(at: Timestamp, open: f64, close: f64) -> Result<SensedRecord> {
+        let price = |value: f64| {
+            Decimal::from_f64(value).ok_or_else(|| Error::numeric("a fixture price is not finite"))
+        };
+        Ok(SensedRecord::Bar(Box::new(Bar {
+            object_id: qip_core::ObjectId::from_string("obj-AAA"),
+            venue: "XNYS".to_string(),
+            interval: qip_market::bar::Interval::Day,
+            open_time: at,
+            open: price(open)?,
+            high: price(open.max(close) * 1.002)?,
+            low: price(open.min(close) * 0.998)?,
+            close: price(close)?,
+            volume: Decimal::from_int(1_000_000),
+            trade_count: 5_000,
+            vwap: Decimal::from_f64((open + close) / 2.0),
+            quality: Default::default(),
+        })))
+    }
+
+    /// One decision that consumed the hypothesis's evidence, marked to
+    /// `marked` afterwards and attributed by LEARN, then one scoring round on
+    /// a deep brain with **no connector arm**. Returns the rounds the log
+    /// holds, the sources the decision's evidence named and the position's
+    /// attributed P&L.
+    fn rounds_after_a_decision_marked_to(
+        marked: f64,
+    ) -> Result<(
+        Vec<qip_kernel::source_alpha_record::SourceAlphaScored>,
+        Vec<String>,
+        Decimal,
+    )> {
+        use qip_learning_engine::keyed_attribution::{Dimension, UNATTRIBUTED};
+
+        let (mut platform, hypothesis) = platform_with_a_formed_hypothesis()?;
+        let mut engine =
+            engine(0).with_source_alpha(crate::source_alpha::DEFAULT_SOURCE_ALPHA_EVERY);
+        assert!(
+            engine.connectors.is_empty(),
+            "premise: this deep brain polls no connector arm"
+        );
+
+        // Before any decision used a source: the round scores nothing and
+        // the log takes nothing.
+        let (round, journaled) = engine.maybe_score_sources(&mut platform, 1, start());
+        journaled?;
+        assert!(
+            round.is_some_and(|round| round.scores.is_empty() && round.attributed.is_empty()),
+            "premise: a round ran and held nothing"
+        );
+        assert!(
+            platform.source_alpha_rounds()?.is_empty(),
+            "a source no decision used was journaled"
+        );
+
+        let order = platform.order_from(
+            qip_core::ObjectId::from_string("obj-AAA"),
+            qip_execution_engine::order::Side::Buy,
+            Decimal::from_int(10),
+            Decimal::from_int(100),
+            "prop-formed",
+            vec![hypothesis],
+            start(),
+        );
+        let order_id = order.order_id.to_string();
+        platform.submit_order(order, start())?;
+        platform.observe(
+            (1..=3)
+                .map(|day| {
+                    daily_bar(
+                        start().saturating_add(Duration::from_days(day)),
+                        marked,
+                        marked,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?,
+        );
+        let later = start().saturating_add(Duration::from_days(5));
+        platform.run_cycle(later);
+
+        let pass = platform
+            .last_attribution()
+            .ok_or_else(|| Error::not_found("premise: LEARN attributed nothing"))?;
+        let position = pass
+            .keyed
+            .positions
+            .iter()
+            .find(|position| position.object_id == order_id)
+            .ok_or_else(|| Error::not_found("premise: the fill was not attributed"))?;
+        let sources: Vec<String> = position
+            .keys
+            .values(Dimension::EvidenceSource)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            !sources.is_empty() && sources.iter().all(|source| source != UNATTRIBUTED),
+            "premise: the decision's evidence names its sources: {sources:?}"
+        );
+        let total = position.total;
+
+        let (round, journaled) = engine.maybe_score_sources(&mut platform, 2, later);
+        journaled?;
+        assert!(
+            round.is_some_and(|round| round.scores.is_empty()),
+            "premise: no connector pair was scored"
+        );
+        // The same figures a cycle later are not written again.
+        let (_, journaled) = engine.maybe_score_sources(
+            &mut platform,
+            3,
+            later.saturating_add(Duration::from_mins(1)),
+        );
+        journaled?;
+        Ok((platform.source_alpha_rounds()?, sources, total))
+    }
+
+    /// R12-DATA-2025: a source is scored on what the decisions that used it
+    /// earned, and the score reaches the log on a deep brain with no
+    /// connector arm — which is every committed environment. The desk
+    /// computed the figure each cycle and the journal gate asked only
+    /// whether a connector pair had been scored, so it was dropped; and the
+    /// record had no field for it even when a pair was. Here one decision
+    /// cites a hypothesis REASON formed; marked up, every source its
+    /// evidence named is journaled with a positive figure whose shares sum
+    /// to the position's P&L exactly; marked down, the same sources are
+    /// journaled negative. A source no decision used is in no record, and
+    /// unchanged figures are journaled once, not once a cycle.
+    ///
+    /// Mutations: restore the scores-only gate in `maybe_score_sources`
+    /// (`due` filters on `!round.scores.is_empty()` alone) — no round is
+    /// journaled and the count assertion fails; drop `attributed` from
+    /// `SourceAlphaRound::record` — the journaled round names no source;
+    /// have `attribution_unjournaled` ignore the figures last journaled —
+    /// two rounds are written.
+    #[test]
+    fn a_source_a_decision_used_is_journaled_with_what_that_decision_earned_on_a_node_with_no_connector()
+    -> Result<()> {
+        let (won, won_sources, won_total) = rounds_after_a_decision_marked_to(110.0)?;
+        let (lost, lost_sources, lost_total) = rounds_after_a_decision_marked_to(90.0)?;
+        assert!(
+            won_total.is_positive() && lost_total.is_negative(),
+            "premise: one decision made money ({won_total}) and one lost it ({lost_total})"
+        );
+        assert_eq!(won_sources, lost_sources, "premise: the same sources");
+
+        for (rounds, sources, total) in [
+            (&won, &won_sources, won_total),
+            (&lost, &lost_sources, lost_total),
+        ] {
+            assert_eq!(
+                rounds.len(),
+                1,
+                "one round per change in the attributed figures: {rounds:?}"
+            );
+            let attributed = &rounds[0].attributed;
+            assert_eq!(
+                attributed.keys().collect::<Vec<_>>(),
+                sources.iter().collect::<Vec<_>>(),
+                "exactly the sources the decision consumed"
+            );
+            let mut sum = Decimal::ZERO;
+            for source in sources {
+                let figure = attributed[source];
+                assert_eq!(figure.positions, 1, "{source}");
+                assert_eq!(
+                    figure.pnl.is_positive(),
+                    total.is_positive(),
+                    "{source} is scored {} on a decision that earned {total}",
+                    figure.pnl
+                );
+                assert!(!figure.pnl.is_zero(), "{source} was credited nothing");
+                sum += figure.pnl;
+            }
+            assert_eq!(sum, total, "the shares close to the decision's P&L");
         }
         Ok(())
     }
