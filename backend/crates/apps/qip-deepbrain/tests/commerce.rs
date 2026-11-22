@@ -670,13 +670,17 @@ fn the_committed_dev_plan_maps_its_equivalent_listings_to_one_identity_and_refus
 /// plan's registry refuses.
 ///
 /// The oracle reads the same feed the plane reads (the breadth plan's seed
-/// is the context's, and the test asserts the two feeds agree on the
-/// observation count before comparing anything), so a pass where nothing
-/// spanned two regions is asserted as empty, not skipped.
+/// is the context's), and the test proves it before comparing spans: every
+/// listing DISCOVER journaled as dropped is one this batch's registry
+/// refuses, every candidate it queued is one the registry admits, and the
+/// refused listings differ from pass to pass. So a pass where nothing spanned
+/// two regions is asserted as empty, not skipped.
 ///
-/// Mutation: put the region in `Resolver::key` and one product's listings in
-/// two regions, joined by their GTIN, read as a variant conflict; DISCOVER
-/// reports the refusal and journals no span.
+/// Mutations, each fired and restored: put the region in `Resolver::key` and
+/// one product's listings in two regions, joined by their GTIN, read as a
+/// variant conflict, so DISCOVER reports the refusal and journals no span;
+/// seed the oracle's feed one off the plane's and the premise fails on a
+/// listing the plane dropped that the other batch admits.
 #[test]
 fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_products_listed_in_both_regions()
 -> Result<()> {
@@ -706,14 +710,63 @@ fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_product
     let mut at = start();
     let mut spanning_passes = 0;
     let mut variants_apart = false;
+    let mut refused_per_pass: Vec<BTreeSet<String>> = Vec::new();
+    let mut dropped_total = 0;
     for run in &runs {
         let batch = feed.poll(at)?;
         at = at.saturating_add(Duration::from_hours(1));
         assert_eq!(
             run.observations,
             batch.observations.len(),
-            "premise: the oracle reads the batch the plane read"
+            "premise: one batch per pass"
         );
+        // Which listings the plan's registry refuses, decided here without
+        // the resolver. This is the premise that ties the oracle to the
+        // plane: the observation count above is the same for every batch the
+        // feed can make (four products at four venues), so it agreed whatever
+        // the oracle read, and an independent reader said so on 2026-11-22.
+        // Which listings are fakes is drawn from the seed, pass by pass, so
+        // the plane's own record of what it dropped and what it queued has to
+        // agree with this batch and would not agree with another.
+        let is_refused: Vec<bool> = batch
+            .listings
+            .iter()
+            .map(|listing| {
+                plan.counterfeit_sellers.contains(&listing.seller)
+                    || listing
+                        .gtin
+                        .as_ref()
+                        .is_some_and(|gtin| plan.counterfeit_gtins.contains(gtin))
+            })
+            .collect();
+        let refused_ids: BTreeSet<String> = batch
+            .listings
+            .iter()
+            .zip(&is_refused)
+            .filter(|(_, refused)| **refused)
+            .map(|(listing, _)| listing.id.clone())
+            .collect();
+        // DISCOVER journals a dropped listing as "venue:product: finding",
+        // and only for a listing the scout raised as a candidate, so the
+        // journaled set is inside the refused set rather than equal to it.
+        for dropped in &run.counterfeit {
+            let id = dropped.split(": ").next().unwrap_or_default();
+            assert!(
+                refused_ids.contains(id),
+                "premise: the oracle reads the batch the plane read: DISCOVER dropped {id} as \
+                 counterfeit and this batch refuses only {refused_ids:?}"
+            );
+        }
+        for candidate in &run.candidates {
+            let id = format!("{}:{}", candidate.venue, candidate.product);
+            assert!(
+                !refused_ids.contains(&id),
+                "premise: the oracle reads the batch the plane read: DISCOVER queued {id}, which \
+                 this batch's registry refuses"
+            );
+        }
+        dropped_total += run.counterfeit.len();
+        refused_per_pass.push(refused_ids);
         // The queue bound is a problem DISCOVER reports on a busy pass and
         // is not this test's subject; a resolver refusal is.
         let unresolved: Vec<&String> = run
@@ -726,12 +779,7 @@ fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_product
             "the resolver refused the committed plan's listings: {unresolved:?}"
         );
         let mut expected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for listing in &batch.listings {
-            let refused = plan.counterfeit_sellers.contains(&listing.seller)
-                || listing
-                    .gtin
-                    .as_ref()
-                    .is_some_and(|gtin| plan.counterfeit_gtins.contains(gtin));
+        for (listing, refused) in batch.listings.iter().zip(&is_refused) {
             if !refused {
                 expected
                     .entry(format!(
@@ -766,6 +814,17 @@ fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_product
     assert!(
         variants_apart,
         "no pass held both colours across regions as two products"
+    );
+    assert!(
+        dropped_total > 0,
+        "premise: DISCOVER dropped at least one listing as counterfeit, so the check that every \
+         dropped listing is one this batch refuses compared something"
+    );
+    let distinct: BTreeSet<&BTreeSet<String>> = refused_per_pass.iter().collect();
+    assert!(
+        distinct.len() > 1,
+        "premise: the feed's fakes vary from pass to pass ({refused_per_pass:?}); if every pass \
+         refused the same listings, agreeing with one batch would be agreeing with all of them"
     );
     Ok(())
 }
