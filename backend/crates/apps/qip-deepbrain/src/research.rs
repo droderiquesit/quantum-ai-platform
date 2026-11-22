@@ -92,6 +92,7 @@ use qip_expansion::meta::{
 use qip_expansion::plan::AcquisitionAction;
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
+use qip_kernel::exploration::{MAXIMUM_OPEN_UNKNOWNS, ProbeKind};
 use qip_kernel::federation_stage::{self, Resolution};
 use qip_observability::metrics::{Metrics, labels, names};
 use qip_opportunity_engine::detector::{DetectionContext, DetectorRegistry};
@@ -560,6 +561,11 @@ pub struct ResearchConfig {
     /// raises a capital-preparation signal per recommended movement
     /// (R12-AMBIENT-3072). On by default; a sweep with it off raises none.
     pub capital_sentinel: bool,
+    /// Whether the sweep reads the platform's own measure of what it does
+    /// not know ([`Platform::unknowns`]) and raises a research-task signal
+    /// for the most uncertain subjects (R12-AMBIENT-3073). On by default; a
+    /// sweep with it off reads nothing and raises none.
+    pub curiosity_sentinel: bool,
     /// Whether the sweep reads the forecast lattice's misses — resolutions
     /// whose outcome fell outside the interval the lattice held at that
     /// horizon — and raises one assumption signal per material miss
@@ -657,6 +663,7 @@ impl Default for ResearchConfig {
             qpu_per_sweep: Decimal::ZERO,
             agent_budgets: BTreeMap::new(),
             capital_sentinel: true,
+            curiosity_sentinel: true,
             forecast_sentinel: true,
             opportunity_sentinel: true,
             capital_horizon: CAPITAL_HORIZON,
@@ -968,6 +975,11 @@ pub struct ResearchRound {
     /// the kernel's queue had already dropped because this loop fell
     /// behind, and the misses refused as unsizeable (a degenerate interval
     /// or a non-finite figure), each with why.
+    /// Unknowns the curiosity sentinel raised this sweep, by subject, with
+    /// the uncertainty each was raised at (R12-AMBIENT-3073), and those
+    /// refused as unsizeable, each with why.
+    pub unknowns_raised: BTreeMap<String, f64>,
+    pub unknowns_refused: Vec<String>,
     pub forecast_misses: usize,
     pub forecast_misses_lost: u64,
     pub forecast_misses_refused: Vec<String>,
@@ -1788,6 +1800,13 @@ pub struct ResearchLoop {
     /// The forecast lattice's miss sequence number this loop has read
     /// through (R12-AMBIENT-3066).
     misses_seen: u64,
+    /// Unknowns the curiosity sentinel has raised whose signal has not yet
+    /// expired, by subject, with the expiry (R12-AMBIENT-3073). A subject
+    /// here is not raised again: ignorance is a standing condition, and
+    /// without this every sweep would re-raise the same unknown until the
+    /// router's budget was spent on repeats. Bounded: entries leave at
+    /// expiry, and at most `MAXIMUM_OPEN_UNKNOWNS` enter per sweep.
+    unknowns_live: BTreeMap<String, Timestamp>,
     /// Reconciliation-break records already read off the log, in log order
     /// (R12-EXPAND-6066), so each halt is raised once.
     breaks_seen: usize,
@@ -2054,6 +2073,7 @@ impl ResearchLoop {
             pending_capital: BTreeMap::new(),
             surprises_seen: 0,
             misses_seen: 0,
+            unknowns_live: BTreeMap::new(),
             breaks_seen: 0,
             sagas_seen: 0,
             issued: 0,
@@ -3012,6 +3032,40 @@ impl ResearchLoop {
             }
         }
         self.misses_seen = newest;
+        // The curiosity sentinel (R12-AMBIENT-3073): what the platform can
+        // measure it does not know — a component with too thin a record to
+        // estimate, a model no better than a coin, an instrument whose
+        // capacity at size is unscored, an unsettled regime boundary — is a
+        // research task raised now, most uncertain first. The exploration
+        // desk ranks probes from the same measure but only under a capital
+        // budget, which is zero by default, so on a default deployment this
+        // is the only reader the measure has. At most as many per sweep as
+        // the desk has probe slots, and none for a subject whose earlier
+        // signal is still live.
+        self.unknowns_live.retain(|_, expiry| *expiry > now);
+        if self.config.curiosity_sentinel {
+            for (subject, kind, uncertainty) in
+                rank_unknowns(platform.unknowns(now), &self.unknowns_live)
+            {
+                match unknown_signal(
+                    &subject,
+                    kind,
+                    uncertainty,
+                    now,
+                    self.config.signal_ttl,
+                    &mut self.issued,
+                ) {
+                    Ok(signal) => {
+                        self.unknowns_live.insert(subject.clone(), signal.expiry());
+                        round.unknowns_raised.insert(subject, uncertainty);
+                        routable.push((None, signal));
+                    }
+                    Err(error) => round
+                        .unknowns_refused
+                        .push(format!("{subject}: {}", error.message())),
+                }
+            }
+        }
         // The pre-limit sentinel (R12-AMBIENT-3070): a limit the book is
         // approaching — inside it, past its warning threshold — is a risk
         // review raised now, while a smaller order still fixes it, rather
@@ -5238,6 +5292,76 @@ pub fn forecast_miss_signal(
             urgency_bp: severity,
             wake_targets: vec![Pathway::ReflexModelUpdate],
             evidence_ids: vec![miss.forecast_id.clone(), format!("horizon:{horizon}")],
+            expiry: now.saturating_add(ttl),
+        },
+    )
+}
+
+/// The trigger name every curiosity signal carries, and so the model the
+/// attention router names as its origin.
+pub const UNKNOWN_TRIGGER: &str = "curiosity_unknown";
+
+/// Which of the measured unknowns one sweep raises: those above zero whose
+/// earlier signal is not still live, most uncertain first with ties by
+/// subject, and at most [`MAXIMUM_OPEN_UNKNOWNS`] of them.
+///
+/// The map's own order is alphabetical, which would spend the slots on
+/// whatever sorts first rather than on what is least known; and without the
+/// cap a platform that has learned nothing yet would raise every component
+/// it has at once and spend the router's budget on its own ignorance.
+pub fn rank_unknowns(
+    unknowns: BTreeMap<String, (ProbeKind, f64)>,
+    live: &BTreeMap<String, Timestamp>,
+) -> Vec<(String, ProbeKind, f64)> {
+    let mut ranked: Vec<(String, ProbeKind, f64)> = unknowns
+        .into_iter()
+        .filter(|(subject, (_, uncertainty))| *uncertainty > 0.0 && !live.contains_key(subject))
+        .map(|(subject, (kind, uncertainty))| (subject, kind, uncertainty))
+        .collect();
+    ranked.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(MAXIMUM_OPEN_UNKNOWNS);
+    ranked
+}
+
+/// The research-task signal one measured unknown is (R12-AMBIENT-3073).
+///
+/// Severity is the uncertainty itself on the basis-point scale, so the
+/// router's own materiality line decides which unknowns are worth a wake
+/// and no second threshold is stated here. The subject carries the kind of
+/// probe that would resolve it, so a thin record and a coin-flip model on
+/// one component are two signals rather than a cluster of one. An
+/// uncertainty outside `[0, 1]` is refused rather than clamped: it would be
+/// a measurement bug upstream, and a clamped one would outrank real ones.
+pub fn unknown_signal(
+    subject: &str,
+    kind: ProbeKind,
+    uncertainty: f64,
+    now: Timestamp,
+    ttl: Duration,
+    issued: &mut u64,
+) -> Result<AmbientSignal> {
+    let severity = basis_points(uncertainty)?;
+    let observed = Decimal::from_f64(uncertainty)
+        .ok_or_else(|| Error::numeric("an uncertainty has no decimal form"))?;
+    let kind = kind.as_str();
+    *issued += 1;
+    AmbientSignal::new(
+        format!("ambient-{issued}"),
+        SignalClass::Opportunity,
+        format!("unknown:{kind}:{subject}"),
+        severity,
+        Trigger::Event(UNKNOWN_TRIGGER.to_string()),
+        now,
+        Detection {
+            observed_deviation: observed,
+            // Certainty: the uncertainty a resolved subject would measure.
+            expected_baseline: Decimal::ZERO,
+            horizon: Duration::ZERO,
+            novelty_bp: severity,
+            affected_entities: vec![subject.to_string()],
+            urgency_bp: severity,
+            wake_targets: vec![Pathway::ResearchTask],
+            evidence_ids: vec![format!("unknown:{kind}"), format!("subject:{subject}")],
             expiry: now.saturating_add(ttl),
         },
     )

@@ -12488,6 +12488,30 @@ impl Platform {
         &self.exploration
     }
 
+    /// Every subject the platform can currently measure its own ignorance
+    /// of, with the kind of probe that would resolve it and the uncertainty
+    /// in `[0, 1]` — the same map [`crate::exploration::review`] ranks its
+    /// probes from, read *before* the budget gate.
+    ///
+    /// Public because the exploration budget defaults to zero (fail closed),
+    /// so on a default deployment the desk opens no probe and the measure
+    /// reached no surface at all: the platform knew what it did not know and
+    /// told nobody (R12-AMBIENT-3073). Knowing costs no capital; only
+    /// probing does. Read-only, and derived on demand from the self model,
+    /// the fill scores and the regime boundaries, so it is not a second
+    /// record of any of them.
+    pub fn unknowns(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, (crate::exploration::ProbeKind, f64)> {
+        let regime_boundaries = self.regime_boundary_uncertainties(now);
+        crate::exploration::uncertainty_by_subject(
+            &self.self_model,
+            &self.fill_scores,
+            &regime_boundaries,
+        )
+    }
+
     /// The per-user, per-strategy books — read-only; fills reach them
     /// through [`Platform::ingest_cell_report`] and nothing else.
     pub fn user_ledger(&self) -> &UserLedger {

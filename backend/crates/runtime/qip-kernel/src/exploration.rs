@@ -61,6 +61,13 @@ use qip_capital::exploration::{
     ExplorationPlan, MAXIMUM_OPEN_PROBES, ProbeCandidate, ProbeEvidence, ProbeOutcome, budget_for,
 };
 
+/// How many unknowns the platform works on at once: the probe book's slot
+/// count, re-exported because the deep brain's curiosity sentinel
+/// (R12-AMBIENT-3073) raises at most this many unknowns a sweep and an
+/// application may not import `qip-capital` to read it. One figure for both
+/// readers, so the sentinel cannot ask for more answers than the desk could
+/// ever fund.
+pub use qip_capital::exploration::MAXIMUM_OPEN_PROBES as MAXIMUM_OPEN_UNKNOWNS;
 /// The account types an operator surface needs in order to *read* the budget,
 /// re-exported so an application can name them.
 ///
@@ -264,7 +271,7 @@ fn describe(metrics: &Metrics) {
 /// Both sources are already bounded — the self model evicts past
 /// `MAX_COMPONENTS`, and the fill scores are bounded by the counterfactual
 /// history — so this map is bounded without a cap of its own.
-fn uncertainty_by_subject(
+pub(crate) fn uncertainty_by_subject(
     self_model: &SelfModel,
     fill_scores: &[crate::platform::FillScore],
     regime_boundaries: &BTreeMap<String, f64>,
