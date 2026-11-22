@@ -662,6 +662,173 @@ fn the_committed_dev_plan_maps_its_equivalent_listings_to_one_identity_and_refus
     Ok(())
 }
 
+/// R12-COMMERCE-5092, the region clause. Under the committed dev plan,
+/// installed the way `main` installs it, every DISCOVER pass journals the
+/// products its genuine listings held in more than one region, and that
+/// record is exactly what an oracle that never calls the resolver expects:
+/// listings grouped by their raw brand, model and variant, less the ones the
+/// plan's registry refuses.
+///
+/// The oracle reads the same feed the plane reads (the breadth plan's seed
+/// is the context's), and the test proves it before comparing spans: every
+/// listing DISCOVER journaled as dropped is one this batch's registry
+/// refuses, every candidate it queued is one the registry admits, and the
+/// refused listings differ from pass to pass. So a pass where nothing spanned
+/// two regions is asserted as empty, not skipped.
+///
+/// Mutations, each fired and restored: put the region in `Resolver::key` and
+/// one product's listings in two regions, joined by their GTIN, read as a
+/// variant conflict, so DISCOVER reports the refusal and journals no span;
+/// seed the oracle's feed one off the plane's and the premise fails on a
+/// listing the plane dropped that the other batch admits.
+#[test]
+fn every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_products_listed_in_both_regions()
+-> Result<()> {
+    use qip_kernel::commerce_research::{CommerceFeed, SYNTHETIC_REGIONS};
+    let path = committed_plan_path();
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), path.clone())]);
+    let plan = qip_deepbrain::breadth::load(&|name| environment.get(name).cloned())?
+        .expect("the committed plan loads")
+        .commerce
+        .expect("the committed plan carries a commerce section");
+    assert!(
+        !plan.counterfeit_gtins.is_empty() && !plan.counterfeit_sellers.is_empty(),
+        "premise: the committed plan's registry refuses something"
+    );
+    assert_ne!(
+        SYNTHETIC_REGIONS[0], SYNTHETIC_REGIONS[1],
+        "premise: the feed's two regions are two"
+    );
+    let both: BTreeSet<String> = SYNTHETIC_REGIONS.iter().map(|r| (*r).to_string()).collect();
+
+    let cycles = 12;
+    let platform = install_plan_file(&path, cycles)?;
+    let runs = discovered(&platform)?;
+    assert_eq!(runs.len(), cycles, "premise: one DISCOVER record per cycle");
+
+    let mut feed = SyntheticCommerceFeed::new(platform.config().seed, start());
+    let mut at = start();
+    let mut spanning_passes = 0;
+    let mut variants_apart = false;
+    let mut refused_per_pass: Vec<BTreeSet<String>> = Vec::new();
+    let mut dropped_total = 0;
+    for run in &runs {
+        let batch = feed.poll(at)?;
+        at = at.saturating_add(Duration::from_hours(1));
+        assert_eq!(
+            run.observations,
+            batch.observations.len(),
+            "premise: one batch per pass"
+        );
+        // Which listings the plan's registry refuses, decided here without
+        // the resolver. This is the premise that ties the oracle to the
+        // plane: the observation count above is the same for every batch the
+        // feed can make (four products at four venues), so it agreed whatever
+        // the oracle read, and an independent reader said so on 2026-11-22.
+        // Which listings are fakes is drawn from the seed, pass by pass, so
+        // the plane's own record of what it dropped and what it queued has to
+        // agree with this batch and would not agree with another.
+        let is_refused: Vec<bool> = batch
+            .listings
+            .iter()
+            .map(|listing| {
+                plan.counterfeit_sellers.contains(&listing.seller)
+                    || listing
+                        .gtin
+                        .as_ref()
+                        .is_some_and(|gtin| plan.counterfeit_gtins.contains(gtin))
+            })
+            .collect();
+        let refused_ids: BTreeSet<String> = batch
+            .listings
+            .iter()
+            .zip(&is_refused)
+            .filter(|(_, refused)| **refused)
+            .map(|(listing, _)| listing.id.clone())
+            .collect();
+        // DISCOVER journals a dropped listing as "venue:product: finding",
+        // and only for a listing the scout raised as a candidate, so the
+        // journaled set is inside the refused set rather than equal to it.
+        for dropped in &run.counterfeit {
+            let id = dropped.split(": ").next().unwrap_or_default();
+            assert!(
+                refused_ids.contains(id),
+                "premise: the oracle reads the batch the plane read: DISCOVER dropped {id} as \
+                 counterfeit and this batch refuses only {refused_ids:?}"
+            );
+        }
+        for candidate in &run.candidates {
+            let id = format!("{}:{}", candidate.venue, candidate.product);
+            assert!(
+                !refused_ids.contains(&id),
+                "premise: the oracle reads the batch the plane read: DISCOVER queued {id}, which \
+                 this batch's registry refuses"
+            );
+        }
+        dropped_total += run.counterfeit.len();
+        refused_per_pass.push(refused_ids);
+        // The queue bound is a problem DISCOVER reports on a busy pass and
+        // is not this test's subject; a resolver refusal is.
+        let unresolved: Vec<&String> = run
+            .problems
+            .iter()
+            .filter(|problem| problem.starts_with("the listings could not be resolved"))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "the resolver refused the committed plan's listings: {unresolved:?}"
+        );
+        let mut expected: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (listing, refused) in batch.listings.iter().zip(&is_refused) {
+            if !refused {
+                expected
+                    .entry(format!(
+                        "product:{}|{}|{}",
+                        listing.brand, listing.model, listing.variant
+                    ))
+                    .or_default()
+                    .insert(listing.region.clone());
+            }
+        }
+        expected.retain(|_, regions| regions.len() > 1);
+        assert_eq!(
+            run.cross_region, expected,
+            "the journaled cross-region products differ from the listings'"
+        );
+        for regions in run.cross_region.values() {
+            assert_eq!(regions, &both, "a span is the feed's two regions");
+        }
+        if !run.cross_region.is_empty() {
+            spanning_passes += 1;
+        }
+        if run.cross_region.contains_key("product:acme|h100|black")
+            && run.cross_region.contains_key("product:acme|h100|white")
+        {
+            variants_apart = true;
+        }
+    }
+    assert!(
+        spanning_passes > 0,
+        "no pass under the committed plan held a product in two regions"
+    );
+    assert!(
+        variants_apart,
+        "no pass held both colours across regions as two products"
+    );
+    assert!(
+        dropped_total > 0,
+        "premise: DISCOVER dropped at least one listing as counterfeit, so the check that every \
+         dropped listing is one this batch refuses compared something"
+    );
+    let distinct: BTreeSet<&BTreeSet<String>> = refused_per_pass.iter().collect();
+    assert!(
+        distinct.len() > 1,
+        "premise: the feed's fakes vary from pass to pass ({refused_per_pass:?}); if every pass \
+         refused the same listings, agreeing with one batch would be agreeing with all of them"
+    );
+    Ok(())
+}
+
 /// R12-COMMERCE-5093. A cycle under the committed plan journals, for every
 /// candidate it assesses, the six figures feasibility owes: all-in cost,
 /// expected resale, inventory carry, capital lockup, time to sale and return

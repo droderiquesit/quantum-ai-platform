@@ -168,11 +168,39 @@ fn body_of(response: Response) -> (String, serde_json::Value) {
     (text, value)
 }
 
+/// A day bar opening at `at`.
 fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Day, open, close)
+}
+
+/// An hour bar opening at `at`, so it closes, and becomes knowable, an hour
+/// later.
+///
+/// R12-TICK-2077: the swings that settle a claim are fed an hour apart, and
+/// this file used to stamp them `Interval::Day`, which describes twenty
+/// overlapping day buckets, the last closing twenty-three hours after the
+/// horizon the claim is graded at. While the as-of rule read a bar from its
+/// open time the mislabel was invisible. The rule is now on the close, a day
+/// bar that has not closed is rightly left out, nothing was read, and LEARN
+/// "computed no calibration": the pipeline caught it on 2026-11-22, in this
+/// file, after the kernel's own two fixtures had been corrected and this one
+/// had not been run. The fixture now says what it always meant, hourly bars,
+/// rather than the rule being loosened to admit a bar that had not closed.
+fn hourly_bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Hour, open, close)
+}
+
+fn bar_over(
+    symbol: &str,
+    at: Timestamp,
+    interval: Interval,
+    open: f64,
+    close: f64,
+) -> SensedRecord {
     SensedRecord::Bar(Box::new(Bar {
         object_id: object(symbol),
         venue: "XNYS".to_string(),
-        interval: Interval::Day,
+        interval,
         open_time: at,
         open: Decimal::from_f64(open).expect("a price"),
         high: Decimal::from_f64(open.max(close) * 1.002).expect("a price"),
@@ -328,7 +356,7 @@ fn predictions_are_served_per_instrument_in_key_order_with_the_claim_the_platfor
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     rig.with_platform(|platform| {

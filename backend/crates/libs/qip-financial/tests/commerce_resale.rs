@@ -327,6 +327,7 @@ fn one_simulated_product_runs_from_discovery_to_a_settled_resale_with_every_stag
 
     let ls = [Listing {
         id: "auction-eu-1".into(),
+        region: "eu".into(),
         brand: "Acme".into(),
         model: "Phone X".into(),
         variant: "256GB".into(),

@@ -1,0 +1,152 @@
+{
+ "lane": "r67",
+ "date": "2026-11-22",
+ "base": "d71627665",
+ "what": "Round 67, run inside the orchestrator session: reworks of R12-TICK-2077 and R12-DATA-2025 and a build of R12-COMMERCE-5092. R12-AMBIENT-3024 was planned and never started; a usage limit stopped the round twice. Build outcomes are the agents' own reports. R12-COMMERCE-5092 was read twice by two independent readers each time (production reach, test strength), told to refute and to default to refuted when unsure; they read the code and ran no test. The first pair split, the orchestrator closed the two test gaps the refuting reader named (commit 3e9ce9d2f) and fired the mutations itself, and the second pair both failed to refute. That row is regraded COMPLETE; nothing else changes status.",
+ "not_started": [
+  "R12-AMBIENT-3024"
+ ],
+ "rows": [
+  {
+   "cluster": "B-data2",
+   "id": "R12-DATA-2025",
+   "outcome": "PARTIAL",
+   "commit": "none (nothing built; worktree clean at d7523fad3; prior work is 93eb56691)",
+   "production_caller": "qip-deepbrain main.rs with_source_alpha -> node::run_with -> EvolutionEngine::maybe_score_sources -> Platform::last_attribution. Reached every cycle, but vacuous on the shipped synthetic arm: last_attribution stayed None, so no round is journalled.",
+   "tests": [
+    "Throwaway probe only (deleted, not committed): committed data/datasets/universe.json through reference::node_assembly, PlatformConfig::default, shipped limits, over_synthetic with default EvolutionConfig, source-alpha default cadence, node::run_with at 300s steps. No new committed test."
+   ],
+   "mutations": [
+    "None fired: no production code changed."
+   ],
+   "result_lines": [
+    "probe, 120 cycles: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.25s",
+    "probe, 900 cycles: test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 908.08s"
+   ],
+   "remains": "900 default cycles: OrderProposed 0, OrderFilled 0, SourceAlphaScored 0. REASON rejects every thesis (confidence 0.12-0.31 against 0.500 required). Fixing means changing the action bar or feed: owner decision. Probe used Platform::new, not assemble, with no research/tick loops. Statement has no routing clause. Gates not run."
+  },
+  {
+   "cluster": "A-tick3",
+   "id": "R12-TICK-2077",
+   "outcome": "PARTIAL",
+   "commit": "c14a691cc",
+   "production_caller": "Platform::run_cycle -> stage_learn -> calibrate_resolved -> published_observations (close-time as-of rule) on PlatformConfig::default; unpriced counts recorded in the REASON stage of the same cycle. Called by qip-api, qip-fastbrain, qip-deepbrain composition roots (not re-read this session).",
+   "tests": [
+    "learning.rs a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_own_horizon_and_never_on_later_bars (straddling bar added)",
+    "learning.rs a_spread_claim_rejected_on_review_is_graded_on_the_spread_quoted_as_of_its_horizon_and_never_on_a_later_quote",
+    "learning.rs an_opportunity_whose_anomaly_implies_no_mechanism_is_counted_unpriced_under_that_reason_and_writes_no_claim",
+    "learning.rs a_thesis_with_no_direction_is_counted_unpriced_as_an_undirected_claim_and_writes_no_claim",
+    "platform.rs retention_tests::every_observable_a_claim_can_name_is_published_as_of_the_horizon_asked_for (expectation 130 -> 129)"
+   ],
+   "mutations": [
+    "close_time() <= horizon -> open_time <= horizon: straddling test panicked learning.rs:960; unit test left: Some(130.0) right: Some(129.0)",
+    "spread find(at <= horizon) -> latest quote: spread test panicked learning.rs:1123",
+    "undirected_claim label filed as no_mechanism: learning.rs:1255 left: 0 right: 1",
+    "no_mechanism label filed as undirected_claim: learning.rs:1196 left: 0 right: 1",
+    "all restored from copy, cmp clean"
+   ],
+   "result_lines": [
+    "qip-kernel lib: test result: ok. 525 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.28s",
+    "qip-kernel learning: test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.82s",
+    "qip-kernel all: 91 test result lines, none with failures",
+    "acceptance manifest_wiring: test result: ok. 27 passed; 0 failed",
+    "acceptance architecture: test result: ok. 59 passed; 0 failed",
+    "acceptance paper_boundary: test result: ok. 5 passed; 0 failed",
+    "acceptance security: test result: ok. 29 passed; 0 failed",
+    "acceptance documentation 28, api_boundary 10, compliance_proof 8, event_fabric_schema_lock 6, order_placement_paths 13: all 0 failed",
+    "fmt exit 0; clippy -p qip-kernel exit 0; secret scan: nothing found"
+   ],
+   "remains": "Bar-level information sets, not tick-level. Taken clause (score_filled) needs a fill; the claim that default feed proposes no order was not verified, so possibly vacuous when deployed. Refused-order test's later-data mutation (the check's named one) not re-fired. Horizon inside a bucket settles one interval early. Fixture repairs: Day->Hour relabel, assertions unchanged."
+  },
+  {
+   "cluster": "B-commerce2",
+   "id": "R12-COMMERCE-5092",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "3f26a1184",
+   "production_caller": "qip-deepbrain main.rs -> breadth::install (QIP_DEEPBRAIN_BREADTH_PLAN_PATH, set in infrastructure/gitops/envs/dev/deepbrain.yaml) -> CommerceResearch DISCOVER -> Resolver::resolve -> regions_spanned -> CommerceDiscovered.cross_region journaled",
+   "tests": [
+    "qip-deepbrain tests/commerce.rs::every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_products_listed_in_both_regions",
+    "qip-financial tests/commerce.rs::one_product_listed_in_two_regions_is_one_identity_spanning_exactly_those_regions",
+    "qip-financial tests/commerce.rs::a_listing_that_names_no_region_is_refused_and_a_span_over_an_unresolved_listing_is_refused"
+   ],
+   "mutations": [
+    "Region added to Resolver::key: unit test failed 'a GTIN links listings of different variants (acme|phone x|256gb|north / acme|phone x|256gb|south)'; deepbrain test failed 'the resolver refused the committed plan's listings'. Restored, cmp clean.",
+    "Blank-region guard disabled: 'a regionless listing resolved'. Restored, cmp clean.",
+    "DISCOVER journaling line dropped: 'the journaled cross-region products differ from the listings'', left: {}. Restored, cmp clean."
+   ],
+   "result_lines": [
+    "qip-deepbrain --test commerce: test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.55s",
+    "qip-financial tests/commerce.rs: test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s",
+    "-p qip-financial -p qip-kernel -p qip-deepbrain: exit 0, 134 'test result: ok' lines, 2150 passed, 0 failed",
+    "manifest_wiring: test result: ok. 27 passed; 0 failed; architecture: 59 passed; 0 failed; paper_boundary: 5 passed; 0 failed; security: 29 passed; 0 failed; documentation: 28 passed; api_boundary: 10; compliance_proof: 8; order_placement_paths: 13; event_fabric_schema_lock: 6",
+    "fmt --check exit 0; clippy -D warnings (3 crates) exit 0; secret scan: nothing found"
+   ],
+   "remains": "No clause unmet in code. Region is required on Listing, not defaulted: committed plan holds no listings, so nothing needed a default. Variant and counterfeit clauses rest on earlier committed tests, re-run green, not re-mutated here. Nothing is deployed; no running process has journaled a span. cross_region is journaled, read by nothing that decides. Regions are synthetic labels."
+  }
+ ],
+ "reader_verdicts": [
+  {
+   "pass": "first",
+   "id": "R12-COMMERCE-5092",
+   "lens": "callers",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Not refuted on reach: backend/crates/apps/qip-deepbrain/src/main.rs calls breadth::install unconditionally, and node.rs:218 run_cycle reaches CommerceResearch::discover, which calls Resolver::resolve and regions_spanned.",
+    "Committed configuration exists and matches: infrastructure/gitops/envs/dev/deepbrain.yaml sets QIP_DEEPBRAIN_BREADTH_PLAN_PATH (equal to breadth.rs::PLAN_VARIABLE), dev tfvars name data/breadth/dev-commerce-paper.json, the file is in git, and I recomputed its hash directory as 614c52034dfaf3db, the manifest's value.",
+    "Caveat: the blank-region refusal in Resolver::resolve and the unresolved-listing refusal in regions_spanned run on every pass but cannot fire in production, because commerce_research.rs::SyntheticCommerceFeed is the only Listing constructor and always sets a constant region.",
+    "Caveat: region is a fixed function of venue in commerce_research.rs::SYNTHETIC_VENUES and Resolver::key never reads it, so cross-region mapping in production is cross-venue mapping plus a label.",
+    "Caveat: CommerceDiscovered.cross_region is the only production reader of Identity.id and nothing decides on it; the statement does not require a decider.",
+    "Tests and mutations were not run by me; pass evidence is the builder's own log the builder's test log (134 ok lines, 0 failed), and the variant and counterfeit mutations in Resolver::key and Resolver::finding were not repeated in commit 893a6ba2a.",
+    "Nothing is deployed; the statement and check do not require a deployment, and the register gap names only the region clause."
+   ]
+  },
+  {
+   "pass": "first",
+   "id": "R12-COMMERCE-5092",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "check: mutating the function's core refusal or arithmetic fails the named crate test"
+   ],
+   "reasons": [
+    "qip-financial tests/commerce.rs::one_product_listed_in_two_regions_is_one_identity_spanning_exactly_those_regions stays green if `identity.counterfeit_finding.is_none()` is deleted from commerce.rs::regions_spanned, because its one counterfeit resolves to `counterfeit:...` in a single region and `retain(len > 1)` drops it either way (found by reading; no mutation run, edits forbidden).",
+    "The agent's three mutations hit Resolver::key, the blank-region guard and the DISCOVER journaling line; none touched commerce.rs::regions_spanned, so its unresolved-listing refusal, normalisation, `>1` filter and counterfeit exclusion are not mutation-verified.",
+    "qip-deepbrain tests/commerce.rs::every_discover_pass_under_the_committed_dev_plan... asserts its premise as `run.observations == batch.observations.len()`, which is 16 == 16 for any seed (SyntheticCommerceFeed::batch_at emits 4 SKUs x 4 venues), so it does not show the oracle read the plane's batch.",
+    "Variant and counterfeit tests were not re-mutated after Resolver::resolve changed (agent's own disclosure); by reading, they still kill deletion of Resolver::finding branches and the variant key term.",
+    "All five statement clauses have code, a cycle caller and a killing test; the refutation is narrow and one added counterfeit listing in a second region in the unit test would close it."
+   ]
+  },
+  {
+   "pass": "second",
+   "id": "R12-COMMERCE-5092",
+   "lens": "callers",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Not refuted: backend/crates/apps/qip-deepbrain/src/main.rs calls breadth::install unconditionally, and node::step -> Platform::run_cycle -> breadth_discover -> CommerceResearch::discover -> Resolver::resolve -> regions_spanned runs every cycle.",
+    "Committed config exists and is what the binary reads: infrastructure/gitops/envs/dev/deepbrain.yaml sets QIP_DEEPBRAIN_BREADTH_PLAN_PATH to /etc/qip/614c52034dfaf3db/dev-commerce-paper.json, and I recomputed that prefix from tracked data/breadth/dev-commerce-paper.json (sha256 of its hex digest).",
+    "infrastructure/environments/dev/terraform.tfvars names deepbrain_breadth_plan_file, the mount patch 3a5571eb7 is an ancestor of origin/main, and the branch leaves infrastructure/ and data/ identical to origin/main.",
+    "Both fixes in 3e9ce9d2f do what the message says: the unit test's fake sits in west and far-west under one refused identity, and the deep brain premise ties dropped and queued listings to the batch's registry.",
+    "Weakness, not a refutation: CommerceDiscovered.cross_region is the only production reader of Identity.id, and nothing that decides reads it; the statement asks for mapping, not a decision.",
+    "Weakness, not a refutation: SyntheticCommerceFeed publishes hourly and dev cycles every 300s, so most DISCOVER passes journal an empty span.",
+    "Limits of this reading: no test, build or mutation was run by me; nothing is deployed, which the row's unit verification does not require and sibling rows 5091 and 5093 were closed without."
+   ]
+  },
+  {
+   "pass": "second",
+   "id": "R12-COMMERCE-5092",
+   "lens": "tests",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Fix 1 holds: in qip-financial tests/commerce.rs::one_product_listed_in_two_regions_is_one_identity_spanning_exactly_those_regions, shop-e and shop-f are asserted to be one refused identity in west and far-west, so deleting the counterfeit_finding check in regions_spanned adds it to the span.",
+    "Fix 2 holds: qip-deepbrain tests/commerce.rs::every_discover_pass_under_the_committed_dev_plan_journals_exactly_the_products_listed_in_both_regions asserts dropped listings are batch-refused, queued candidates are not, and refused sets vary.",
+    "The committed plan's GTIN 0000000000031 refuses every drill listing in both regions each pass, so the same exclusion deletion also fails that test through CommerceResearch::discover.",
+    "Dropping the cross_region assignment in CommerceResearch::discover, or adding region to Resolver::key, fails that test deterministically.",
+    "Not refuting: serde(default) on CommerceDiscovered.cross_region has no test, and the dropped_total premise could be met by GTIN-refused listings alone.",
+    "Not run by me: cargo, clippy, fmt, any mutation; the commerce_resale and commerce_purchase binaries predate the last restore of src/commerce.rs."
+   ]
+  }
+ ]
+}

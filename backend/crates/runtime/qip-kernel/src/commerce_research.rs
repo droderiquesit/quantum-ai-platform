@@ -45,7 +45,8 @@ use qip_events::{EventBody, Topic};
 use qip_financial::commerce::{
     Account, Candidate, Channel, CommercePlane, Condition, Consolidation, Credential,
     FeasibilityInput, FraudBook, Insurance, Ledger, LedgerEvent, Listing, LogisticsPlan,
-    LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver, UnitState, scout,
+    LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver, UnitState,
+    regions_spanned, scout,
 };
 use qip_financial::commerce_resale::{
     Attr, CycleEvent, ResaleDesk, UNIT_ATTRIBUTES, UnitAttributes, VenueKind, VenueQuote,
@@ -145,12 +146,31 @@ const SYNTHETIC_SKUS: [(&str, &str, &str, &str, &str, i64); 4] = [
     ),
 ];
 
-/// The venues it reads them at, one per channel.
-const SYNTHETIC_VENUES: [(&str, Channel); 4] = [
-    ("synthetic-retail", Channel::Retail),
-    ("synthetic-auction", Channel::Auction),
-    ("synthetic-liquidation", Channel::Liquidation),
-    ("synthetic-wholesale", Channel::Wholesale),
+/// The two regions the synthetic venues sit in. Labels, not places: the feed
+/// is synthetic and a real region's name on it would read as a claim about a
+/// market nobody observed.
+pub const SYNTHETIC_REGIONS: [&str; 2] = ["synthetic-region-a", "synthetic-region-b"];
+
+/// The venues it reads them at, one per channel, each with its region.
+///
+/// Two regions over four venues (R12-COMMERCE-5092): until a venue carried a
+/// region, every listing the feed emitted was regionless, so the resolver's
+/// mapping of one product across regions never ran on a cross-region pair
+/// under any plan that reads this feed. The venue names are unchanged, so a
+/// plan's merchant list still names them.
+const SYNTHETIC_VENUES: [(&str, Channel, &str); 4] = [
+    ("synthetic-retail", Channel::Retail, SYNTHETIC_REGIONS[0]),
+    ("synthetic-auction", Channel::Auction, SYNTHETIC_REGIONS[0]),
+    (
+        "synthetic-liquidation",
+        Channel::Liquidation,
+        SYNTHETIC_REGIONS[1],
+    ),
+    (
+        "synthetic-wholesale",
+        Channel::Wholesale,
+        SYNTHETIC_REGIONS[1],
+    ),
 ];
 
 /// The seller the synthetic feed occasionally lists through, and which the
@@ -171,7 +191,7 @@ impl SyntheticCommerceFeed {
     pub fn venues() -> Vec<String> {
         SYNTHETIC_VENUES
             .iter()
-            .map(|(venue, _)| (*venue).to_string())
+            .map(|(venue, _, _)| (*venue).to_string())
             .collect()
     }
 
@@ -179,7 +199,7 @@ impl SyntheticCommerceFeed {
         let mut batch = CommerceBatch::default();
         for (sku, brand, model, variant, gtin, reference) in SYNTHETIC_SKUS {
             let reference_price = Decimal::from_int(reference);
-            for (venue, channel) in SYNTHETIC_VENUES {
+            for (venue, channel, region) in SYNTHETIC_VENUES {
                 // The crossing into money is here: the draw is a statistic,
                 // the price a decimal rounded to cents.
                 let discount_f64 = self.rng.uniform(-0.1, 0.4);
@@ -203,6 +223,7 @@ impl SyntheticCommerceFeed {
                 let counterfeit = self.rng.bernoulli(0.1);
                 batch.listings.push(Listing {
                     id: key,
+                    region: region.to_string(),
                     brand: brand.to_string(),
                     model: model.to_string(),
                     variant: variant.to_string(),
@@ -317,6 +338,15 @@ pub struct CommerceDiscovered {
     pub candidates: Vec<Candidate>,
     /// Listings dropped as counterfeit, each with its finding.
     pub counterfeit: Vec<String>,
+    /// Every product identity this pass's genuine listings held in more than
+    /// one region, with those regions (R12-COMMERCE-5092). Journaled because
+    /// the mapping across regions otherwise leaves no trace: the candidates
+    /// name a venue and a product, and a reader of the log could not tell a
+    /// resolver that merged two regions' listings from one that kept them
+    /// apart. Defaulted so a record journaled before it existed still
+    /// decodes, as empty, which is what that pass reported.
+    #[serde(default)]
+    pub cross_region: BTreeMap<String, BTreeSet<String>>,
     pub problems: Vec<String>,
 }
 
@@ -692,6 +722,7 @@ impl CommerceResearch {
                 return Ok(found);
             }
         };
+        found.cross_region = regions_spanned(&batch.listings, &identities)?;
         for candidate in scout(&batch.observations) {
             let listing = format!("{}:{}", candidate.venue, candidate.product);
             match identities.get(&listing) {

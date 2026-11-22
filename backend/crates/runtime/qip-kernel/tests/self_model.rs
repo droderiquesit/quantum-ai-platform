@@ -106,11 +106,36 @@ fn platform() -> Result<Platform> {
     Platform::new(config, context, Telemetry::silent(), universe(), limits())
 }
 
+/// A day bar opening at `at`.
 fn bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Day, open, close)
+}
+
+/// An hour bar opening at `at`, so it closes — and becomes knowable — an hour
+/// later.
+///
+/// R12-TICK-2077: the fixtures that feed bars an hour apart used to stamp
+/// them `Interval::Day`, which describes twenty overlapping day buckets, the
+/// last closing twenty-three hours after the horizon the claim is graded at.
+/// While the as-of rule read a bar from its open time that mislabel was
+/// invisible; a rule on the close time rightly leaves such a bar out. The
+/// fixture is corrected to say what it always meant — hourly bars — rather
+/// than the rule being loosened to admit a bar that had not closed.
+fn hourly_bar(symbol: &str, at: Timestamp, open: f64, close: f64) -> SensedRecord {
+    bar_over(symbol, at, Interval::Hour, open, close)
+}
+
+fn bar_over(
+    symbol: &str,
+    at: Timestamp,
+    interval: Interval,
+    open: f64,
+    close: f64,
+) -> SensedRecord {
     SensedRecord::Bar(Box::new(Bar {
         object_id: object(symbol),
         venue: "XNYS".to_string(),
-        interval: Interval::Day,
+        interval,
         open_time: at,
         open: Decimal::from_f64(open).expect("a price"),
         high: Decimal::from_f64(open.max(close) * 1.002).expect("a price"),
@@ -187,7 +212,7 @@ fn grading_a_resolved_thesis_moves_the_self_model_for_the_components_that_produc
                 (150.0, 100.0)
             };
             let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
-            bar("AAA", at, open, close)
+            hourly_bar("AAA", at, open, close)
         })
         .collect();
     platform.observe(swings);

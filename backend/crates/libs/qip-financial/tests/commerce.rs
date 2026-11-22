@@ -83,6 +83,7 @@ fn listing(
 ) -> Listing {
     Listing {
         id: id.into(),
+        region: "one-region".into(),
         brand: brand.into(),
         model: model.into(),
         variant: variant.into(),
@@ -116,6 +117,131 @@ fn listings_of_one_product_under_different_identifiers_resolve_to_one_identity()
     let ids: BTreeSet<_> = r.values().map(|i| i.id.clone()).collect();
     assert_eq!(r.len(), 3, "premise: every listing resolved");
     assert_eq!(ids.len(), 1, "one product resolved to {ids:?}");
+}
+
+fn in_region(mut l: Listing, region: &str) -> Listing {
+    l.region = region.into();
+    l
+}
+
+/// R12-COMMERCE-5092, the region clause. One product listed in two regions,
+/// once joined by text and once by GTIN, is one identity, and the span names
+/// exactly those regions; a variant in a third region stays its own product
+/// and spans nothing; the same counterfeit offered in a fourth and a fifth
+/// region is one refused identity in two regions and is still no span.
+///
+/// The counterfeit is listed twice on purpose. Listed once, it sits in one
+/// region and the more-than-one-region filter drops it whether or not
+/// `regions_spanned` excludes refused identities, so the exclusion could be
+/// deleted with this test green: an independent reader found exactly that on
+/// 2026-11-22. Two regions make the exclusion the only thing keeping a fake
+/// out of the span.
+///
+/// Mutations, each fired and restored: put the region in `Resolver::key` and
+/// the two regions' listings stop being one product (with the shared GTIN, a
+/// refused variant conflict); delete the counterfeit exclusion in
+/// `regions_spanned` and the refused identity appears spanning `far-west` and
+/// `west`; relax its filter to one region or more and the 512GB variant
+/// appears spanning `east`; insert the raw region instead of the normalised
+/// one and the product spans `North`, ` NORTH ` and `south`.
+#[test]
+fn one_product_listed_in_two_regions_is_one_identity_spanning_exactly_those_regions() {
+    let ls = [
+        in_region(
+            listing("shop-a", "Acme", "Phone X", "256GB", Some("100"), "acme"),
+            "North",
+        ),
+        in_region(
+            listing("shop-b", "ACME", "phone  x", "256gb", Some("100"), "mart"),
+            "south",
+        ),
+        in_region(
+            listing("shop-c", "Acme", "Phone X", "256GB", None, "store"),
+            " NORTH ",
+        ),
+        in_region(
+            listing("shop-d", "Acme", "Phone X", "512GB", Some("101"), "acme"),
+            "east",
+        ),
+        in_region(
+            listing("shop-e", "Acme", "Phone X", "256GB", Some("666"), "bargain"),
+            "west",
+        ),
+        in_region(
+            listing("shop-f", "Acme", "Phone X", "256GB", Some("666"), "outlet"),
+            "far-west",
+        ),
+    ];
+    let regions: BTreeSet<&str> = ls.iter().map(|l| l.region.as_str()).collect();
+    assert_eq!(regions.len(), 6, "premise: the raw region strings differ");
+    let r = Resolver::new(set(&["666"]), BTreeSet::new())
+        .resolve(&ls)
+        .expect("resolves");
+    assert_eq!(r.len(), 6, "premise: every listing resolved");
+    let product = "product:acme|phone x|256gb".to_string();
+    for id in ["shop-a", "shop-b", "shop-c"] {
+        assert_eq!(r[id].id, product, "{id} is the same product in any region");
+        assert_eq!(r[id].counterfeit_finding, None);
+    }
+    assert_eq!(r["shop-d"].id, "product:acme|phone x|512gb");
+    for id in ["shop-e", "shop-f"] {
+        assert!(
+            r[id].counterfeit_finding.is_some(),
+            "premise: {id} is refused as counterfeit"
+        );
+    }
+    assert_eq!(
+        r["shop-e"].id, r["shop-f"].id,
+        "premise: the two fakes are one refused identity, so only the exclusion keeps its two \
+         regions out of the span"
+    );
+    assert_ne!(
+        r["shop-e"].id, product,
+        "premise: a fake is not the product"
+    );
+    let spanned = regions_spanned(&ls, &r).expect("every listing was resolved");
+    assert_eq!(
+        spanned,
+        [(product, set(&["north", "south"]))].into_iter().collect(),
+        "the span is the one product and exactly its two regions"
+    );
+}
+
+/// A listing with no region is refused, and so is a span asked over a
+/// listing nobody resolved.
+///
+/// Mutations, each fired and restored: delete the blank-region guard in
+/// `Resolver::resolve` and the first refusal is gone; make `regions_spanned`
+/// skip a listing it cannot find instead of refusing, and the second call
+/// returns an empty span where the refusal was owed.
+#[test]
+fn a_listing_that_names_no_region_is_refused_and_a_span_over_an_unresolved_listing_is_refused() {
+    let named = listing("a", "Acme", "X", "1", None, "s");
+    let blank = in_region(listing("b", "Acme", "X", "1", None, "s"), "  ");
+    assert!(
+        Resolver::default()
+            .resolve(std::slice::from_ref(&named))
+            .is_ok(),
+        "premise: the same listing with a region resolves"
+    );
+    let error = Resolver::default()
+        .resolve(&[named.clone(), blank])
+        .expect_err("a regionless listing resolved");
+    assert_eq!(
+        error.message(),
+        "listing b names no region; state the region it is offered in rather than resolving it \
+         as if it were everywhere"
+    );
+    let resolved = Resolver::default()
+        .resolve(std::slice::from_ref(&named))
+        .expect("resolves");
+    let stray = listing("c", "Acme", "X", "1", None, "s");
+    let error = regions_spanned(&[named, stray], &resolved).expect_err("a partial span");
+    assert_eq!(
+        error.message(),
+        "listing c has no resolved identity; resolve every listing before asking which regions a \
+         product spans"
+    );
 }
 
 #[test]
