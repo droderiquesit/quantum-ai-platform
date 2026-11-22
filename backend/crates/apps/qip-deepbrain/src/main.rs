@@ -903,6 +903,15 @@ fn run() -> Result<()> {
         qip_deepbrain::research::ResearchConfig::from_lookup(&|name| std::env::var(name).ok())
             .map_err(configuration)?;
     println!(
+        "  curiosity sentinel: {} ({})",
+        if research_config.curiosity_sentinel {
+            "on"
+        } else {
+            "off"
+        },
+        qip_deepbrain::research::CURIOSITY_SENTINEL_VARIABLE
+    );
+    println!(
         "  opportunity sentinels: {} ({})",
         if research_config.opportunity_sentinel {
             "on"

@@ -410,7 +410,13 @@ jobs:
         with:
           workspaces: backend
           cache-on-failure: true
-      - run: cargo deny --version >/dev/null 2>&1 || cargo install cargo-deny --locked
+      # Pinned, because an unpinned install takes whatever crates.io published
+      # last: on 2026-11-22 that was 0.22.0, which needs rustc 1.95.0 while
+      # backend/rust-toolchain.toml pins 1.94.1, so the install failed and the
+      # check it exists to run never started, on every pull request at once.
+      # 0.21.0 is the newest release the pinned toolchain builds. Raise this
+      # with the toolchain, in the same change.
+      - run: cargo deny --version >/dev/null 2>&1 || cargo install cargo-deny --locked --version 0.21.0
       - run: cargo deny check
 
   # A software bill of materials for every release build, so an operator can
@@ -442,9 +448,16 @@ jobs:
   # frontend/ covers the portal and the shared packages; the landing keeps
   # its own tree deliberately (ADR 0015/0016), so it is a separate job and
   # one surface failing does not hide the other.
+  #
+  # Both browser jobs name their runner image. `ubuntu-latest` moved to
+  # ubuntu-26.04 in November 2026 and the committed Playwright (1.56.1) has no
+  # chromium build for it ("Playwright does not support chromium on
+  # ubuntu26.04-x64"), so both suites failed before running a test. The image
+  # moves when Playwright is raised to a release that supports the newer one,
+  # in the same change, not when the label does.
   frontend-portal:
     name: portal
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend
@@ -471,7 +484,7 @@ jobs:
 
   frontend-landing:
     name: landing
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: frontend/landing

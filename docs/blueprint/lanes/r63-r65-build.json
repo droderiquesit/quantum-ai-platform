@@ -1,0 +1,695 @@
+{
+ "lane": "r63-r65",
+ "date": "2026-11-22",
+ "base": "2ed2ce9e5",
+ "what": "Two build rounds run inside the orchestrator session: round 63 over 40 rows, round 65 over five rows a read-only triage called closable by code plus one rework. Outcomes are the build agents' own reports; a CLAIMS_COMPLETE here is a claim, and the readers file beside this one says what became of it. No register row was regraded by a build agent.",
+ "rows": [
+  {
+   "round": 63,
+   "cluster": "B10",
+   "id": "R12-OBS-9162",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "qip-ledgerd already records and evaluates the four objectives (per register; not re-run here).",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Ingestion clause needs a deployed ledger plus a scrape or export and workload_metrics_exist flipped (deployment, protected tfvars). The 1000-record and 300 s ceilings are unmeasured figures. Buildable slice left unbuilt: persist the park time on Park so a restart does not under-age a mismatch."
+  },
+  {
+   "round": 63,
+   "cluster": "B10",
+   "id": "R12-DATA-8123",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "none: no binary constructs BigQueryWarehouse or calls insert.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Schema guard exists at the adapter. A running path needs enable_bigquery turned on (owner switch, protected environment files), a dataset and a credential. No code change closes it. Nothing built, no cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "B10",
+   "id": "R12-OBS-9143",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Push exporter is started by qip-api, qip-fastbrain, qip-deepbrain only when QIP_METRICS_EXPORT_PROJECT is set; no committed deployment sets it.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "All deploy-side: egress route to monitoring.googleapis.com, roles/monitoring.metricWriter grants, per-environment export values (protected paths), alert policies re-pointed, proof of ingestion, then workload_metrics_exist. GMP sidecar image still blocked upstream by Trivy. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "B10",
+   "id": "R12-DATA-1039",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "qip-deepbrain builds retention policy from QIP_DEEPBRAIN_TICK_LAKE_RETENTION; no deployment sets it.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Remaining clauses need decisions nobody gave: which legal and policy obligations govern retention of own records, retention rights per venue (licence terms), and a deployment setting the retention variable (protected infrastructure/environments). Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "B10",
+   "id": "R12-DATA-9187",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "qip-edge-node main.rs builds LakeSink; LakeSink::deliver still seals one segment per spool offset (drain.rs, segment_id = cell-o<offset>).",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "ADR 0181 d3 asks seal-time batching with a size and an age bound but gives neither figure. Build also needs Drain cursor to lag unsealed lines, flush on drain_to_tail, and rework of per-offset lake tests: over budget. Compactor min_object_size fix (compact below threshold) unbuilt; Compactor has no production caller by decision."
+  },
+  {
+   "round": 63,
+   "cluster": "B3",
+   "id": "R12-SEC-9122",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "none built",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Group-only human access: lists admit user: beside group: (variables.tf:1645, PAM requesters :1838). Needs owner decision (no-org mode has no Cloud Identity groups) and an edit to protected variables.tf. owner-decisions-2026-11-16.md has no entry settling it. No check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B3",
+   "id": "R12-OBS-9154",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "none built; join exists in process (qip-api mesh.rs pending_policy -> cell open_chain)",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Clause 'Cloud Trace covers warm/API' needs a managed service and deployment (spans go OTLP to OpenObserve). Join runs only over mesh behind QIP_MESH_CELLS/QIP_MESH_REGIONS, unset on Cloud Run; no execution node deployed. Schema-lock sample gap is a slice only. No check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B3",
+   "id": "R12-CONTRACT-7066",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "none built; existing: Platform::fund_capital_grant via capital_grant_of",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Signed brain-to-brain grant lacks required owner/mandate, collateral class, leverage: values nobody stated (NEEDS_FIGURE), or requirement text amended (owner). Gap also requires a committed deployment of the receiving cell; none exists (execution_nodes empty/disabled). No check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B3",
+   "id": "R12-LEDGER-5011",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "already in tree (d6f374b76, ADR 0530): qip-edge-node main.rs parse_settlement -> SettlementClock -> Decision::Settled; qip-ledgerd lib.rs:278 with_settlement_cycle_venues",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Register row is stale: gap items 1-3 landed in d6f374b76 (T+2 end-to-end test in vertical_slice_cell_ledger; not rerun by me). Left: QIP_VENUE_SETTLEMENT and QIP_LEDGER_SETTLEMENT_CYCLE_VENUES set in no committed deployment; which venue settles on which cycle is a figure nobody gave; no node deployed. Needs regrade by a person."
+  },
+  {
+   "round": 63,
+   "cluster": "B3",
+   "id": "R12-CONTRACT-7067",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "none built; PolicyPayload.risk_envelope still unproduced in qip-api mesh.rs",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Typed RiskEnvelope refuses empty scenario_limits and health_requirements; tree has no stress-scenario or causal-driver limit arm and no committed staleness/quality floor. Producer would need invented figures (decision 28). Owner ruling 2026-10-31 allows only existing numbers; owner-decisions-2026-11-16.md adds none. No check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B5",
+   "id": "R12-CONTRACT-7068",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None on a committed deployment. Token built only in qip-edge Cell cycle commit; execution_nodes_enabled = false in dev, execution_nodes = {} elsewhere.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Clause 'between brains': ADR 0154 decision 7 keeps the peer frame an epoch, so the token never crosses a wire; owner decision needed. Deployed caller needs an execution node enabled in infrastructure/environments (protected, billed). Sub-basis-point edge journals no token: buildable slice, not built."
+  },
+  {
+   "round": 63,
+   "cluster": "B5",
+   "id": "R12-GOV-6125",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None. qip_compliance ApprovalChain::grant_attested -> check_attested -> check_authority exists (commit ac14f1cbf) but only tests/attested_approval.rs calls it.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Deployed caller needs enrolled per-person WebAuthn key files (ADR 0120 decision 1); git ls-files shows none. Owner decisions 2026-11-16: 'No identity is issued', credential is the owner's to apply. Then a qip-api capital-grant route calling grant_attested, M-size."
+  },
+  {
+   "round": 63,
+   "cluster": "B5",
+   "id": "R12-DATA-1102",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None on a default path. Novelty is the uniqueness term of SourceScores in qip-data-finder, reached only through deep brain DiscoveryDesk, off in every committed environment.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Scout run needs deepbrain_discover_every and source_candidates_file set in infrastructure/environments tfvars (protected path, null in dev/test/stage/prod) plus cognition-zone egress (ADR 0060: probe only on reviewed egress route). After that: code to journal per-candidate novelty score."
+  },
+  {
+   "round": 63,
+   "cluster": "B5",
+   "id": "R12-DATA-1106",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None on a default path. Retirement journaled as SourceLifecycleChanged only via DataFinder registry under DiscoveryDesk, off in every committed environment.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Same tfvar flip as 1102 (protected, owner). Polled connector arms never enter the DataFinder registry by ADR 0157 section 8; retiring a weak connector feed needs that decision revisited by the owner, not a code change."
+  },
+  {
+   "round": 63,
+   "cluster": "B5",
+   "id": "R12-DATA-2019",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None on a default path. ManipulationRisk::inspect runs inside the finder, reached only through DiscoveryDesk, off in every committed environment.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Unit clause already met by existing lifecycle_policy.rs test (not re-run here). Deployed assessment of any candidate needs deepbrain_discover_every and source_candidates_file in protected tfvars plus egress route: owner decision and apply."
+  },
+  {
+   "round": 63,
+   "cluster": "B7",
+   "id": "R12-RISK-5044",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "Existing, not mine: qip-edge-node main.rs cell_configuration -> CellConfig::with_net_edge_margin_bp(NET_EDGE_MARGIN_BP) + with_edgeless_signals_refused -> Cell::intent_for -> net_edge_refusal.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Clause 'expected edge after costs': gate subtracts fixed_cost_fraction only (cell.rs net_edge_refusal doc); slippage/impact absent. Lane b52-38: a person must say which reference price a rule's stated edge is against. No committed strategy sets expected_edge_bp. Nothing built, no check run. Register row is stale (gate is armed since fe65f21ae)."
+  },
+  {
+   "round": 63,
+   "cluster": "B7",
+   "id": "R12-RES-7102",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing: Cell::work quarantine on every qip-edge-node pass. Training exclusion only via qip-deepbrain tick_desk, env-gated.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Training/replay exclusion runs only when QIP_DEEPBRAIN_TICK_EVERY and QIP_DEEPBRAIN_TICK_ENTITLEMENTS are set; no committed deployment sets them, entitlement is a licence decision, setting them needs infrastructure/environments. No execution node deployed. No kernel caller marks world-model quarantine from a cell report. Nothing built, no check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B7",
+   "id": "R12-RES-7099",
+   "outcome": "NOT_ATTEMPTED",
+   "commit": "",
+   "production_caller": "Existing: main.rs cell_configuration -> pass::arm_custody_watch; run_pass -> Cell::observe_custody_statement each pass (863a9376e). Replay re-drives run_pass, so it feeds the same statement.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Clause 'no new transfer dependence': owner ruling 2026-10-31 wants Platform::decide_fabric to veto on the platform's own Custody reading; kernel has no Custody reading or producer (grep Capability::Custody in qip-kernel: none). Cross-crate, over the 40-call budget. main.rs arming has no direct test. Nothing built, no check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B7",
+   "id": "R12-EXEC-5075",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "Existing: main.rs cell_configuration -> VenueQuoteLimits::apply; rate bucket refuses by default. Ratio refuses only via QIP_VENUE_QUOTE_LIMITS, set by no committed deployment.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Ratio refusal needs a per-venue ratio interval (and messages-per-trade bound). Simulated venue states none; RateLimits::default doc refuses to invent one ('a ratio nobody stated'). Execution tracker 2026-11-11: owner figure. Alternative needs infrastructure/environments (protected). Nothing built, no check run."
+  },
+  {
+   "round": 63,
+   "cluster": "B7",
+   "id": "R12-RES-10131",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing: qip-edge-node main.rs dark-region wire (dark.rs) -> cell suspends mirrored legs; home trading unchanged.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Clause 'Fabric mirrors lag and catch up': qip-events event_fabric/policy.rs:455 still refuses every mirroring policy ('fabric-mirror is not built'); depends on R12-FABRIC-7038 and a second deployed region (billed deployment, owner approval). Nothing built, no check run."
+  },
+  {
+   "round": 63,
+   "cluster": "A5",
+   "id": "R12-COMMERCE-5096",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "7750a5fd6",
+   "production_caller": "qip-deepbrain main -> breadth::install -> Platform::install_breadth (resume_commerce_ledger); cycle SIMULATE -> breadth_simulate -> CommerceResearch::simulate -> work_listed (Reserved then Sold) -> journal_commerce_ledger. Plan: data/breadth/dev-commerce-paper.json.",
+   "tests": [
+    "backend/crates/apps/qip-deepbrain/tests/commerce.rs::the_committed_plans_ledger_reserves_each_unit_for_its_sale_and_a_restart_resumes_every_unit_record_from_the_log"
+   ],
+   "mutations": [
+    "work_listed sells unreserved (old behaviour): 'sold without the reservation its sale holds / left: None / right: Some(\"sale-sku-headphones-1-0\")'; restored, cmp clean",
+    "drop resume_commerce_ledger in install_breadth: 'the restarted ledger is not the one the first process left in the log'; restored, cmp clean"
+   ],
+   "result_lines": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 2.22s",
+    "qip-kernel + qip-deepbrain: 120 'test result: ok' lines, 1822 passed 0 failed",
+    "test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 626.26s (manifest_wiring)",
+    "test result: ok. 59 passed; 0 failed (architecture)",
+    "test result: ok. 5 passed; 0 failed (paper_boundary)",
+    "secret scan: nothing found"
+   ],
+   "remains": "Plane sales, settlements, listings and held units are still not resumed after restart (not ledger facts). Reservation is taken and consumed in the same pass, at the sale. Dev mount not verified deployed; nothing applied by me. Register not edited."
+  },
+  {
+   "round": 63,
+   "cluster": "A5",
+   "id": "R12-COMMERCE-5090",
+   "outcome": "PARTIAL",
+   "commit": "64770271b",
+   "production_caller": "qip-deepbrain main -> breadth::install -> Platform::install_breadth; cycle SIMULATE -> breadth_simulate -> CommerceResearch::simulate -> work_candidate / work_listed (run.tracked, refresh_attributes) -> journal_breadth(CommerceSimulated, kernel/commerce).",
+   "tests": [
+    "qip-deepbrain tests/commerce.rs::every_unit_under_the_committed_plan_has_its_twelve_attributes_in_the_log_and_a_sold_units_record_reads_sold",
+    "qip-deepbrain tests/commerce.rs::a_returned_units_journalled_record_names_the_sale_it_reversed_and_reads_open_box_and_held"
+   ],
+   "mutations": [
+    "drop run.tracked in work_candidate: 'unit sku-headphones-57-0 has no tracked record in the log'; restored, cmp clean",
+    "drop run.tracked in work_listed: 'left: \"held\" / right: \"sold\"'; restored, cmp clean",
+    "return lookup finds nothing: 'left: \"return rate 0.5\" / right: \"return rate 0.5; returned under sale-sku-headphones-1-1 as open_box\"'; restored, cmp clean"
+   ],
+   "result_lines": [
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 1.25s",
+    "qip-kernel + qip-deepbrain: 120 'test result: ok' lines, 1824 passed 0 failed",
+    "test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 625.93s (manifest_wiring)",
+    "test result: ok. 59 passed; 0 failed (architecture)",
+    "secret scan: nothing found"
+   ],
+   "remains": "Committed dev plan declares return rate 0, so the on-return tracking is proven only on a test plan file (rate 0.5) through deepbrain install, not on committed config. Committed per-unit fee, storage and return rate are zero: desk figures, NEEDS_FIGURE. Record is journalled, not served over an API."
+  },
+  {
+   "round": 63,
+   "cluster": "A5",
+   "id": "R12-GOV-6127",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Owner ruling 11 (owner-decisions-2026-10-25.md, restated 2026-10-31): a standing grant is not a ground; row waits on a per-action non-price ground for an arbitrage leg, 'none is invented here'. Failing closed would refuse every cycle leg in qip-edge: a product decision. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "A5",
+   "id": "R12-EVENT-5087",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "admit_creation runs only under a breadth plan with an event-market section. Owner ruling on R12-EVENT-5089 (owner-decisions-2026-10-31.md): the plan installs no event market until an operator registers an account; committed plan has event_markets null. Needs owner to choose markets and a permitting jurisdiction record. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "A5",
+   "id": "R12-EVENT-5088",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Same blocker as 5087: no committed plan installs an event market (owner ruling on R12-EVENT-5089), so no deployed path reaches AccessBook. Age/eligibility clause on seeded ladders also needs a design decision: the factory has no entity to check. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "A6",
+   "id": "R12-REASON-3054",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing: REASON stage, symbolic_stage::derive_under journals the knowledge graph each cycle. Nothing new built.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Physical-lifecycle clause needs a delivery-state source (notices, warehouse, shipping status): vendor data and licence, none in tree. Governed ontology store and making an entailment a veto or sizing input are owner decisions; no accepted record found. No cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "A6",
+   "id": "R12-CONTRACT-7063",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing: central/belief.rs::belief_state, reached only from mesh policy dispatch. Nothing new built.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "BeliefState gates only what ships to a cell. That path needs QIP_MESH_CELLS, which no committed deployment sets, and an execution node, none deployed. Closing needs infrastructure/environments edit (protected) and a deployment. No cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "A6",
+   "id": "R12-TICK-9038",
+   "outcome": "NOT_ATTEMPTED",
+   "commit": "",
+   "production_caller": "None built. Intended chain: stage_simulate stress block (platform.rs near adversarial_sequence call) to PromotionBar::assess to journal_record, resumed in assembly like resume_withdrawn_venues.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "ADR 0182 d1 makes it closable by code, but estimate exceeds 40 calls: generator, promotion, journal body, restart resume in 44121-line platform.rs. Open choices nobody gave: the beyond-history scale, and what counts as 8 supporting episodes and 2 distinct contributors for a simulation lesson. No cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "A6",
+   "id": "R12-MODEL-1083",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing code runs only in tests (qip-edge-node tests/lane0.rs, qip-edge tests/model_manifest.rs). Nothing new built.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Gap is deployment plus artifact delivery from deepbrain to nodes. Owner ruling 2026-10-31: model rides inline in the two-person signed pack in the policy payload; handed to lane L2. Needs a deployed execution node; execution_nodes empty or disabled in every environment. No cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "A6",
+   "id": "R12-REFLEX-5040",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "None: distil is called only from qip-training tests; model_serving.rs manifest reaches no node. Nothing new built.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Manifest must reach nodes over the signed release path (ADR 0149 d1-4, R12-CONTRACT-7064, R12-CONTRACT-7091), which needs a deployed execution node; none exists. A distil caller alone would be a slice, not completion. No cargo run."
+  },
+  {
+   "round": 63,
+   "cluster": "A2",
+   "id": "R12-REASON-3058",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Not built. Existing: REASON stage -> reason_symbolically -> symbolic_stage::derive (bounded CSP/SAT solver).",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "SMT/MILP clause. Owner ruling 2026-10-31 declined O12 (ADR 0150 decision 11; reopens only under decision 12). Admission needs scripts/dependency-allowlist.txt, a protected path. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "A2",
+   "id": "R12-AMBIENT-3073",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "5102c2994",
+   "production_caller": "qip-deepbrain main.rs -> ResearchLoop::new_for_node -> node sweep -> ResearchLoop::sweep_over -> Platform::unknowns -> rank_unknowns -> unknown_signal -> AttentionRouter::route. ResearchConfig::curiosity_sentinel defaults true; PlatformConfig::default, exploration budget zero.",
+   "tests": [
+    "qip-deepbrain tests/curiosity_sentinel.rs::an_unknown_the_kernel_measures_reaches_the_attention_router_without_an_exploration_budget",
+    "with_the_sentinel_off_the_same_unknowns_raise_no_signal",
+    "the_sentinel_is_on_when_the_composition_root_sets_nothing",
+    "an_unknown_is_sized_at_its_uncertainty_and_one_outside_the_unit_interval_is_refused",
+    "a_sweep_takes_the_most_uncertain_unknowns_first_and_no_more_than_the_desk_has_slots"
+   ],
+   "mutations": [
+    "sweep never reads unknowns: fails curiosity_sentinel.rs:160, left: []",
+    "switch ignored: sentinel-off test fails :219",
+    "live check dropped: fails :204 and :349",
+    "default false: fails :236",
+    "clamp instead of refuse: fails :255",
+    "truncate dropped: fails :338; sort by name: fails :339",
+    "Platform::unknowns returns empty: premises fail :145, :220",
+    "all restored cmp-identical, rerun green"
+   ],
+   "result_lines": [
+    "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s",
+    "qip-deepbrain + qip-kernel --no-fail-fast: 121 result lines, 0 failed",
+    "acceptance 9 suites: ok, 10/59/8/28/6/27/13/5/29 passed; 0 failed",
+    "fmt clean; clippy -D warnings clean (qip-kernel, qip-deepbrain); secret scan: nothing found"
+   ],
+   "remains": "Signals wake the research-task (scout) pathway only; tools, simulations, specialists not separately triggered (statement says 'or'). Per-sweep cap proven on rank_unknowns, not through the sweep: default platform measures exactly 8 unknowns. No env switch, config field only, like capital_sentinel."
+  },
+  {
+   "round": 63,
+   "cluster": "A2",
+   "id": "R12-MODEL-4022",
+   "outcome": "NOT_ATTEMPTED",
+   "commit": "",
+   "production_caller": "Not built. Existing: qip-deepbrain learning.rs -> Platform::promote_model_from -> require_completed_trial.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Three open parts exceed the row budget: registry promote/promote_artifact bypass the trial gate (about eighty call sites); nothing in production records a trial round tied to simulated fills; SelfFitted passes on shadow rmse, not paper fills. Triage only; no check run."
+  },
+  {
+   "round": 63,
+   "cluster": "A2",
+   "id": "R12-ASSET-4067",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "4a266832f",
+   "production_caller": "Already built before this run; register stale. qip-api routes.rs GET /portfolio/holdings -> Platform::position_holdings -> position_holding. Staleness: cycle DECIDE -> construct_from -> sizing_confidence refuses a mark past review.",
+   "tests": [
+    "qip-api tests/holdings.rs::a_held_position_is_served_with_its_confidence_horizon_and_expected_liquidity",
+    "qip-kernel tests/valuation_seam.rs::a_cycle_whose_thesis_rests_on_a_mark_past_its_review_date_sizes_nothing_and_says_when_it_fell_due",
+    "qip-kernel tests/position_record.rs (14 tests)"
+   ],
+   "mutations": [
+    "is_stale refusal disabled in sizing_confidence: valuation_seam.rs:1123 'a mark 400 days past its review date was sized into anyway: 1 leg(s)'",
+    "take(0) on position_holdings in routes.rs: holdings.rs:234 'premise: the book holds a position'",
+    "both restored cmp-identical"
+   ],
+   "result_lines": [
+    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.32s",
+    "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s"
+   ],
+   "remains": "No new commit by this agent: re-verified existing commit 4a266832f only. Full qip-api crate gate not rerun here (no qip-api change); qip-kernel full suite ran green in the AMBIENT gate. No portal page reads the route. Register row needs regrade by its owner."
+  },
+  {
+   "round": 63,
+   "cluster": "A2",
+   "id": "R12-CAPITAL-4083",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "Not built. Existing: DECIDE -> Platform::pre_position; LEARN -> evaluate_pre_positioning.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "'Cheapest signed corridor' clause: Corridor carries no cost, so a per-corridor cost is a figure somebody must give. Venue-to-allowlisted-address join also needs an ADR decision and a schema change to journalled PrePositioningPlanned. Nothing built."
+  },
+  {
+   "round": 63,
+   "cluster": "A3",
+   "id": "R12-REASON-9032",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "Existing only: stage_learn -> Platform::answer_challenges -> TournamentStage::answer_challenge -> VerifierSociety::challenge_prediction (platform.rs:23970, commit d932d3465). No production caller of submit_challenge or rejected_by_challenge.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "ADR 0637 leaves open: which deployed process raises a ChallengeRequest (fabric subscriber, R12-AMBIENT-10108), and what a late rejection does. Hypothesis ids are hyp-{cycle}-{subject}, unique per cycle, so REASON cannot honour a late rejection by id; effect on a formed proposal is an undecided design choice. Nothing built, nothing run."
+  },
+  {
+   "round": 63,
+   "cluster": "A3",
+   "id": "R12-MESH-5055",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "Existing: qip-edge-node arbitrage.rs prices stated costs. measured_borrow::with_measured_borrow (bbc39cb49, never compiled per its message) has no caller; Cell::set_funding_rate only tests.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "No committed deployment states a borrow rate (infrastructure/environments is protected); simulated feed states no funding or borrow, so a measured rate is always absent on the deployed path; the path-wide 5% carry is a constant nobody measured. Needs a borrow/funding figure or source. Nothing built, nothing run."
+  },
+  {
+   "round": 63,
+   "cluster": "A3",
+   "id": "R12-MODEL-6002",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "Existing: stage_learn -> score_declined / score_filled. Platform::training_export (4a01ae887, message says not compiled or run) is called only by qip-kernel tests/learning.rs.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Hedge-not-taken path needs a declared hedge policy (instrument and ratio): owner-decisions-2026-10-31 holds none, ADR 0683 names hedge, agency and alternative-arm paths as held out. Without it run_hedge_brain proposes nothing to record on a default cycle. training_export also lacks a deployed caller. Nothing built, nothing run."
+  },
+  {
+   "round": 63,
+   "cluster": "A3",
+   "id": "R12-TICK-2082",
+   "outcome": "NOT_CLOSABLE",
+   "commit": "",
+   "production_caller": "Existing: qip-deepbrain tick_desk -> qip_kernel::fusion::fuse, reached only when QIP_DEEPBRAIN_TICK_EVERY is set; no committed deployment sets it.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Turning the desk on requires QIP_DEEPBRAIN_TICK_ENTITLEMENTS, a per-dataset licensing decision nobody made (manifest_wiring.rs THE_TICK_DESK_IS_OFF_UNTIL_ENTITLED). Kernel cycle holds untimestamped closes, not the timestamped traces fuse needs, so no default-cycle caller exists without a new design. Nothing built, nothing run."
+  },
+  {
+   "round": 63,
+   "cluster": "A3",
+   "id": "R12-MESH-5056",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "Existing: central whitelist_for carries WhitelistedMarket.costs; qip-edge-node arbitrage.rs prices them. Every committed environment ships costs: None.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Duty, logistics and transfer figures are operator statements no committed deployment makes; tax/duty needs a jurisdictional source the repository does not hold; stating them means editing protected infrastructure/environments. Nothing built, nothing run."
+  },
+  {
+   "round": 65,
+   "cluster": "B-fabric",
+   "id": "R12-FABRIC-7034",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "c513d038a",
+   "production_caller": "qip-fabricd main -> start -> start_with_archive -> housekeeping thread -> archiver::pass then archiver::retain -> Broker::retain_by_policy (HOT_BATCHES unset, the default; archive mandatory in Config::parse; committed catalogue declares event_anchored streams).",
+   "tests": [
+    "qip-fabricd/tests/retention.rs::with_no_hot_window_configured_each_stream_is_still_trimmed_by_its_own_retention_class (through start_with_archive)",
+    "qip-fabricd/tests/retention.rs::a_segment_past_its_streams_span_stays_until_it_is_archived_and_goes_after"
+   ],
+   "mutations": [
+    "archiver::retain Ok(0) when no window: 'timed out waiting until the transient stream is cut to one segment'",
+    "skip age block: 'timed out waiting until the journal's segments past ninety days are removed'",
+    "age vs 89 days: 'eighty-nine days is inside a ninety-day span: [12, 15]'",
+    "archive guard removed in Broker::retain alone SURVIVED (segment log also guards); both layers removed: 'an unarchived segment is not removed, however old left: 4 right: 0'"
+   ],
+   "result_lines": [
+    "retention: test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.29s",
+    "qip-streaming + qip-fabricd: 34 'test result: ok' lines, 209 passed, 0 failed",
+    "architecture: test result: ok. 59 passed; 0 failed",
+    "documentation: test result: ok. 28 passed; 0 failed",
+    "manifest_wiring: test result: ok. 27 passed; 0 failed",
+    "paper_boundary 5, security 29, compliance_proof 8, api_boundary 10, order_placement_paths 13, event_fabric_schema_lock 6: all 0 failed",
+    "secret scan: nothing found",
+    "fmt --check exit 0; clippy -D warnings on qip-streaming, qip-fabricd clean"
+   ],
+   "remains": "No committed environment enables a broker (cloud action, out of scope). Classes with no span or ring (permanent, indefinite, series, manifest, in-memory fixed) keep every segment unless the optional window is set: no figure exists. The For (FallbackSeries) arm shares Rolling's code; only Rolling and Never are driven through fabricd. Unarchived-stays guard needed a two-layer mutation."
+  },
+  {
+   "round": 65,
+   "cluster": "A-ambient",
+   "id": "R12-AMBIENT-3073",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "291991562",
+   "production_caller": "qip-deepbrain main.rs -> ResearchConfig::from_lookup -> ResearchLoop::new_for_node -> node.rs research_pass -> sweep_over -> Platform::unknowns/resolution_value -> rank_unknowns -> unknown_gap+unknown_signal -> AttentionRouter::route -> admit -> launch_ranked -> round.scouted -> acquisition_dispatch::dispatch -> DiscoveryDesk::hand_off",
+   "tests": [
+    "curiosity_sentinel.rs::an_unknown_the_kernel_measures_reaches_the_attention_router_without_an_exploration_budget",
+    "curiosity_sentinel.rs::turning_the_sentinel_off_at_the_composition_root_removes_its_signals_and_their_work",
+    "curiosity_sentinel.rs::the_sentinel_is_on_unless_the_composition_root_is_told_off_and_a_typo_is_refused",
+    "curiosity_sentinel.rs::a_sweep_routes_the_unknown_worth_most_first_whatever_its_name",
+    "curiosity_sentinel.rs::the_selection_takes_the_unknowns_worth_most_first_and_no_more_than_the_desk_has_slots",
+    "curiosity_sentinel.rs::an_unknown_is_sized_at_its_uncertainty_and_one_outside_the_unit_interval_is_refused"
+   ],
+   "mutations": [
+    "route signal bare (None, signal) -> :264 left: None right: Some(\"Memory gap: world_model:counterparty.settlement.global is not known (stale_estimate)\")",
+    "ignore config.curiosity_sentinel -> off test fails :363",
+    "variable not read in from_lookup -> fails :363 and :410",
+    "task recorded without desk entry -> fails :264",
+    "sort by subject -> sweep-order test fails :531",
+    "uncertainty before value -> left: Some(\"subject-11\") right: Some(\"prized\")",
+    "positive-value filter dropped -> left: [\"worth-a-little\", \"worthless\"] (survived first; test tightened, then fired)",
+    "truncate dropped -> left: 13 right: 8",
+    "default off -> four tests fail",
+    "typo read as on -> fails :414"
+   ],
+   "result_lines": [
+    "curiosity_sentinel: test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+    "qip-deepbrain + qip-kernel --no-fail-fast: 121 result lines, 1830 passed, 0 failed",
+    "manifest_wiring: test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 698.62s",
+    "architecture: test result: ok. 59 passed; 0 failed",
+    "paper_boundary: test result: ok. 5 passed; 0 failed",
+    "api_boundary 10, compliance_proof 8, documentation 28, event_fabric_schema_lock 6, order_placement_paths 13, security 29 passed; 0 failed",
+    "fmt --check rc=0; clippy -D warnings rc=0 (deepbrain, kernel, acceptance); secret scan: nothing found"
+   ],
+   "remains": "Disclosures, not built: cap proven on rank_unknowns only (no cycle-built platform exceeds 8 unknowns). Value is kernel's single RESOLUTION_VALUE_BPS per unit uncertainty, so on one book value order equals uncertainty order. Scouts launch with admission 'blocked' when no licensed source (default). Added a READ_BUT_NOT_SET row in manifest_wiring.rs for the new switch, mirroring the forecast sentinel."
+  },
+  {
+   "round": 65,
+   "cluster": "A-ambient",
+   "id": "R12-AMBIENT-9034",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "None for the bound: ResearchLoop::run_market calls MetaIntelligence::allocate_within (unlisted agents unbounded, no weight ceiling). allocate_limited, which enforces AgentLimit and fills ComputePlan agent_lines, is called only by qip-expansion tests/meta.rs.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Nothing built or run. Owner figures are 0 units / 0 bp for unlisted (owner-decisions-2026-10-31.md:1350). Wiring allocate_limited into run_market with those defaults refuses every bid in every committed deployment: no grant, no ComputePlan ever issued (vacuous), and the default research market other rows rely on stops. Needs owner-stated non-zero lines in a committed environment. Four existing tests still not mutation-verified."
+  },
+  {
+   "round": 65,
+   "cluster": "B-data",
+   "id": "R12-DATA-2025",
+   "outcome": "PARTIAL",
+   "commit": "93eb56691",
+   "production_caller": "qip-deepbrain main.rs with_source_alpha (default cadence 1) -> node.rs loop -> EvolutionEngine::maybe_score_sources -> Platform::last_attribution -> decision_contributions -> journal_source_alpha_round. Record SourceAlphaScored now carries `attributed`; journaled when figures change, with no connector arm.",
+   "tests": [
+    "qip-deepbrain evolution::tests::a_source_a_decision_used_is_journaled_with_what_that_decision_earned_on_a_node_with_no_connector"
+   ],
+   "mutations": [
+    "scores-only journal gate restored: 'one round per change in the attributed figures: [] left: 0 right: 1'",
+    "attributed dropped from SourceAlphaRound::record: 'left: [] right: [\"equity-analyst\", \"simulation-analyst\", \"volatility-shift\"]'",
+    "attribution_unjournaled ignores last journaled: 'left: 2 right: 1'",
+    "decision_contributions credits zero: 'equity-analyst is scored 0 on a decision that earned 59.759982'"
+   ],
+   "result_lines": [
+    "qip-deepbrain lib: test result: ok. 254 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 293.30s",
+    "qip-kernel lib: test result: ok. 524 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.30s",
+    "acceptance: test result: ok. 59 passed; 0 failed; test result: ok. 27 passed; 0 failed; (nine suites, 0 failed)",
+    "clippy -D warnings kernel+deepbrain: Finished, exit 0; fmt --check clean; secret scan: nothing found"
+   ],
+   "remains": "Not shown that a deployed deep brain's own ACT stage releases a filling order: test's order cites a REASON-formed hypothesis but is sent via Platform::submit_order; on the test tape the cycle proposed nothing. Without fills, nothing is journaled (possible vacuity in deployment). Scores still feed no routing; statement does not require it."
+  },
+  {
+   "round": 65,
+   "cluster": "B-data",
+   "id": "R12-DATA-6006",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "None built. net_score (qip-data-finder source_alpha.rs) has no caller outside its crate tests; SourceAlphaDesk scores only connector-arm pairs.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Vacuous under committed configuration on two counts: deepbrain_connector is null in every infrastructure/environments tfvars (protected path, egress decision), so no arm pair is ever scored; and the owner's provisional price of information is 0, so every net score is 0 and late/costly cannot differ from on-time/free. Needs owner: enable an arm and give a non-zero price."
+  },
+  {
+   "round": 65,
+   "cluster": "A-tick",
+   "id": "R12-TICK-2077",
+   "outcome": "PARTIAL",
+   "commit": "18f3f8151",
+   "production_caller": "Platform::run_cycle -> stage_learn -> calibrate_resolved -> published_observations(horizon) / score_open, on PlatformConfig::default. Spread stamps written by observe -> push_spread.",
+   "tests": [
+    "qip-kernel tests/learning.rs::a_claim_rejected_on_review_is_graded_in_basis_points_on_the_tape_as_of_its_own_horizon_and_never_on_later_bars",
+    "qip-kernel src/platform.rs retention_tests::every_observable_a_claim_can_name_is_published_as_of_the_horizon_asked_for"
+   ],
+   "mutations": [
+    "calibrate_resolved passes now instead of horizon: 'the miss was graded -10000 bps; the tape as of its horizon says 1719169.5507051798 bps'",
+    "bar filter open_time<=horizon dropped: same line; inner 'left: Some(139.0) right: Some(130.0)'",
+    "spread stamp filter dropped: 'left: Some(20.0) right: None'",
+    "push_spread stamp drain dropped: 'left: 572 right: 512'",
+    "each restored, cmp clean"
+   ],
+   "result_lines": [
+    "qip-kernel lib: test result: ok. 525 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+    "qip-kernel learning: test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+    "qip-kernel all: 91 result lines, 1369 passed, 0 failed",
+    "architecture: test result: ok. 59 passed; 0 failed",
+    "documentation: test result: ok. 28 passed; 0 failed",
+    "api_boundary: test result: ok. 10 passed; 0 failed",
+    "manifest_wiring: test result: ok. 27 passed; 0 failed",
+    "order_placement_paths: test result: ok. 13 passed; 0 failed",
+    "event_fabric_schema_lock: test result: ok. 6 passed; 0 failed",
+    "paper_boundary: test result: ok. 5 passed; 0 failed",
+    "security: test result: ok. 29 passed; 0 failed",
+    "compliance_proof: test result: ok. 8 passed; 0 failed",
+    "fmt --check exit 0; clippy -p qip-kernel -D warnings clean; secret scan: nothing found"
+   ],
+   "remains": "As-of rule is on bar open_time: a bar open before horizon, closing after, is still read (leak bounded to one bar interval; close-time rule breaks existing fixtures). No cycle test for no_mechanism or undirected_claim labels. Spread as-of proven at published_observations only, no cycle-level spread claim. Bar-level information sets remain."
+  }
+ ]
+}

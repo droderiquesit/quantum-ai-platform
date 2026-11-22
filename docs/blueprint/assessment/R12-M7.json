@@ -780,14 +780,16 @@
   {
     "id": "R12-FABRIC-7034",
     "status": "PARTIAL",
-    "current": "Broker::retain_hot derives each stream's hot window from its StreamPolicy retention class (event_fabric::broker::hot_window): a class retained nowhere beyond its ring (§22.1 Retention::Never, the Transient class) keeps only the batch the next produce chains to, every other class keeps the operator's window, and an archive-required class is still held behind its archived-and-indexed boundary. qip-fabricd's archiver calls retain_hot only when QIP_EVENT_FABRIC_HOT_BATCHES is set, and no committed deployment sets it, so by default no stream is trimmed.",
+    "current": "Broker::retain_hot derives each stream's hot window from its StreamPolicy retention class (event_fabric::broker::hot_window): a class retained nowhere beyond its ring (§22.1 Retention::Never, the Transient class) keeps only the batch the next produce chains to, every other class keeps the operator's window, and an archive-required class is still held behind its archived-and-indexed boundary. qip-fabricd's archiver calls retain_hot only when QIP_EVENT_FABRIC_HOT_BATCHES is set, and no committed deployment sets it, so by default no stream is trimmed. Since 2026-11-22 a broker with no hot window set still trims by retention class: qip-fabricd archiver::retain calls Broker::retain_by_policy, which keeps one batch of a transient stream and removes archived segments past the span of a rolling or fixed-span stream.",
     "evidence": [
       "backend/crates/services/qip-streaming/src/event_fabric/broker.rs hot_window and Broker::retain_hot",
       "backend/crates/services/qip-streaming/tests/event_fabric_retention.rs a_stream_with_a_short_retention_class_is_trimmed_while_a_long_one_is_kept",
       "backend/crates/apps/qip-fabricd/src/archiver.rs retain (hot_batches None by default)",
-      "backend/crates/apps/qip-fabricd/src/config.rs HOT_BATCHES"
+      "backend/crates/apps/qip-fabricd/src/config.rs HOT_BATCHES",
+      "backend/crates/apps/qip-fabricd/src/archiver.rs retain; backend/crates/services/qip-streaming/src/event_fabric/broker.rs Broker::retain_by_policy",
+      "backend/crates/apps/qip-fabricd/tests/retention.rs with_no_hot_window_configured_each_stream_is_still_trimmed_by_its_own_retention_class"
     ],
-    "gap": "Retention runs only when a deployment sets QIP_EVENT_FABRIC_HOT_BATCHES, which none does; and the time-bounded classes (EventAnchored Rolling(90d), FallbackSeries For(..)) are trimmed by batch count, not by age, because segments carry no time bound retain_hot reads.",
+    "gap": "2026-11-22 (round 65; a build agent claimed the row and two independent readers on 2026-11-22, who read the code and ran no test, refuted it): retention no longer depends on QIP_EVENT_FABRIC_HOT_BATCHES, and the time-bounded classes are trimmed by age once archived. Still unmet: broker.rs policy_window and age_limit give no bound to five classes (in-memory fixed, permanent, series, indefinite, manifest-only), so three of the four streams in the committed infrastructure/event-fabric/streams.local.json still grow without bound on a default broker, and the new test asserts that as correct; the fixed-span arm (Retention::For) has no test and no committed stream reaching it; the transient arm is reached only by a test catalogue; the second test opens the broker directly and passes with the archive guard in Broker::retain removed (the segment log guards too); and no committed environment enables a broker (event_fabric_broker is null everywhere, and the broker module's fabricd.env sets no archive target, so Config::parse_with would refuse it). Closing needs a stated bound for the unbounded classes (a figure) and a committed deployment of a broker.",
     "implemented": true,
     "tested": true,
     "integrated": false,

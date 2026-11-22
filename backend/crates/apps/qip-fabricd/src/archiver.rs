@@ -80,18 +80,24 @@ pub fn pass(
     outcome
 }
 
-/// Trim every partition to its hot window once its older segments are
-/// archived and indexed (FABRIC-8079), when a window is configured. `None`
-/// keeps every segment on disk, which is today's behaviour and the default.
+/// Apply each stream's retention policy to this broker's disk (FABRIC-7034,
+/// FABRIC-8079), after the pass that archives what was sealed.
+///
+/// With a hot window configured every partition is also trimmed to it. With
+/// none, which is the default, each stream is still trimmed by what its own
+/// class says: a transient stream keeps one batch, and a stream whose
+/// retention is a span loses the archived, indexed segments older than it.
+/// This returned without calling the broker when no window was set, and no
+/// deployment sets one, so the default broker applied no stream's policy.
 pub fn retain(
     broker: &Broker,
     hot_batches: Option<u64>,
     telemetry: &FabricdTelemetry,
 ) -> Result<u64> {
-    let Some(keep) = hot_batches else {
-        return Ok(0);
+    let deleted = match hot_batches {
+        Some(keep) => broker.retain_hot(keep)?,
+        None => broker.retain_by_policy()?,
     };
-    let deleted = broker.retain_hot(keep)?;
     telemetry.segments_retained(deleted);
     Ok(deleted)
 }

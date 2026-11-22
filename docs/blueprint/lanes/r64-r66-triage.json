@@ -1,0 +1,1122 @@
+{
+ "lane": "r64-r66-triage",
+ "date": "2026-11-22",
+ "base": "2ed2ce9e5",
+ "what": "Read-only triage of open register rows: can code written only in this repository meet every clause, with a deployed caller under committed configuration. Nothing was built or run; each verdict is one reader's finding from the requirement, the register row, the owner-decision files and grep, and is a lead to verify rather than a fact. Wave r64 covered 44 rows; wave r66 covered 48 of 91 before a usage limit stopped it, and the 43 rows it did not reach are listed under not_reached.",
+ "verdict_counts": {
+  "BLOCKED_OWNER": 22,
+  "BLOCKED_DEPLOY": 33,
+  "CODE_NOW": 13,
+  "BLOCKED_FIGURE": 6,
+  "BLOCKED_PROTECTED_PATH": 6,
+  "BLOCKED_EXTERNAL": 3,
+  "TOO_BIG": 8,
+  "ALREADY_MET": 1
+ },
+ "rows": [
+  {
+   "wave": "r64",
+   "id": "R12-MODEL-6004",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Hedged kind has no default path: owner decision 7 / ADR 0148 decision 3 hold that no composition root declares a hedge policy, so a hedged counterfactual set scores nothing. Unwound half is codable (ExposureEffect absent from backend/crates; wave1101 closure via attribution.rs ReleaseContext + FillScore), but the check needs all four kinds.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-twin"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-OBS-9163",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Owner ruling 2026-10-31 (wave1031-owner-rulings-2): Bigtable p99 is declared but stays unmeasured because Bigtable is not bought (decision 5, enable_bigtable=false), and refetch cadence stays off by default. Six objectives are named in qip-observability/src/data_plane.rs, but the check needs each backed by a recorded series.",
+   "plan": "",
+   "crates": [
+    "qip-observability",
+    "qip-kernel",
+    "qip-fabricd",
+    "qip-deepbrain",
+    "qip-mesh"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-TICK-2070",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Owner ruling 2026-10-31 (decision 14, ADR_THEN_IMPLEMENT, lane L3b): a distillate reaches qip-api's trained_models slot only through a two-person signed ModelPack, and the row stays PARTIAL until a deployed cell installs one. No execution node is deployed and no pack is signed; the release is a human act with the model-pack key.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-api",
+    "qip-cli",
+    "qip-contracts",
+    "qip-edge",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-MODEL-4005",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Fidelity and determinism clauses are closed (qip-training tests/training.rs). The hot/warm lane clause means the edge node: model_serving.rs::model_manifest_targeted names a distillate only from a verified signed pack, and no pack or node exists before the owner's node switch (wave1101 DEPENDS, same as R12-MODEL-4024).",
+   "plan": "",
+   "crates": [
+    "qip-training",
+    "qip-kernel",
+    "qip-edge",
+    "qip-edge-node",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-OBS-7018",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Code remains (DecisionOrigin not carried on the cell's report into LEARN; vertical_slice_correlation.rs has no learn-hop test; schema-lock sample omits decision). Even with it, the join runs on no shipped default path: qip-api serves mesh only with QIP_MESH_CELLS/QIP_MESH_REGIONS set (R12-RES-10127) and no execution node is deployed.",
+   "plan": "",
+   "crates": [
+    "qip-edge",
+    "qip-mesh",
+    "qip-kernel",
+    "qip-contracts",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-7021",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Owner ruling 2026-10-31: the byte-aware journal canary in data_infrastructure_guards.rs is code, but the row stays PARTIAL until a deployed connector and refetch desk reach an origin. deepbrain_connector is null in every tfvars (protected path) and QIP_DEEPBRAIN_REFETCH_EVERY is unset by decision, so the re-fetch clause has no committed-config caller.",
+   "plan": "",
+   "crates": [
+    "qip-acceptance",
+    "qip-deepbrain",
+    "qip-market-ingestion"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-MESH-1071",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Guard and socket test exist (Cell::apply_policy takes VerifiedPolicy; qip-acceptance downward_signed_path.rs; qip-edge-node tests/mesh.rs). The downward channel is off on every committed path: qip-edge-node builds MeshLink only with QIP_MESH_PEER, startup.sh.tftpl renders neither it nor QIP_FABRIC_URL, qip-api serves no mesh, and dev has execution_nodes_enabled=false. ADR 0043 defers asymmetric signing to node deploy.",
+   "plan": "",
+   "crates": [
+    "qip-edge-node",
+    "qip-api",
+    "qip-mesh",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-SEC-9131",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "infrastructure/foundation/main.tf google_compute_firewall_policy.platform holds only INGRESS rules (direction at :224, :241, :259); egress and lateral rules are in-repo Terraform. They plan nothing under committed config: count needs org_mode, org_id is never committed, and the foundation root is applied only by the owner with roles/compute.orgFirewallPolicyAdmin (wave1031 skeptic, which also flags a folder-level egress deny cutting Argo CD, Cloud Build and NAT paths).",
+   "plan": "",
+   "crates": [
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-AGENCY-1065",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Owner ruling 2026-10-31 (owner-decisions-2026-10-31.md:207, REGRADE_TEXT) keeps ADR 0146 decision 5: no sentence-level citation binding, requirement not reworded, row held PARTIAL on its own text. Also the only guard caller is qip-cli Session::open (not deployed) and the only adapter is Unwired (ADR 0114).",
+   "plan": "",
+   "crates": [
+    "qip-agency",
+    "qip-cli"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-AMBIENT-9034",
+   "verdict": "CODE_NOW",
+   "why": "Owner gave provisional figures (0 units, 0 bp for unlisted; owner-decisions:1350) and the code is on main: qip-contracts control.rs ComputePlanFields.agent_lines / AgentLine.weight_ceiling_bp, qip-expansion meta.rs Decline::OverAgentBudget / OverModelWeight with zero default. Register note 2026-11-14 says the four new tests were never mutation-verified, so the row is unproven, not met; I ran nothing.",
+   "plan": "Confirm qip-deepbrain research.rs ResearchLoop::run_market (default sweep path) hands allocate_within the lines and that the issued ComputePlan carries them; add a deepbrain test in tests/research_market.rs that an unlisted agent is refused on default config if absent. Mutation-verify control_contracts.rs::a_compute_plan_refuses_a_missing_repeated_or_exceeded_agent_line and meta.rs tests (an_agent_with_no_stated_line..., a_bid_weighted_above_its_models_ceiling..., a_zero_budget_line...), fix the grant dropped when its question has no cell, then regrade.",
+   "crates": [
+    "qip-contracts",
+    "qip-expansion",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-AMBIENT-3066",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Sentinel is built and tested (qip-deepbrain research.rs forecast_miss_signal, tests/forecast_sentinel.rs, ADR 0432); check says 'runs in production' and no qip-deepbrain is deployed. Millisecond horizon also unpopulated: no reflex-side forecaster feeds that lattice row.",
+   "plan": "",
+   "crates": [
+    "qip-deepbrain",
+    "qip-kernel"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-MODEL-9030",
+   "verdict": "BLOCKED_OWNER",
+   "why": "ADR 0149/0140 decline scoring against ForecastState and a tournament-win promotion gate; owner decision (owner-decisions:1759) keeps the decline, so the check's 'challenger that did not win cannot be promoted' clause may not be built.",
+   "plan": "",
+   "crates": [
+    "qip-evolution",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-MODEL-10123",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Hedge scoring is held off: no composition root declares a hedge policy (owner decision 7, ADR 0391 decision 7, owner-decisions:1737 'Row stays PARTIAL'). Capital-plan scoring and in-flight routing rebuild are code, but the hedge class cannot be scored, so 'each decision class' fails.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-cost-router"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-MESH-5057",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Unit check is met (qip-arbitrage tests/edge_costs.rs, netedge.rs) but production edges carry costs only when QIP_ARBITRAGE_POLICY_PATH names a policy (qip-kernel central/whitelist.rs ArbitragePolicy::validate); no committed environment sets it and tracker marks it deployment-only (execution-tracker l5-p-01). The policy's cost figures are operator-stated too.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-edge-node",
+    "qip-arbitrage"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-TICK-2077",
+   "verdict": "CODE_NOW",
+   "why": "Ruling exists (ADR 0148, owner-decisions:386 IMPLEMENT, 'no new design needed'): a missed opportunity is a claim graded in bps over its own horizon. Taken and vetoed are scored (Platform::score_filled, score_declined, learning.rs:809); unpriced counter landed (c581e9af); missed-claim grading over a decision-time view and its later-data test are not on main. Earlier draft was reverted on failing kernel tests, so risk is real.",
+   "plan": "In platform.rs stage_learn, grade a hypothesis rejected on review to realised_move_bps from the view fixed at decision time (as-of read), journaled under its decision id; leave undirected or no-mechanism misses counted on qip_opportunities_unpriced_total. Add qip-kernel tests/learning.rs test that fails if the grade reads bars after the horizon, plus tests for the no_mechanism and undirected_claim labels; mutation-verify each.",
+   "crates": [
+    "qip-kernel",
+    "qip-twin"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-AMBIENT-3068",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "Risk-model premise check needs a stored fit snapshot with horizon and bands, and the bands are a risk-desk figure nobody stated (register gap; owner-unblock-sheet-2026-11-11.md:60, tracker 'owner figure'). No per-strategy premise is recorded either.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-risk",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-7013",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Buckets and retention are declared and tested (modules/data/main.tf google_storage_bucket.simulation, retention_classes.tftest.hcl), but enable_cloud_storage = false in all four infrastructure/environments/*/terraform.tfvars (owner switch, protected path), so no committed plan renders them. No deployed process writes simulation outputs, campaigns or manifests to GCS, and that cannot be shown without an applied bucket.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r64",
+   "id": "R12-SEC-10050",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Own-SA, no-default-compute and runs-or-signs clauses are tested (qip-acceptance infrastructure.rs, workload_identity.rs). Remaining clause 'only the grants it uses' needs IAM Recommender or audit-log findings from a deployed project; owner ruling 2026-10-31 is STAY_PARTIAL_DEPLOY.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r64",
+   "id": "R12-GCP-7005",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Owner ruling 2026-10-31 (REGRADE_TEXT) reads the check through ADR 0036 RunService manifests; manifest_wiring.rs::run_service_deployments proves them and its mutation was run 2026-11-11. Row closes only when an owner-dispatched dev deploy shows qip-api, qip-fastbrain, qip-deepbrain Ready (deploy.yml runs 287/288 returned 403).",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CICD-8031",
+   "verdict": "CODE_NOW",
+   "why": "scripts/check-secrets.sh:57 still carries ':(exclude)*/tests/*' in EXCLUDE_PATHS, so a key fixture under tests/ passes both scans; owner ruling 2026-10-31 decision 14 (WRITE_PATCH) says the exclusion goes and a path+exact-text fixture list replaces it. Caveats: scripts/check-*.sh is in scripts/agent-policy.json protected_paths (needs a person's approving review to merge; not in this task's protected list), the patch l6-cicd-8031-secrets-fixtures-protected.patch does not exist yet, and this clone is shallow so the full-history scan can only be proven by ci.yml's --history run.",
+   "plan": "Drop the */tests/* exclusion in scripts/check-secrets.sh (tree and history modes, reached by ci.yml:455-456) and admit a hit only when path and exact matched text are both on a list in a protected file (scripts/secrets-reviewed.txt or a sibling), seeded with the 7 known fake fixture lines. Add to backend/crates/tests/qip-acceptance/tests/pipeline_scripts.rs a test that plants a key under a tests/ directory in a temp repo and requires both modes to fail, plus one that a listed fixture passes; mutation-verify by restoring the exclusion.",
+   "crates": [
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CICD-9072",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "The gate is on main: scripts/agent-guard.mjs section 1a (commit 4c0afbde4) refuses a reviewer-role commit sharing a coder's Agent-Model, run by .github/workflows/agent-boundary.yml. What the 2026-10-31 ruling still requires is the .claude/agents hunk (code-reviewer moved to a model no coder uses; ruling says that hunk is the owner's to git apply) and making role/model trailers mandatory via scripts/agent-policy.json trailer_required_after (null, protected); l6-cicd-9072-role-model-trailers-protected.patch is not in docs/blueprint/lanes.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CICD-9107",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "Owner ruling 2026-10-31 decision 14: publish to rust_packages and deployment_bundles, do not remove. No workflow under .github/workflows publishes to either (grep finds nothing); the publish step belongs in deploy.yml, a protected path, and docs/blueprint/lanes/cicd-9107-protected.patch waits for the owner to apply. The 2026-11-14 tests for it are not mutation-verified.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CONTRACT-7070",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Type and unit check are met (qip-contracts/src/episode.rs Episode = Validated<EpisodeFields>; tests/section27_partial_contracts.rs), but EpisodeFields has no user outside qip-contracts. A producer needs two decisions no accepted record gives (register gap 2026-11-13): an ADR for a qip_twin::Simulated<Decimal> to Counterfactual.estimated_outcome crossing (Simulated deliberately has none), and a definition of world_state_digest (which state, which encoding) stamped at decision time; after that it is a kernel seam in platform.rs, likely more than one session.",
+   "plan": "",
+   "crates": [
+    "qip-contracts",
+    "qip-kernel",
+    "qip-twin"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-2015",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "Code is on main (qip-data-finder discovery_targets::targets_from_strategies, qip-kernel source_discovery.rs Platform::discovery_targets), but qip-deepbrain runs discovery only when QIP_DEEPBRAIN_DISCOVER_EVERY > 0 (apps/qip-deepbrain/src/discovery.rs:94); deepbrain_discover_every and source_candidates_file are null in every infrastructure/environments/*/terraform.tfvars. Code-side remainder is small (mutation-verify kernel test, add spike-vs-strategy-gap ordering test in qip-kernel/tests/source_discovery.rs) but does not close the row without the tfvars edit; not run, read only.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-data-finder",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-WORLD-9023",
+   "verdict": "BLOCKED_OWNER",
+   "why": "ADR 0195 decision 5 declines the 'warm backup' clause (a standby execution node) and says it needs its own record; no accepted record gives one. Other gaps are partly closed (qip-edge-node main.rs:606 arms with_net_edge_margin_bp) but multi-horizon forecast and a committed strategy naming a model edge also remain, and no node is deployed.",
+   "plan": "",
+   "crates": [
+    "qip-edge",
+    "qip-strategy",
+    "qip-edge-node"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-RES-7095",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Peer mesh runs only when QIP_MESH_PEER/peers are configured, which no committed environment does, and no execution node is enabled, so multi-cell refusal is on no deployed path. Also code remainder: DirectionalBand (qip-edge/src/band.rs, ADR 0662) has no caller outside its own file and tests/band.rs, so 'reduced to pre-positioned directional bands' is unwired.",
+   "plan": "",
+   "crates": [
+    "qip-edge",
+    "qip-peer-link",
+    "qip-edge-node"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-REFLEX-1188",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Check is met in process (qip-edge-node/tests/lane0.rs one_node_process_takes_a_venue_event_through_every_lane_0_stage_to_a_paper_order), but strategy_plan_path is set in no environment tfvars and execution_nodes_enabled = false (dev tfvars:305), so no deployed node runs a plan carrying a distilled model. Closing needs protected tfvars edits plus a running node, or an owner narrowing of the row.",
+   "plan": "",
+   "crates": [
+    "qip-edge-node",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-FABRIC-8022",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Fabric batches carry the fields (qip-events event_fabric codec.rs/envelope.rs, tests/event_fabric_origin.rs), but 'every asynchronous event' includes mesh spine and peer-link frames, which ADR 0128 exempts as the control half. Skeptic refuted 2026-10-25; no owner ruling in owner-decisions-2026-10-31.md narrows the requirement or reverses ADR 0128 (tracker: ADR_THEN_CODE, undecided).",
+   "plan": "",
+   "crates": [
+    "qip-events",
+    "qip-streaming",
+    "qip-peer-link",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-8019",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Unit clause met (qip-events Topic::retention_class, qip-storage lake.rs RecordClass, Broker::archive_sealed entitlements), but 'archived (GCS)' needs enable_cloud_storage = true and event_fabric_broker non-null, both off in every environments/*/terraform.tfvars, plus Terraform wiring of the bucket into modules/event-fabric-broker and an apply. Code remainder under owner ruling/ADR 0708: per-stream class prefix in qip-storage/src/segment/archive.rs is not present (grep 'class=' finds nothing there).",
+   "plan": "",
+   "crates": [
+    "qip-storage",
+    "qip-streaming",
+    "qip-events",
+    "qip-fabricd"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-FABRIC-8101",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "fabricd side is code-complete (qip-fabricd lib.rs ArchiveTarget::CloudStorage, open_archive; qip-storage tests/segment_archive.rs), but no Terraform landing bucket or lifecycle copy exists and event_fabric_broker is null in every environment (variables.tf default null). Needs Terraform, protected tfvars enablement and an apply; the lifecycle-copy clause cannot be proven by a Rust test.",
+   "plan": "",
+   "crates": [
+    "qip-fabricd",
+    "qip-storage"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-AMBIENT-10108",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "qip-events topic.rs has no research-task topic and qip-deepbrain builds no Fabric producer; grep finds no QIP_FABRIC setting anywhere under infrastructure/, so no committed configuration gives the deep brain a broker endpoint or produce grant. Tracker execution-tracker-2026-11-11 says it closes only on an applied environment; wave1101 also buckets it ADR_THEN_CODE (new topic is a contract change).",
+   "plan": "",
+   "crates": [
+    "qip-events",
+    "qip-contracts",
+    "qip-deepbrain",
+    "qip-transport"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CONTRACT-6110",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Contract and decode/round-trip tests are on main (qip-contracts world_model.rs WorldBranch, tests/control_contracts.rs), but the only production caller, qip-deepbrain TickDesk::round, is off unless QIP_DEEPBRAIN_TICK_EVERY is set and then refuses to start without an entitlement grant (main.rs tick desk comment). ADR 0151 d5 bars the kernel stage_simulate path, so no default-on caller can be coded without a new decision.",
+   "plan": "",
+   "crates": [
+    "qip-contracts",
+    "qip-twin",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CONTRACT-6113",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "qip-expansion meta.rs builds a ComputePlan only for a QPU bid (:845-859), and qip-deepbrain ResearchConfig::default sets qpu_per_sweep = Decimal::ZERO (research.rs:657), so no QPU grant and no plan occurs under committed configuration. A non-zero QPU budget is a figure no record states; issuing plans for classical bids instead would be a design change, not found ruled anywhere. No deepbrain test names ComputePlan (only qip-expansion tests do).",
+   "plan": "",
+   "crates": [
+    "qip-expansion",
+    "qip-deepbrain",
+    "qip-contracts"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-RES-7107",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "Quarantine now exists in qip-contracts ambient.rs (RoutingPolicy::quarantining_producers, ProducerQuarantine::new), but its min_signals and floor_bp are documented as the operator's to state with no default, and no owner decision or ADR gives them (grep of owner-decisions and docs/adr found none). qip-deepbrain research.rs:2008 still builds RoutingPolicy::standard with neither clustering nor quarantine; the clustering half alone is code (two tests broke when it was enabled, per register).",
+   "plan": "",
+   "crates": [
+    "qip-contracts",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-EXPAND-6026",
+   "verdict": "BLOCKED_OWNER",
+   "why": "RegisteredSource::source_spec (qip-data-finder decision.rs:625) has no caller outside its test; journaling it needs a new qip-events Topic whose retention class the register leaves to the owner, and DiscoveryConfig::default every_cycles = 0 with the owner ruling (owner-decisions-2026-10-31, R12-DATA-2019 entry) that discovery stays off in every committed environment as a separate egress decision. FeedPack type does not exist.",
+   "plan": "",
+   "crates": [
+    "qip-contracts",
+    "qip-data-finder",
+    "qip-events",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-2025",
+   "verdict": "CODE_NOW",
+   "why": "Register row is stale: qip-kernel source_decision_attribution.rs::decision_contributions now scores each source from LEARN's EvidenceSource P&L grouping, called every cycle from qip-deepbrain evolution.rs::maybe_score_sources (DEFAULT_SOURCE_ALPHA_EVERY = 1). Remaining gap: the figures only reach the log inside a round with non-empty connector-arm scores (evolution.rs filter `!round.scores.is_empty()`), and no committed environment has an arm, so the score is computed and dropped. Test existence for direction was not read (in-file tests at source_alpha.rs:607, evolution.rs:4753 cited by comments only).",
+   "plan": "In EvolutionEngine::maybe_score_sources journal the round when desk.attributed is non-empty even if no arm pair scored, so platform.last_attribution() -> decision_contributions -> observe_decisions -> journal_source_alpha_round runs on a default deep brain. Test in qip-deepbrain (evolution.rs tests or tests/) that a winner-backed source journals positive, a loser negative, an unused source absent, with no connector arm; mutation: restore the scores-only filter.",
+   "crates": [
+    "qip-deepbrain",
+    "qip-kernel"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-DATA-6006",
+   "verdict": "CODE_NOW",
+   "why": "Owner decision (owner-decisions-2026-10-31.md:1384) fixes the price of information at provisional 0 and names the closure; qip-data-finder source_alpha.rs has PRICE_OF_INFORMATION_PER_IC, SourceEconomics and net_score with tests (not mutation-verified per register), but qip-deepbrain SourceAlphaDesk never calls net_score. Caveat: the desk runs every cycle by default but scores nothing without a connector arm, which no committed environment configures; if that counts as outside code the row is BLOCKED_OWNER (egress decision).",
+   "plan": "Carry SourceCost and publication_delay_ms from the source manifest into SourceAlphaDesk::observe_source, call net_score in SourceAlphaDesk::score and add the net figure to the journaled round (serde-default field). Test through EvolutionEngine::maybe_score_sources in qip-deepbrain: duplicate arm near zero, late arm below on-time, costly below free; mutation-verify these and the existing qip-data-finder tests/source_alpha.rs net tests.",
+   "crates": [
+    "qip-data-finder",
+    "qip-deepbrain",
+    "qip-kernel"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-TICK-2063",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "All ten families exist with hand-computed tests in qip-feature-dag, but LeadLagCorrelation/CrossVenueSpread have no production constructor (grep: only features.rs, tests, a comment in qip-sequencing/venues.rs), and qip-edge-node registers standard_suite only for a strategy from QIP_STRATEGY_PLAN_PATH (strategies.rs:612). No committed environment runs a node with a strategy plan (dev execution_nodes_enabled = false), so the register gap's second half needs a deployed node; pair registration alone is code but does not close the row.",
+   "plan": "",
+   "crates": [
+    "qip-edge-node",
+    "qip-feature-dag",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-ASSET-4072",
+   "verdict": "BLOCKED_EXTERNAL",
+   "why": "Lockup check (Platform::exit_plan_for, ExitPlan::new) and Platform::secondary_exit_plan now exist in qip-kernel platform.rs with tests/secondary_exit.rs, but secondary_exit_plan has no production caller and its doc says 'the platform holds no source of secondary-market discounts'. The check's 'evidenced discount' needs a data source (or an owner ruling that an operator-entered figure counts); the execution tracker 2026-11-11 marks it external.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-api",
+    "qip-financial"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-LEDGER-5018",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Producer journals (Platform::queue_inventory_moves) and the ledgerd store test now exists (qip-ledgerd/tests/physical_inventory.rs::a_physical_inventory_event_posts_to_the_inventory_subledger_and_the_global_trial_balance_closes), so the unit check looks met in code. The register's remaining refusal is deployment: nothing under infrastructure/ sets QIP_FABRIC_URL (grep: zero hits), so deepbrain's qip_desk_ship ships no operation to qip-ledgerd in any committed environment; dev tfvars names neither a fabric broker nor ledgerd. Mutation proof of that test not confirmed here (no test run).",
+   "plan": "",
+   "crates": [
+    "qip-ledgerd",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-LEDGER-1197",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Ledger, treasury and settlement legs are met (ADR 0530); the check's 'inventory update' from a cell fill is barred by ADR 0130 decision 5 (commerce_research plane_apply is the only inventory producer). Closing needs an ADR amending decision 5 or narrowing the row; round 49 refused COMPLETE. Also QIP_VENUE_SETTLEMENT / QIP_LEDGER_SETTLEMENT_CYCLE_VENUES are set in no committed environment (protected path).",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-ledgerd",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-LEDGER-8141",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Check requires an export landing in a retention-locked GCS bucket; the bucket exists only in unapplied Terraform and nothing writes there. Code also still missing in qip-ledgerd (only LedgerStore::export_state/verify_export at store.rs:2063/2089; no export job, signing-key config, scheduler, watermark-chain comparison), and the 2026-11-14 tests are not mutation-verified, but the bucket landing cannot be proven by code in this repository.",
+   "plan": "",
+   "crates": [
+    "qip-ledgerd",
+    "qip-storage"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-FABRIC-7034",
+   "verdict": "CODE_NOW",
+   "why": "Register row is partly stale: Broker::retain_hot already reads event_fabric::broker::age_limit (broker.rs:550, :2076) for Rolling/For classes. The remaining gap is qip-fabricd archiver::retain returning early when QIP_EVENT_FABRIC_HOT_BATCHES is unset (archiver.rs:91), and the policy-derived bounds (Never keeps 1 batch, age classes keep their span) need no operator figure. Caveat not verified: retain_hot refuses without an archive reader, so the default config must have the archive configured; and no committed environment enables a broker (deployable stays false).",
+   "plan": "In qip-fabricd archiver::retain (called from lib.rs:833 run loop), when hot_batches is None still apply each stream's own policy: Never-class keeps one batch and Rolling/For classes trim archived segments past age_limit, with count-unbounded classes untouched (split or parametrise Broker::retain_hot in qip-streaming so no invented window is needed). Add an integration test in backend/crates/apps/qip-fabricd/tests/ (new file, not broker.rs) driving the archiver with HOT_BATCHES unset and asserting an archived segment older than its stream's span is removed while an unarchived one and a younger one stay; mutation-verify by restoring the early return.",
+   "crates": [
+    "qip-fabricd",
+    "qip-streaming"
+   ]
+  },
+  {
+   "wave": "r64",
+   "id": "R12-CICD-9116",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "ADR 0452 built the Cloud Run canary, SLO gate and one-promotion rollback in manifests (ADR 0114 D4 Amendment 1 scores the Cloud Run equivalent); register gap (1) needs a dev run on a running control plane, which is suspended (ADR 0093), and gap (3) needs QIP_METRICS_EXPORT_PROJECT set in the environment. No Kargo or Cloud Run has evaluated any of it.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CICD-9098",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "Release build and Dockerfile pass --locked, but .github/workflows/ci.yml:70 (clippy), :196 (nextest run), :220 (cargo run), :233 and :266 (cargo test) and deploy.yml:458, :480 compile without it. Only fix is editing .github/workflows/**; an acceptance test asserting the flag would fail until then.",
+   "plan": "",
+   "crates": [
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-REFLEX-7061",
+   "verdict": "CODE_NOW",
+   "why": "qip-edge Cell narrows sizing to the floor past a payload's valid_for and does not refuse; cell.rs refuses on valid_for only in roll_back_policy (cell.rs:3922). Check wants refusal after valid_for elapses. Caveat: this replaces the designed conservative-floor behaviour (qip-contracts policy.rs:1211, ADR 0008 table), so an ADR amendment should accompany the change; not verified whether an ADR pins the floor.",
+   "plan": "In Cell::work add a pass gate: when now > issued_at + valid_for of the applied payload, refuse placements through Cell::refuse under a new pub const gate (added to qip-contracts feasibility/EDGE_GATES if required), reached by qip-edge-node run_pass under QIP_VENUE_FEED=simulated. Test in backend/crates/apps/qip-edge-node/tests/degraded.rs: no new payload, cell trades at narrowing size, then refuses once valid_for elapses; plus a series assertion in qip-edge/tests/telemetry.rs. Mutation: drop the gate.",
+   "crates": [
+    "qip-edge",
+    "qip-contracts",
+    "qip-edge-node"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CONTRACT-7064",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Typed ModelPack and missing-field decode refusal exist (qip-contracts policy.rs ModelPack; tests/section27_partial_contracts.rs), but a signed pack reaches a brain only via QIP_MODEL_PACKS_PATH (qip-api signing.rs:51), which no committed environment sets, and signing needs the per-person release credentials ADR 0110/0121 reserve. The only signing verbs are in qip-cli, which does not count.",
+   "plan": "",
+   "crates": [
+    "qip-contracts",
+    "qip-kernel",
+    "qip-deepbrain",
+    "qip-api"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-FINOPS-8041",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Autoscaling bounds are declared and plan-tested (modules/data/main.tf, scaling.tftest.hcl), but enable_spanner/enable_bigtable are false in all four tfvars by owner decision 5 (2026-10-25). Row closes only when an ADR with a ceiling enables a store in a committed environment; that is also a protected tfvars edit.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-LEDGER-8140",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "Register row is stale on PITR: version_retention_period is declared (modules/data/main.tf:754) and plan-tested (spanner_placement.tftest.hcl:135), at a provisional 7d. No google_spanner_backup_schedule exists because ADR 0684 says scheduled backups need an approved retention and cost figure nobody gave; enable_spanner is also false everywhere.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6061",
+   "verdict": "TOO_BIG",
+   "why": "Check clauses look met on main: qip-agents research.rs ResearchRegistry::record_concluded refuses a missing benchmark (tests/expansion_registries.rs an_entry_missing_a_declared_field_is_refused) and qip-deepbrain research.rs:1994 builds the ExpansionDesk its sweep uses. Row stays open because the registry is in memory, so 'failures are not rediscovered' fails across a restart; skeptic for the 2026-11-06 build was not run. Tests read, not run.",
+   "plan": "Pieces: (1) a persistence and restore design for the whole deep-brain ResearchLoop state, which rebuilds nothing from a log today; (2) journal the registry's six record kinds and replay them on start; (3) a second capability class at conclude needs its ADR 0192 benchmark row named by a person (owner, not code).",
+   "crates": [
+    "qip-agents",
+    "qip-expansion",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-FINOPS-10139",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "qip-training job.rs QueueQuotas has no default bounds (new() is empty; limits come only from with(queue, n)) and no composition root builds a training provider with quotas, so wiring qip-deepbrain needs per-queue concurrency figures nobody stated. Remaining code-only parts: Platform::model_benefit is neither journaled nor exported and joins per rung, not per model version; 'Spot where safe' has no training code path found (grep for spot/preemptible hit only qip-storage and qip-financial).",
+   "plan": "",
+   "crates": [
+    "qip-training",
+    "qip-cost-router",
+    "qip-kernel",
+    "qip-deepbrain",
+    "qip-observability"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-LEDGER-5013",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Property and same-digest tests exist (qip-ledgerd tests/store.rs:341 for_any_duplication_redelivery_and_crash_between_records_the_balances_equal_a_single_clean_delivery, :434), but deploy.yml has zero mentions of ledgerd and no tfvars sets it, so no global journal runs. 2026-10-31 skeptic refuted the regrade on that ground; closes on a built artefact plus committed environment (both protected paths) or an owner narrowing to the library property.",
+   "plan": "",
+   "crates": [
+    "qip-ledgerd"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-OBS-9164",
+   "verdict": "TOO_BIG",
+   "why": "Four of five objectives are declared and bound on main (slo.rs calibration_drift/quantum_classical_delta; recording sites platform.rs names::CALIBRATION_CHECKS, qip-deepbrain operations.rs names::QUANTUM_CLASSICAL_CHECKS), so the register gap is partly stale. agent-tool-failure is SourceRule::Unbuilt (critical_paths.rs AGENT_TOOL_FAILURE_UNBUILT): no agent tool invocation exists to record, only a ToolRegistry and BudgetLedger.",
+   "plan": "Pieces: (1) a real tool-invocation seam in qip-agents that can fail, (2) a kernel panel caller on the default cycle, (3) a counter qip_agent_tool_calls_total{outcome} plus rebinding agent_tool_failure in ai_objectives, (4) test in qip-observability/tests/critical_paths.rs with the unmeasured mutation. Piece 1-2 is a design change to the agent runtime, not a wiring job.",
+   "crates": [
+    "qip-agents",
+    "qip-observability",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-REASON-1138",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Only unmet clause is 'coupled to neural models'; ADR 0150 decision 7 declares neural coupling out of scope and admits no neural model in the symbolic crates. Lane b53-1's coupling attempt (e518824f9) was refuted and is not on main (branch-disposition-2026-11-16.md:118); closing needs an ADR reopening that decision.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-reasoning-engine"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-REASON-3055",
+   "verdict": "BLOCKED_EXTERNAL",
+   "why": "Settlement-calendar clause lacks holiday dates for the home jurisdiction; register and symbolic_stage.rs:292-293 say none are committed and an outside calendar must supply them (triage: 'holiday lists stay an owner data input'). State-transition reasoning beyond hypothesis status is also absent (no StateTransition symbol in qip-reasoning-engine or symbolic_stage.rs) but that half is codable.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-reasoning-engine",
+    "qip-financial"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-TICK-2073",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Check clause is held by qip-market/tests/structure.rs::the_point_in_time_view_excludes_a_bar_that_has_not_closed, but evaluation against the recorded market needs the tick desk, off unless QIP_DEEPBRAIN_TICK_EVERY is set (tick_desk.rs:38,75; no manifest sets it). The 2026-10-25 decision recorded on R12-TICK-2066 keeps it off because the deep brain's lake namespace holds no market segments: only an edge node's LakeSink writes them, and no node is deployed.",
+   "plan": "",
+   "crates": [
+    "qip-deepbrain",
+    "qip-market"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-WORLD-1016",
+   "verdict": "TOO_BIG",
+   "why": "Register gap lists five open items across five model kinds after a skeptic refutation: causal contradiction record, episodic path unreachable without QIP_MESH_CELLS and unjournaled, semantic lesson counter-evidence in the kernel path, self-model Drift journaling and CapabilityEstimate::record double count, uniform uncertainty fields. The 2026-11-14 tests are also not mutation-verified.",
+   "plan": "Pieces: (1) contradiction record in the causal model (granger opposing reactions), (2) journal episodic records on the default cycle without the mesh variable, (3) counter-evidence accumulation for live lessons in LEARN, (4) journal self-model drift and fix the regrade double count, (5) common confidence/interval fields plus a production reader of superseded outcomes; then mutation-verify each test. Item 2 may need committed configuration and so may not be code-only.",
+   "crates": [
+    "qip-kernel",
+    "qip-agents",
+    "qip-learning-engine",
+    "qip-reasoning-engine"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-WORLD-3034",
+   "verdict": "TOO_BIG",
+   "why": "Procedures are stored, versioned, retrieved and reused (qip_agents::memory::ResearchMemory, Platform::distil_procedure, ADR 0444). ADR 0444 decision 5 deliberately leaves strategy templates, data adapters, playbooks and remediation patterns unstored because no consumer reads memory for them; four record kinds with four different consumers.",
+   "plan": "Pieces: one record plus its reading consumer each for templates (strategy construction), adapters (ingestion licensing gate), playbooks and remediation patterns (deep-brain operations), and a kernel test driving a resolved cycle's LEARN into the next brief instead of seeding via write_research_memory. Needs an ADR amending 0444 decision 5 first.",
+   "crates": [
+    "qip-agents",
+    "qip-kernel",
+    "qip-market-ingestion",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-COMMERCE-5092",
+   "verdict": "CODE_NOW",
+   "why": "Only unmet clause is 'across regions': qip-financial/src/commerce.rs Listing (:117) has no region field and no test exercises a cross-region equivalence (commit 2a3bedea1). Variant and counterfeit clauses are already exercised on the committed path, and the caller chain qip-deepbrain breadth::install to qip-kernel commerce_research exists.",
+   "plan": "Add a region to Listing (defaulted on deserialise so the committed plan still parses), make the resolver map the same GTIN/brand/model/variant across regions to one identity, and give the in-code synthetic feed a cross-region pair. Prove it in qip-deepbrain's commerce test on the committed path plus a qip-financial unit test, mutation: treat region as part of identity. If the pair must live in the mounted dev plan file rather than the in-code feed, that part is a protected-path edit.",
+   "crates": [
+    "qip-financial",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-DATA-10036",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Register gap is stale on wiring: qip-deepbrain/src/warehouse.rs OutcomeSink calls BigQueryWarehouse, catalogue.tf:680-683 sets QIP_BIGQUERY_*, dev tfvars:376 has enable_bigquery = true, modules/data/main.tf:90 declares the dataset. The check says the research dataset exists, which needs a billed apply (test, stage and prod stay false); nothing proves an applied dataset or a row landing.",
+   "plan": "",
+   "crates": [
+    "qip-deepbrain",
+    "qip-mesh",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6071",
+   "verdict": "TOO_BIG",
+   "why": "qip_agency::autonomy::ActionPolicy::widen_to and its refusal tests exist, but only qip-cli's Session::widen calls it (grep of widen_to/.widen( in qip-deepbrain/src, qip-api/src, runtime: no hit), and qip-cli does not count. Register gap lists five open items (Drill.record never resolved against a journal, Drill.step not linked to the tool, reverse not checked in widen_to, per-class clean_days, rollback/scope read by no production code), two skeptic rounds returned REFUTED, and the 2026-11-14 tests are not mutation-verified.",
+   "plan": "Pieces: (1) resolve Drill.record/restored against the agency journal and link Drill.step to the policy's tool and declared reverse inside widen_to; (2) per-class clean_days for BroadInternal and production readers of rollback/scope; (3) a widening caller in a deployed binary (qip-deepbrain ambient_agency/operations) with a refusal test in qip-deepbrain/tests/ambient_agency.rs, then mutation runs and a skeptic round. Nothing above NarrowReversible becomes grantable without an ADR amending 0141; refusal paths do not need that.",
+   "crates": [
+    "qip-agency",
+    "qip-deepbrain",
+    "qip-cli"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-FABRIC-7060",
+   "verdict": "TOO_BIG",
+   "why": "Check clause 'manifest carries only digests and is size-bounded' cannot hold today: the production producer (qip-kernel model_serving.rs, DistilledManifestEntry digest: model.digest()) fills the field with qip-strategy DistilledModel::digest(), a '|'-joined coefficient encoding that grows with the model; no MAX_MANIFEST_BYTES exists (grep: no hit). Register 2026-11-12 says a wire decision must come first (SHA-256 of the canonical form, pinned digests of ADR 0149 decision 17 migrated), and ControlPackAnnouncement has no producer/consumer binary; tracker marks ADR_THEN_CODE.",
+   "plan": "Pieces: (1) ADR for the manifest digest wire form (number claimed in docs/adr/README.md first) and migration of pinned digests; (2) SHA-256 digest computed alike in qip-strategy, the centre, the cell and the release pack's InlineModel, plus MAX_MANIFEST_BYTES and a checked decode in qip-contracts with tests in qip-acceptance/tests/fabric_package_announcements.rs; (3) ControlPackAnnouncement producer/consumer in qip-fabricd/qip-edge-node on ADR 0721's bucket fetch path.",
+   "crates": [
+    "qip-contracts",
+    "qip-strategy",
+    "qip-kernel",
+    "qip-edge",
+    "qip-edge-node",
+    "qip-fabricd",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CICD-9103",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT; ADR 0231 claimed in docs/adr/README.md, body not written) fixes the design: plan on branch push by a plan-only identity. The plan job itself is an edit to .github/workflows/ci.yml, which an agent may not make; the plan-only WIF identity in modules/cicd also needs an apply before the job can authenticate (grep for plan-only/planner in modules/cicd: no hit).",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6038",
+   "verdict": "CODE_NOW",
+   "why": "Most of it is on main and the register row is stale: qip-edge cell.rs Cell::record_episode builds RegionalEpisode (tests/regional_episodes.rs), and the centre holds reported episodes bounded per cell (central/plane.rs store_episodes / plane.episodes, ADR 0207 test an_episode_a_cell_reports_is_held_once_and_the_store_is_bounded_per_cell). Not confirmed here: that held episodes feed Platform::learn_from_cells (platform.rs:12254, called from the LEARN stage at :24511), which is the 'lessons propagate globally' clause ADR 0133 left as code; lineage on the record and the full six episode kinds were not read and need checking first.",
+   "plan": "Wire CentralPlane::episodes into the LEARN stage's learn_from_cells call (Platform::ingest_cell_report -> store_episodes -> stage_learn -> learn_from_cells), carrying cell/region lineage, and confirm Cell::record_episode covers all six stated kinds. Test in backend/crates/runtime/qip-kernel/tests/central.rs: an ingested report's episode changes the learn_from_cells result, and deleting the producing call fails it (mutation-verified); extend qip-edge/tests/regional_episodes.rs for any missing kind.",
+   "crates": [
+    "qip-kernel",
+    "qip-edge",
+    "qip-contracts"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-RES-7103",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Cell-side clauses are on main (Cell::narrowing Clock row, GATE_CLOCK_SKEW, Cell::clock_uncertainty, SimulatedFeed::capture; tests in qip-edge/tests/venue_failure.rs and qip-edge-node/tests/capture_uncertainty.rs). The 'labels/replay blocked from promotion' clause is enforced only by the deep brain's tick desk (qip-training ClockPrecision), which is off unless QIP_DEEPBRAIN_TICK_EVERY is set and no environment sets it; ADR 0723 (accepted 2026-11-16) keeps the desk off until the deep brain reads a real lake, so no deployed binary reaches that clause under committed configuration.",
+   "plan": "",
+   "crates": [
+    "qip-deepbrain",
+    "qip-training",
+    "qip-sequencing"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-TICK-3099",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "qip_twin::futures::Branch::validate_fields exists but has no caller outside tests (grep: only futures.rs:276), and the only consumer of FutureTree::grow in a deployed binary is the deep brain's tick desk, which ADR 0723 keeps off until the deep brain reads a real lake (QIP_DEEPBRAIN_TICK_EVERY set in no environment). Code gaps also remain (portfolio impact needs positions into grow, typed hedge requirement, baseline branch has empty evidence/propagation and wiring the refusal 'needs a decision' per the register), but no caller is reachable under committed configuration either way.",
+   "plan": "",
+   "crates": [
+    "qip-twin",
+    "qip-contracts",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CICD-9097",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "modules/build-pool and infrastructure/cloudbuild/build-image.yaml exist, but 'builds run in a private pool' holds only after the module is applied to dev and cloud_build_private_pool_enabled is flipped in infrastructure/environments/dev/terraform.tfvars (currently false; also a protected path). The portal two-build comparison (ADR 0115 Amendment 1) is the only code remainder and does not close the row alone.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-FABRIC-8109",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "No sinks exist (register: MISSING; depends on R12-FABRIC-8080; grep finds no sink type in qip-fabricd or the fabric libs) and no managed instance group or autoscaler is declared outside modules/execution-node. ADR 0114 Amendment 1 moves the intent to a Compute Engine MIG per destination autoscaled on the consumer-lag series, which needs that series ingested by a scrape and an applied environment; tracker records the same deployment blocker.",
+   "plan": "",
+   "crates": [
+    "qip-fabricd"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-FINOPS-9189",
+   "verdict": "BLOCKED_PROTECTED_PATH",
+   "why": "Owner ruling 2026-10-31 (docs/blueprint/lanes/wave1031-handoff-2026-10-31.json) closes it with sandbox.max_concurrent_lanes in scripts/agent-policy.json, which the ruling itself calls a protected patch (scripts/agent-guard.mjs protected_paths; not verified that the glob names that file, and it is not on this task's protected list). The ADR is unclaimed, scripts/agent-lanes.mjs has no cap today, and no deployed binary is involved: this is a CI-plane row.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-GCP-9183",
+   "verdict": "BLOCKED_OWNER",
+   "why": "ADR 0114 D4 and Amendment 1 (owner decision 2026-10-11) refuse workloads on GKE, so the HPA objects the check demands may not exist. Only a new owner ruling reopens it; lag-scaled consumers are tracked under FABRIC-8109.",
+   "plan": "",
+   "crates": []
+  },
+  {
+   "wave": "r66",
+   "id": "R12-MESH-5068",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Centre scoring is on main (platform.rs score_cell_declined, per-cycle sum in 1f21b6349, failed-pass report in cd69fd8a7), but refused cycles come only from a cell pass. No execution node is deployed, mesh gating (QIP_MESH_CELLS/QIP_MESH_PEER) is open, and decision 19 (cited in R12-MESH-7143's gap) holds edge pass-time rows PARTIAL until a node runs passes. One code slice also remains: a partial-fill decomposition stop carries no legs.",
+   "plan": "",
+   "crates": [
+    "qip-edge",
+    "qip-kernel",
+    "qip-edge-node",
+    "qip-contracts"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-TICK-2057",
+   "verdict": "CODE_NOW",
+   "why": "ADR 0113 Amendment 1 already decides zstd by default, conditional on a committed measurement; codec and env parse exist (qip-storage lake_codec.rs SegmentCodec, qip-edge-node event_fabric/drain.rs CODEC_VARIABLE). Default is still Identity and startup.sh.tftpl does not set QIP_TICK_LAKE_CODEC. Caveat: if the measurement shows spool pressure rising, the amendment is void and the row stays open.",
+   "plan": "Run and commit the bytes/day and drain-thread measurement (docs/ops), then flip the drain default to Zstd at the measured level and set QIP_TICK_LAKE_CODEC=zstd in infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl. Replace qip-storage tests/lake_codec.rs the_codec_is_off_by_default with a default-lake-is-compressed round-trip test that fails on Identity; extend qip-acceptance manifest_wiring.rs to pin the template line.",
+   "crates": [
+    "qip-storage",
+    "qip-edge-node",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-AGENCY-1199",
+   "verdict": "BLOCKED_OWNER",
+   "why": "ADR 0145 lets an attribution update the world model only once identified, and a boundary suite pins that no production code makes that update. The one executed act on the default node (qip-deepbrain AmbientAgency outbox draft) yields NotIdentified at identifiability 0, refused by qip-world-model federation. An identified effect needs an authorised intervention surface or experiment design that no accepted record grants.",
+   "plan": "",
+   "crates": [
+    "qip-agency",
+    "qip-world-model",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-AMBIENT-10175",
+   "verdict": "TOO_BIG",
+   "why": "Three of four deliverables are proven in qip-acceptance phase_16_exit.rs, but recursive specialist creation stops at an InstantiateSpecialist plan step with no executor (qip-expansion plan.rs) and the roster is a static manifest (qip-deepbrain roster.rs). Triage class LARGE in wave1112-team50-batches.json, with ADRs 500/501 reserved.",
+   "plan": "Pieces: (1) ADR plus a governed executor turning an accepted proposal into a roster member, gated on calibration >= MIN_EVALUATED; (2) a cycle fixture that reaches that calibration and an exit test putting a specialist on the roster; (3) a sweep-level test that a gap worth over 100 units gets a compute grant through run_market, and mutation-verification of the 2026-11-14 drafted tests.",
+   "crates": [
+    "qip-expansion",
+    "qip-deepbrain",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-AMBIENT-3024",
+   "verdict": "CODE_NOW",
+   "why": "The check's clauses are on main: MetaBrain is built by Organisation::standard, run in stage_reason (qip-kernel tests/episodic.rs the_reason_stage_runs_the_meta_brain_under_the_regime_in_force), and removal drops its scopes (qip-investment-agents tests/organisation.rs). The statement's 'brains/models' clause is open: meta_brain.rs has no model, forecaster or tournament reader, and no model record is keyed by regime. Sizing is a judgement; it may spill past one session if the tournament record needs a contract change.",
+   "plan": "Stamp the kernel's forecaster tournament scores with the regime in force, carry a per-(model, regime) record on the REASON brief, and have MetaBrain emit it under Scope::RegimeReliability. Test in qip-kernel tests/episodic.rs (a model's record counts only under its own regime) plus a contested-panel removal case on the standard organisation in qip-investment-agents tests/organisation.rs.",
+   "crates": [
+    "qip-investment-agents",
+    "qip-agents",
+    "qip-kernel"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-ASSET-4070",
+   "verdict": "BLOCKED_FIGURE",
+   "why": "PortfolioConstructor::construct_grouped (ADR 0228) holds all four caps in one run, but the kernel passes no group. ADR 0228 and owner-unblock-sheet-2026-11-11.md item 7 forbid sizing a class or region budget without its own risk record, and none states the numbers. Code also remains after the figures: strategy/region/horizon keys on ApprovedThesis, kernel grouping, a gross bound, and a kernel test.",
+   "plan": "",
+   "crates": [
+    "qip-portfolio-engine",
+    "qip-kernel",
+    "qip-capital",
+    "qip-optimization-engine"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CAPITAL-10122",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Check clause (wider disagreement narrows grant) and a capital society exist (qip-capital society.rs, coordinator.rs, CentralPlane::allocate), but the 'consume full forecast distribution including tails' clause needs the ForecastState consumer that ADR 0159 F declines (R12-CAPITAL-10097: nothing built). That consumer waits on a RISK-owned Calibration::Measured sample count (unset) and a committed world-to-forecast binding table, neither given by any accepted record.",
+   "plan": "",
+   "crates": [
+    "qip-capital",
+    "qip-kernel",
+    "qip-contracts"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-CAPITAL-9047",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "qip_capital::coordinator::settle and CentralPlane::grant_manifests exist with test central.rs::competing_proposals_never_sum_past_the_grant, but set_coordinator_claims has no caller outside plane.rs/tests and grant_manifests runs only from qip-api mesh::pending_policy, which needs QIP_MESH_CELLS. That variable is deliberately unset in committed infrastructure (catalogue.tf:32, dev tfvars:569: Cloud Run API serves no mesh; no execution node enabled), so no deployed binary reaches the settlement against live grants; setting it is also an infrastructure/environments edit.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-capital",
+    "qip-api"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-COVERAGE-5101",
+   "verdict": "CODE_NOW",
+   "why": "Commodity is registered (asset_class_registry.rs) but CommodityDetails.storage_cost_rate and convenience_yield (qip-financial extensions.rs) are read nowhere and valuation.rs has no Commodity path, so storage/shipping economics and the spot-future link are unbuilt. No commodity ADR is in docs/adr; execution-tracker-2026-11-11 marks it ADR_THEN_CODE, IN PROGRESS, no outside blocker; rates are per-instrument fields, not invented figures. Committed universe.json holds equities only, so proof is by test universe on the default cycle's valuation path.",
+   "plan": "Claim an ADR number in docs/adr/README.md first (cost-of-carry: future = spot x carry over currency curve + storage cost - convenience yield). Link CommodityFuture to CommoditySpot at assembly and value it in qip-kernel valuation.rs (reached by the cycle's valuation stage), refusing into valuation_refusals when spot, curve or either rate is absent. Test in qip-kernel/tests/asset_classes.rs: commodity future assembles, values off spot plus carry, trades on paper; mutations: remove registry record (assembly refuses), drop storage term (value moves).",
+   "crates": [
+    "qip-kernel",
+    "qip-financial"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-COVERAGE-5104",
+   "verdict": "CODE_NOW",
+   "why": "ADR 0658 (Proposed 2026-11-15) decisions 1-2 plus funding and one-unit refusals are built: qip-kernel event_contract_gate.rs, called from platform.rs order path (:26116, :27602), test asset_classes.rs::an_event_contract_assembles_in_the_prediction_class_trades_on_paper_and_is_bounded_to_one_unit. ADR 0658 'What it costs' says the settlement path (operator-declared dated outcome, payoff booking) remains and the row stays PARTIAL until it lands; owner ruling 2026-10-31 already authorises it, and no grep hit for a declared-outcome settle in qip-kernel/src. Committed universe stays equities by the ruling's skeptic, so proof is by test universe.",
+   "plan": "Add operator-declared, dated outcome settlement in qip-kernel (Platform method beside event_contract_gate: books payoff of one unit or zero per contract, journals the declaration, refuses an undated or repeated declaration, never infers from a feed), reached through an authenticated operator route in qip-api. Test in qip-kernel/tests/asset_classes.rs: declared outcome books the payoff and closes the position; mutation: skip the payoff booking and the cash assertion fails. Also confirm decision 3 (price only from simulated exchange print) has a refusal test.",
+   "crates": [
+    "qip-kernel",
+    "qip-api",
+    "qip-financial"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXEC-10147",
+   "verdict": "BLOCKED_EXTERNAL",
+   "why": "Simulated gateway and ledger parking of non-simulated fills are met (qip-ledgerd tests/store.rs), but 'feed is a real venue feed' needs a licensed live market-data source. qip-edge-node runs passes only under QIP_VENUE_FEED=simulated and stops on any other value citing ADR 0003; owner-unblock-sheet-2026-11-11 files the row under 'An outside party'.",
+   "plan": "",
+   "crates": [
+    "qip-edge-node",
+    "qip-ledgerd",
+    "qip-market-ingestion"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-1014",
+   "verdict": "BLOCKED_OWNER",
+   "why": "The check ('admitted only after a recorded benchmark beats the incumbent') is contradicted by accepted records: ADR 0192 decision 2 makes finder.rs::assess_one hold a losing source to Cold routing but still admit it for collection, and ADR 0198 lets ToolRegistry::promote widen on an attestation string. Closing needs an ADR reversing both accepted decisions (wave1101: 'bar part 4 does not let ADR 0192 d2 withdraw the clause'), which no accepted record grants; no later ADR amends them.",
+   "plan": "",
+   "crates": [
+    "qip-data-finder",
+    "qip-agents",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-1021",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Statement covers specialist roster and model family too; ADR 0199 d1 (confirming ADR 0158 d8) declines minting specialists from gaps, so that clause stays unmet whatever code lands. The tool slice alone is code-closable (no register_candidate in qip-agents tools.rs; qip-deepbrain research.rs registers only fixed tools at :1958-1962), but it cannot close the row.",
+   "plan": "",
+   "crates": [
+    "qip-agents",
+    "qip-deepbrain",
+    "qip-expansion"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-1174",
+   "verdict": "BLOCKED_OWNER",
+   "why": "ADR 0199 d2 (confirming ADR 0151 d4) declines cross-brain episode and lesson exchange until a central consumer names the decision they feed, and none has. Episodes reach CentralPlane::store_episodes (ADR 0207) but nothing that decides reads them; R12-EXPAND-6039 was refuted as in-process only, and its record says the owner decides whether the requirement text changes.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-deepbrain",
+    "qip-edge"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6029",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Register gap: reference-data connectors off in every committed environment, so ResearchLoop::propose_type (qip-deepbrain/src/research.rs) proposes no patch on default path; owner-unblock-sheet-2026-11-11.md lists row under 'A deployed environment'. Code residue also open: no GraphSchema artifact, schema not typed, 2026-11-14 tests not mutation-verified.",
+   "plan": "",
+   "crates": [
+    "qip-deepbrain",
+    "qip-contracts"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6044",
+   "verdict": "BLOCKED_OWNER",
+   "why": "'Validated patterns become rules/relations/invariants' contradicts ADR 0125 d2 (symbolic_stage::rule_pack fixed at build time by design); reopening needs an ADR, not code. Also no ConstraintPack, and TheoryDelta producer proven only under 0.10 review floor fixture, not shipped 0.50.",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-contracts",
+    "qip-expansion",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6050",
+   "verdict": "ALREADY_MET",
+   "why": "Code per register (not run here): qip-expansion plan.rs Environment::ORDER + executor.rs disjoint_windows/Installation/Withdrawal; kernel Platform::install_fill_bias/score_filled (ADR 0482); production caller qip-deepbrain node.rs research_pass (called at node.rs:835/846) -> ResearchRound::admit_fill_bias. Tests: qip-deepbrain tests/expansion_rows.rs a_research_campaign_runs_four_environments_in_order_with_provenance_and_replays_to_the_same_digests, qip-expansion tests/loop.rs shadow_is_scored_before_paper..., kernel tests/central.rs a_fill_bias_correction_installed...; mutations recorded fired. Register's only remaining items are a skeptic review round and 'richer fill model', neither in statement or check.",
+   "plan": "",
+   "crates": [
+    "qip-expansion",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6054",
+   "verdict": "BLOCKED_OWNER",
+   "why": "Check clause 'a veto ... changes a belief' was declined 2026-10-31 under delegation with no ADR (deterministic veto has no probability to calibrate), and curriculum fires only at MIN_REGRETS=3 (research.rs repeated_vetoes), so one veto cannot meet the check as written; needs a ruling on the reading. Reflex-episode clause depends on R12-REFLEX-6012 (cell episodes do not arrive).",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-EXPAND-6070",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Check is inspection of deployed images and production registry stages; nothing deployed. Register gap (3): ADR 0110 HSM model-pack key unused, artefact_signing never applied (dev tfvars names it as owner's billed apply); gap (1) live shadow beside production also unbuilt. Owner sheet lists row under 'A deployed environment'.",
+   "plan": "",
+   "crates": [
+    "qip-ai",
+    "qip-kernel",
+    "qip-deepbrain"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-LEDGER-10114",
+   "verdict": "TOO_BIG",
+   "why": "Register row stale: ADR 0652 (b121f6d20) put cycle_id on OrderSent and added qip-ledgerd cycles::evaluate / LedgerStore::cycles, tested in ledgerd tests/store.rs and qip-acceptance cycle_ledger.rs. But LedgerStore::cycles has no production caller in qip-ledgerd/src, and ADR 0652 leaves open: missed cycle leaves no register row (needs CycleCommitted on P1 or leg count, undecided vs ADR 0153 d6), verdicts not raised as break/counted, no node->broker->ledgerd two-region hedge test.",
+   "plan": "Pieces: (1) ADR deciding how a missed cycle reaches P1 (reverses ADR 0153 d6) plus writer.rs is_outcome and store change; (2) production caller for LedgerStore::cycles in qip-ledgerd serve loop, raising Partial/Failed as break + metric; (3) qip-acceptance two-cell node->broker->ledgerd test with a hedge leg.",
+   "crates": [
+    "qip-ledgerd",
+    "qip-edge-node",
+    "qip-edge",
+    "qip-contracts",
+    "qip-acceptance"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-MODEL-10104",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Check half (refuse unevaluated or digest-changed) is on main in qip-kernel model_serving.rs + qip-lifecycle gates.rs; statement's 'signed and promoted through GitOps/model gates' needs the ADR 0110 signing key (artefact_signing, unapplied) and the ADR 0036 GitOps control plane, none applied. Owner sheet lists it under 'Another row first' (depends R12-MODEL-10084).",
+   "plan": "",
+   "crates": [
+    "qip-kernel",
+    "qip-lifecycle",
+    "qip-ai"
+   ]
+  },
+  {
+   "wave": "r66",
+   "id": "R12-MODEL-10167",
+   "verdict": "BLOCKED_DEPLOY",
+   "why": "Deliverable 'Spanner Graph' is a cloud resource with no instance and no admitted storage-client crate (ADR 0109 needs its own ADR); signed model package lifecycle waits on same unapplied signing key as R12-MODEL-10104. Register: 'no Spanner Graph or signed package lifecycle'.",
+   "plan": "",
+   "crates": [
+    "qip-ai",
+    "qip-reasoning-engine",
+    "qip-storage"
+   ]
+  }
+ ],
+ "not_reached": [
+  "R12-MODEL-4008",
+  "R12-MODEL-4010",
+  "R12-REASON-3016",
+  "R12-REFLEX-5047",
+  "R12-AMBIENT-3027",
+  "R12-ARCH-7135",
+  "R12-COMMERCE-1171",
+  "R12-FABRIC-1027",
+  "R12-LEDGER-5022",
+  "R12-LEDGER-5026",
+  "R12-TICK-1121",
+  "R12-TICK-1126",
+  "R12-TICK-2086",
+  "R12-CAPITAL-4090",
+  "R12-EXEC-5080",
+  "R12-FABRIC-8080",
+  "R12-FABRIC-8102",
+  "R12-GCP-7006",
+  "R12-MODEL-1082",
+  "R12-TICK-1124",
+  "R12-COVERAGE-7164",
+  "R12-MODEL-3089",
+  "R12-REASON-3115",
+  "R12-AMBIENT-7146",
+  "R12-ARCH-7139",
+  "R12-CAPITAL-1020",
+  "R12-COVERAGE-7161",
+  "R12-COVERAGE-7169",
+  "R12-COVERAGE-7171",
+  "R12-COVERAGE-7172",
+  "R12-COVERAGE-7176",
+  "R12-COVERAGE-7178",
+  "R12-COVERAGE-7179",
+  "R12-COVERAGE-7182",
+  "R12-EVENT-7145",
+  "R12-MODEL-4011",
+  "R12-REASON-10099",
+  "R12-WORLD-9037",
+  "R12-WORLD-7197",
+  "R12-COVERAGE-7174",
+  "R12-EXEC-8068",
+  "R12-FABRIC-8075",
+  "R12-GCP-10030"
+ ]
+}

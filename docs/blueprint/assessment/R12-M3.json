@@ -1758,13 +1758,16 @@
   {
     "id": "R12-AMBIENT-3073",
     "status": "PARTIAL",
-    "current": "Exploration desk probes self-model ignorance within a capital budget; source discovery from blind spots.",
+    "current": "Exploration desk probes self-model ignorance within a capital budget; source discovery from blind spots. Since 2026-11-22 the deep brain's research sweep reads the kernel's measured unknowns before the exploration budget gate (Platform::unknowns), raises the ones worth most as curiosity signals through the attention router, opens a research question and launches a scout for an activated one, and reads a switch at the composition root (QIP_DEEPBRAIN_CURIOSITY_SENTINEL, on by default).",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/exploration.rs:1-25",
       "backend/crates/runtime/qip-kernel/src/platform.rs:13848",
-      "backend/crates/runtime/qip-kernel/tests/exploration.rs"
+      "backend/crates/runtime/qip-kernel/tests/exploration.rs",
+      "backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::sweep_over (curiosity block), rank_unknowns, unknown_signal, CURIOSITY_SENTINEL_VARIABLE",
+      "backend/crates/runtime/qip-kernel/src/platform.rs Platform::unknowns, Platform::resolution_value",
+      "backend/crates/apps/qip-deepbrain/tests/curiosity_sentinel.rs (six tests)"
     ],
-    "gap": "Does not trigger tools, simulations or specialists. The triage closure (one AmbientSignal per exploration probe from ResearchLoop::sweep) would not run on a default path: PlatformConfig::exploration_share defaults to zero (qip-kernel config.rs default_exploration_share, fail-closed), so exploration::review holds no budget and opens no probe in any deployment that has not set a share. Closing it needs either an owner to set a non-zero exploration share in a committed deployment, or a wake seam fed from the ignorance measures exploration::review computes before the budget gate (uncertainty_by_subject, private today), which is a kernel API change. The kernel half of the closure is not needed: Platform::exploration() already exposes the desk and its open probes.",
+    "gap": "2026-11-22 (rounds 63 and 65; claimed twice and refuted twice by two independent readers on 2026-11-22, who read the code and ran no test): the sentinel runs on the default deep brain without an exploration share, reaches the attention router, and can be switched off by a variable a binary reads. Still unmet: the scout a curiosity signal launches is handed to the discovery desk's queue, whose only reader (qip-deepbrain discovery.rs DiscoveryDesk::maybe_run) returns before the drain when every_cycles is 0, the default, and deepbrain_discover_every is null in every committed tfvars, so no committed deployment acts on the scout; the hand-off in node.rs research_pass has no test; of the statement's trigger targets only a scout is asserted, and no tool, simulation, specialist or symbolic hypothesis is started from an unknown; and Platform::resolution_value is a constant times uncertainty, so on the production path the high-value ranking is the uncertainty ranking. The cap is proven on rank_unknowns, not through a sweep. Closing needs the discovery cadence turned on with a source catalogue in a committed deployment (an owner switch) and a per-subject value.",
     "implemented": true,
     "tested": true,
     "integrated": true,

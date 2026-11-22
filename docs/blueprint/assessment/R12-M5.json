@@ -2177,7 +2177,7 @@
   {
     "id": "R12-COMMERCE-5090",
     "status": "PARTIAL",
-    "current": "Each unit received by the commerce research plane carries all twelve attributes, and its condition, location and inventory state are now read from the commerce Ledger record at receipt and refreshed after every sale and return (CommerceResearch::refresh_attributes), so a sold unit reads sold and a returned one open_box instead of the literals new/held written once at receipt. Payment and chargeback risk remains explicitly Absent with its reason.",
+    "current": "Each unit received by the commerce research plane carries all twelve attributes, and its condition, location and inventory state are now read from the commerce Ledger record at receipt and refreshed after every sale and return (CommerceResearch::refresh_attributes), so a sold unit reads sold and a returned one open_box instead of the literals new/held written once at receipt. Payment and chargeback risk remains explicitly Absent with its reason. Since 2026-11-22 each unit's twelve-attribute record is journalled with the commerce simulation (work_candidate and work_listed call run.tracked), a sold unit's record reads sold, and a returned unit's record names the sale it reversed.",
     "evidence": [
       "backend/crates/runtime/qip-kernel/src/commerce_research.rs unit_attributes (ledger-derived), refresh_attributes, condition_name, state_name",
       "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_tracked_state_follows_the_ledger_after_it_is_sold",
@@ -2187,9 +2187,11 @@
       "backend/crates/libs/qip-financial/src/commerce.rs FeasibilityInput::chargeback_rate (need), Assessment::chargeback_reserve subtracted from expected_resale",
       "backend/crates/runtime/qip-kernel/tests/breadth.rs a_units_chargeback_risk_is_the_plans_declared_rate_on_its_sale_value_and_lowers_its_expected_resale, a_commerce_plan_without_a_chargeback_rate_is_refused_at_load",
       "data/breadth/dev-commerce-paper.json chargeback_rate 0.01",
-      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::every_unit_received_under_the_committed_plan_tracks_the_plans_marketplace_fee_storage_and_return_rate"
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs::every_unit_received_under_the_committed_plan_tracks_the_plans_marketplace_fee_storage_and_return_rate",
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs every_unit_under_the_committed_plan_has_its_twelve_attributes_in_the_log_and_a_sold_units_record_reads_sold",
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs a_returned_units_journalled_record_names_the_sale_it_reversed_and_reads_open_box_and_held"
     ],
-    "gap": "2026-11-14 (independent reader, after a builder closed the clause the earlier gap named): Builder admits the secondary gap stands. The twelve-attribute record is built at receive time but never journaled or served, and pub fn attributes has no non-test caller. The test reads it through that test-only accessor, so nothing a composition root or operator sees depends on the record. The returns attribute does not change when a unit is returned, so it is not tracked past receipt. Committed plan values for the three asserted attributes are mostly zero (per_unit 0, storage 0, returns rate 0), so only the 0.05 fee is a distinguishing value. Production code reached from a composition root, as the statement requires, is not shown to track and expose the record.",
+    "gap": "2026-11-22 (round 63; the build agent's own report, not read by an independent reader): the record is now journalled from the deep brain's SIMULATE stage under the committed plan, and a return is tracked on it. Still unmet: the committed dev plan declares a return rate of 0, so the on-return tracking is proven only on a test plan file (rate 0.5) driven through the deep brain's install, not on committed configuration; the committed per-unit fee, storage and return rate are zero, which are desk figures nobody has stated; and the record is journalled, not served over an API.",
     "implemented": true,
     "tested": true,
     "integrated": false,
@@ -2337,7 +2339,7 @@
   {
     "id": "R12-COMMERCE-5096",
     "status": "PARTIAL",
-    "current": "qip_financial::commerce::Ledger is event-sourced and replayable (commerce.rs Ledger::replay/apply) and is the ledger the kernel's commerce plane runs (commerce_research.rs plane_apply, LedgerEvent::Received at each receipt, CommercePlane::sell/return_unit). Since 2026-10-31 each receipt, sale and return also queues one OperationKind::PhysicalInventory operation for the desk ledger (Platform::queue_inventory_moves, drained in the breadth SIMULATE stage), keyed by unit and stage.",
+    "current": "qip_financial::commerce::Ledger is event-sourced and replayable (commerce.rs Ledger::replay/apply) and is the ledger the kernel's commerce plane runs (commerce_research.rs plane_apply, LedgerEvent::Received at each receipt, CommercePlane::sell/return_unit). Since 2026-10-31 each receipt, sale and return also queues one OperationKind::PhysicalInventory operation for the desk ledger (Platform::queue_inventory_moves, drained in the breadth SIMULATE stage), keyed by unit and stage. Since 2026-11-22 a unit is reserved for its sale before it is sold (CommerceResearch::work_listed applies Reserved then Sold), and Platform::install_breadth resumes the plane's ledger from the event log (resume_commerce_ledger).",
     "evidence": [
       "backend/crates/libs/qip-financial/tests/commerce.rs:447",
       "backend/crates/libs/qip-financial/tests/commerce.rs:481",
@@ -2346,9 +2348,11 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs::queue_inventory_moves",
       "backend/crates/runtime/qip-kernel/tests/breadth.rs::a_commerce_receipt_books_one_physical_inventory_operation_the_ledger_replays_to_the_same_units",
       "backend/crates/runtime/qip-kernel/src/platform.rs CommerceInventoryQueued journalled in queue_inventory_moves; requeue_commerce_inventory at assembly",
-      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_from_the_journal_and_books_exactly_one_physical_inventory_operation_after_resume"
+      "backend/crates/runtime/qip-kernel/tests/breadth.rs a_commerce_receipt_queued_and_not_yet_drained_before_a_restart_is_requeued_from_the_journal_and_books_exactly_one_physical_inventory_operation_after_resume",
+      "backend/crates/runtime/qip-kernel/src/commerce_research.rs CommerceResearch::work_listed (Reserved then Sold)",
+      "backend/crates/apps/qip-deepbrain/tests/commerce.rs the_committed_plans_ledger_reserves_each_unit_for_its_sale_and_a_restart_resumes_every_unit_record_from_the_log"
     ],
-    "gap": "2026-11-14 (independent read-only reader, no test run; stale parts of the earlier gap dropped): Stale part of gap: the \"no committed environment sets the plan\" claim is now false. data/breadth/dev-commerce-paper.json has a \"commerce\" entry, catalogue.tf mounts it (deepbrain-breadth-plan, env_file_variable QIP_DEEPBRAIN_BREADTH_PLAN_PATH), dev/deepbrain.yaml sets the path, and breadth.rs loads it. Still unmet: after a restart the commerce plane's own ledger starts fresh. The plane's Ledger is not resumed from the log (grep of commerce_research.rs finds no resume or replay of the plane ledger), so a re-issued unit id can collide with a journalled movement's operation id. Only the PhysicalInventory queue is journalled and re-queued, not the ledger itself. That leaves \"event-sourced and replayable\" unproven across restarts. The register row also says deployable and e2e are false, and the register notes say the mutations were fired and no skeptic was run. I did not run cargo or any mutation myself. verification.check needs the test to fail when the core is mutated, and I could not confirm that here.",
+    "gap": "2026-11-22 (round 63; a build agent claimed the row and two independent readers on 2026-11-22, who read the code and ran no test, refuted it): the reservation and the ledger resume are built and tested, but the resume replays an empty log on every committed deployment. infrastructure/gitops/envs/{dev,test,stage,prod}/deepbrain.yaml set QIP_STORAGE_TARGET=memory and no committed file sets QIP_DEEPBRAIN_EVENT_LOG, so qip-deepbrain config.rs event_log_destination returns InMemory and the ledger still starts fresh after a restart there; the test proves the resume only under PlatformConfig::with_event_log_file. The named test asserts cost basis only as positive and never provokes a Ledger::apply refusal, so the check's own mutation (the core refusal or the arithmetic) was not the one fired. Plane sales, settlements, listings and held units are not resumed. Reservation is taken and consumed in the same pass. Closing needs a durable event log in a committed deployment (an owner switch and a deployment) and the two test gaps closed.",
     "implemented": true,
     "tested": true,
     "integrated": false,

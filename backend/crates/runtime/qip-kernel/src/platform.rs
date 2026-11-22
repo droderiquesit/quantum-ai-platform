@@ -1396,6 +1396,14 @@ pub struct Platform {
     /// Quoted spread history per instrument, in basis points — the series the
     /// liquidity-deterioration detector reads. A statistic, so `f64`.
     spread_history: BTreeMap<String, Vec<f64>>,
+    /// The instant each entry of `spread_history` was quoted, index for index.
+    ///
+    /// The spread series is a bare `f64` statistic and carried no time, so a
+    /// claim about a spread could only ever be settled by "the last one
+    /// held" — which, graded a cycle late, is a quote from after the claim's
+    /// horizon (R12-TICK-2077). Written only by [`push_spread`], beside the
+    /// value, so the two cannot drift in length.
+    spread_observed_at: BTreeMap<String, Vec<Timestamp>>,
     /// The last trading state each venue stated for each instrument, from
     /// [`SensedRecord::Status`] (R12-TICK-2053), keyed `(instrument,
     /// venue)`. A book's depth observation is taken under this status
@@ -7193,6 +7201,7 @@ impl Platform {
             claim_scores: qip_evolution::scoring::Scoreboard::strategies(),
             volume_history: BTreeMap::new(),
             spread_history: BTreeMap::new(),
+            spread_observed_at: BTreeMap::new(),
             venue_status: BTreeMap::new(),
             observation_history: BTreeMap::new(),
             world,
@@ -12488,6 +12497,43 @@ impl Platform {
         &self.exploration
     }
 
+    /// Every subject the platform can currently measure its own ignorance
+    /// of, with the kind of probe that would resolve it and the uncertainty
+    /// in `[0, 1]` — the same map [`crate::exploration::review`] ranks its
+    /// probes from, read *before* the budget gate.
+    ///
+    /// Public because the exploration budget defaults to zero (fail closed),
+    /// so on a default deployment the desk opens no probe and the measure
+    /// reached no surface at all: the platform knew what it did not know and
+    /// told nobody (R12-AMBIENT-3073). Knowing costs no capital; only
+    /// probing does. Read-only, and derived on demand from the self model,
+    /// the fill scores and the regime boundaries, so it is not a second
+    /// record of any of them.
+    pub fn unknowns(
+        &self,
+        now: Timestamp,
+    ) -> BTreeMap<String, (crate::exploration::ProbeKind, f64)> {
+        let regime_boundaries = self.regime_boundary_uncertainties(now);
+        crate::exploration::uncertainty_by_subject(
+            &self.self_model,
+            &self.fill_scores,
+            &regime_boundaries,
+        )
+    }
+
+    /// What resolving `uncertainty` of one subject is worth to this book,
+    /// in base currency: the exploration desk's own valuation
+    /// ([`crate::exploration::resolution_value`]) against the tracked equity
+    /// the DECIDE stage hands the desk. `None` where it has no decimal form.
+    ///
+    /// Public for the same reason [`Platform::unknowns`] is: the sentinel
+    /// that raises an unknown must rank it by what an answer is worth, and
+    /// ranking by uncertainty alone raised a thing nobody would pay to know
+    /// on a book with nothing at stake (R12-AMBIENT-3073).
+    pub fn resolution_value(&self, uncertainty: f64) -> Option<Decimal> {
+        crate::exploration::resolution_value(self.capital.equity(), uncertainty)
+    }
+
     /// The per-user, per-strategy books — read-only; fills reach them
     /// through [`Platform::ingest_cell_report`] and nothing else.
     pub fn user_ledger(&self) -> &UserLedger {
@@ -14078,11 +14124,12 @@ impl Platform {
                     self.market
                         .update(|market| market.snapshot.apply_quote(quote.clone()));
                     if let Some(bps) = spread_bps(quote.bid, quote.ask) {
-                        push_bounded(
-                            self.spread_history
-                                .entry(quote.object_id.as_str().to_string())
-                                .or_default(),
+                        let key = quote.object_id.as_str().to_string();
+                        push_spread(
+                            self.spread_history.entry(key.clone()).or_default(),
+                            self.spread_observed_at.entry(key).or_default(),
                             bps,
+                            quote.at,
                         );
                     }
                     // A quote is one level of depth. A venue publishing a
@@ -14105,11 +14152,12 @@ impl Platform {
                     if let (Some(spread), Some(mid)) = (book.spread(), book.mid())
                         && mid.is_positive()
                     {
-                        push_bounded(
-                            self.spread_history
-                                .entry(book.object_id.as_str().to_string())
-                                .or_default(),
+                        let key = book.object_id.as_str().to_string();
+                        push_spread(
+                            self.spread_history.entry(key.clone()).or_default(),
+                            self.spread_observed_at.entry(key).or_default(),
                             spread.to_f64() / mid.to_f64() * 10_000.0,
+                            book.at,
                         );
                     }
                     // The venue's own last stated status where it stated
@@ -24659,23 +24707,43 @@ impl Platform {
         by_hypothesis: &BTreeMap<String, Decimal>,
         now: Timestamp,
     ) -> Result<Option<String>> {
-        let due: Vec<(String, Decimal)> = self
-            .predictions
-            .iter()
-            .filter(|prediction| prediction.is_open() && prediction.proposition.resolves_at <= now)
-            .filter_map(|prediction| match &prediction.proposition.criteria {
-                ResolutionCriteria::Threshold { metric, value, .. } => {
-                    Some((metric.clone(), *value))
-                }
-                _ => None,
-            })
-            .collect();
+        // Each due claim's metric, under the horizon the claim itself named.
+        // Keyed by horizon because the view a claim is settled against is
+        // fixed at *its* horizon, not at this cycle's clock: two claims due in
+        // one pass can have resolved days apart, and one view for both would
+        // settle the older one on the younger one's tape.
+        let mut due: BTreeMap<Timestamp, BTreeSet<String>> = BTreeMap::new();
+        for prediction in &self.predictions {
+            if !prediction.is_open() || prediction.proposition.resolves_at > now {
+                continue;
+            }
+            if let ResolutionCriteria::Threshold { metric, .. } = &prediction.proposition.criteria {
+                due.entry(prediction.proposition.resolves_at)
+                    .or_default()
+                    .insert(metric.clone());
+            }
+        }
         if due.is_empty() {
             return Ok(None);
         }
 
-        let observations = self.published_observations(now, due.iter().map(|(m, _)| m.as_str()));
-        let scored = self.score_predictions(&observations, now);
+        // R12-TICK-2077, ADR 0148 decision 1: a claim is graded on "the move
+        // the claim named, over the claim's own horizon". Until this read was
+        // as-of the horizon it took the last value held at whichever cycle
+        // happened to grade — so a claim graded a cycle late (a gap in the
+        // schedule, a restart, a backlog) was settled by bars from after its
+        // horizon, and a thesis rejected on review could be marked right by a
+        // move it never claimed.
+        let views: BTreeMap<Timestamp, Observations> = due
+            .iter()
+            .map(|(horizon, metrics)| {
+                (
+                    *horizon,
+                    self.published_observations(*horizon, metrics.iter().map(String::as_str)),
+                )
+            })
+            .collect();
+        let scored = Self::score_open(&mut self.predictions, now, |horizon| views.get(&horizon));
         if scored.is_empty() {
             return Ok(None);
         }
@@ -24702,7 +24770,10 @@ impl Platform {
                 ungradeable += 1;
                 continue;
             };
-            let Some(Observation::Numeric(observed)) = observations.get(metric) else {
+            let Some(Observation::Numeric(observed)) = views
+                .get(&prediction.proposition.resolves_at)
+                .and_then(|view| view.get(metric))
+            else {
                 ungradeable += 1;
                 continue;
             };
@@ -25063,7 +25134,8 @@ impl Platform {
         Ok(admission)
     }
 
-    /// What the platform's own series say, for the metrics named.
+    /// What the platform's own series said as of `horizon`, for the metrics
+    /// named.
     ///
     /// The metric is `observable:subject`, as [`Platform::record_prediction`]
     /// spells it. Three observables are published, each from the series the
@@ -25073,34 +25145,72 @@ impl Platform {
     /// functions; `spread` is the last quoted spread in basis points. Anything
     /// else is left unpublished, so the claim stays open rather than being
     /// settled by a number the platform never measured.
+    ///
+    /// **As of the horizon, not as of the read** (R12-TICK-2077). A bar is in
+    /// the view when its `open_time` is at or before `horizon`, and a spread
+    /// when it was quoted at or before it; everything stamped later is left
+    /// out however long ago the platform absorbed it. The closes come from
+    /// `bar_history`, the only series that carries a time — `price_history`
+    /// is the same closes with the stamps thrown away — so a subject with no
+    /// bar in the view publishes nothing and its claim stays open.
+    ///
+    /// The limit, said out loud: a bar is stamped by the bucket it covers,
+    /// and the rule is on the bucket's *start*. A bar that opened before the
+    /// horizon and closed after it is in the view, so the read can run up to
+    /// one bar interval past the horizon and no further. `Bar` carries no
+    /// instant at which it became known, and the platform absorbs a bar
+    /// whenever its feed delivers it, so the start of the bucket is the one
+    /// stamp every bar has.
     fn published_observations<'a>(
         &self,
-        now: Timestamp,
+        horizon: Timestamp,
         metrics: impl Iterator<Item = &'a str>,
     ) -> Observations {
-        let mut observations = Observations::at(now);
+        let mut observations = Observations::at(horizon);
         for metric in metrics {
             let Some((observable, subject)) = metric.split_once(':') else {
                 continue;
             };
-            let value = match observable {
-                "close" => self
-                    .price_history
+            // Money to statistic: the bars hold `Decimal` closes and every
+            // observable here is a statistic of them.
+            let closes = || -> Vec<f64> {
+                self.bar_history
                     .get(subject)
-                    .and_then(|series| series.last().copied()),
-                "volatility" => self.price_history.get(subject).and_then(|series| {
-                    let returns = qip_numerics::stats::log_returns(series);
+                    .map(|bars| {
+                        bars.iter()
+                            .filter(|bar| bar.open_time <= horizon)
+                            .map(|bar| bar.close.to_f64())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let value = match observable {
+                "close" => closes().last().copied(),
+                "volatility" => {
+                    let returns = qip_numerics::stats::log_returns(&closes());
                     if returns.len() < VOLATILITY_CLAIM_WINDOW {
-                        return None;
+                        None
+                    } else {
+                        Some(qip_numerics::stats::stddev(
+                            &returns[returns.len() - VOLATILITY_CLAIM_WINDOW..],
+                        ))
                     }
-                    Some(qip_numerics::stats::stddev(
-                        &returns[returns.len() - VOLATILITY_CLAIM_WINDOW..],
-                    ))
-                }),
+                }
                 "spread" => self
                     .spread_history
                     .get(subject)
-                    .and_then(|series| series.last().copied()),
+                    .zip(self.spread_observed_at.get(subject))
+                    // A pair that disagrees in length has lost the stamp of
+                    // some value, and which one is not knowable from here.
+                    .filter(|(series, stamps)| series.len() == stamps.len())
+                    .and_then(|(series, stamps)| {
+                        series
+                            .iter()
+                            .zip(stamps)
+                            .rev()
+                            .find(|(_, at)| **at <= horizon)
+                            .map(|(bps, _)| *bps)
+                    }),
                 _ => None,
             };
             if let Some(value) = value.and_then(Decimal::from_f64) {
@@ -28110,8 +28220,24 @@ impl Platform {
         observations: &Observations,
         now: Timestamp,
     ) -> Vec<(String, Verdict)> {
+        Self::score_open(&mut self.predictions, now, |_| Some(observations))
+    }
+
+    /// Settle every open, due, unwithdrawn claim against the view `view_at`
+    /// returns for the claim's own horizon.
+    ///
+    /// One body for both callers: [`Platform::score_predictions`] hands every
+    /// claim the caller's observations, and `calibrate_resolved` hands each
+    /// claim the platform's series as of the instant that claim resolved. A
+    /// horizon with no view is left open, like a claim nothing was published
+    /// for.
+    fn score_open<'o>(
+        predictions: &mut [RecordedPrediction],
+        now: Timestamp,
+        view_at: impl Fn(Timestamp) -> Option<&'o Observations>,
+    ) -> Vec<(String, Verdict)> {
         let mut scored = Vec::new();
-        for prediction in &mut self.predictions {
+        for prediction in predictions {
             // A withdrawn claim is passed over rather than settled: its
             // evidence was quarantined, and scoring it would calibrate the
             // platform's confidence against a source it stopped believing
@@ -28122,6 +28248,9 @@ impl Platform {
             {
                 continue;
             }
+            let Some(observations) = view_at(prediction.proposition.resolves_at) else {
+                continue;
+            };
             let verdict = prediction.proposition.criteria.evaluate(observations);
             if !verdict.is_determined() {
                 continue;
@@ -32047,6 +32176,19 @@ const VENUE_STATUS_BOUND: usize = 4096;
 /// rebuilds the desk holds at most this many bars per instrument; after each
 /// it holds exactly `bar_history`.
 const DESK_SERIES_REBUILD_AT: usize = 2 * SERIES_HISTORY;
+
+/// Append one quoted spread and the instant it was quoted, under one bound.
+///
+/// The two series are trimmed together so index `i` of one is always index
+/// `i` of the other; [`Platform::published_observations`] refuses to settle a
+/// spread claim from a pair whose lengths disagree.
+fn push_spread(series: &mut Vec<f64>, stamps: &mut Vec<Timestamp>, value: f64, at: Timestamp) {
+    push_bounded(series, value);
+    stamps.push(at);
+    if stamps.len() > SERIES_HISTORY {
+        stamps.drain(..stamps.len() - SERIES_HISTORY);
+    }
+}
 
 fn push_bounded(series: &mut Vec<f64>, value: f64) {
     series.push(value);
@@ -37288,6 +37430,98 @@ mod retention_tests {
         assert!(
             (newest - expected).abs() < 1.0,
             "the newest spread observation did not survive eviction: {newest} against {expected}"
+        );
+    }
+
+    /// R12-TICK-2077: each observable a claim can name is published as of the
+    /// horizon asked for, not as of the newest record held. Fed through
+    /// `observe`, the one path a deployed process absorbs a record by.
+    ///
+    /// Mutations: drop either `<= horizon` filter in
+    /// `Platform::published_observations` and the matching assertion reads the
+    /// newest value; drop the stamp drain in `push_spread` and the spread
+    /// series loses its claim the moment it passes the bound.
+    #[test]
+    fn every_observable_a_claim_can_name_is_published_as_of_the_horizon_asked_for() {
+        let numeric = |observations: &Observations, metric: &str| -> Option<f64> {
+            match observations.get(metric) {
+                Some(Observation::Numeric(value)) => Some(value.to_f64()),
+                _ => None,
+            }
+        };
+        let metrics = ["close:obj-AAA", "volatility:obj-AAA", "spread:obj-AAA"];
+        let mut platform = platform();
+        // Bar `i` opens `40 - i` days before the start and closes at `100 + i`.
+        assert_eq!(platform.observe(counting_bars(40)), 40, "the premise");
+        // Quote `i` is `10 - i` seconds before the start, `2 * (1 + i)` bps wide.
+        assert_eq!(platform.observe(counting_quotes(10)), 10, "the premise");
+
+        let newest = platform.published_observations(start(), metrics.into_iter());
+        assert_eq!(numeric(&newest, "close:obj-AAA"), Some(139.0));
+        let newest_spread = numeric(&newest, "spread:obj-AAA").expect("a spread");
+        assert!((newest_spread - 20.0).abs() < 1e-6, "{newest_spread}");
+
+        // Ten days and five seconds back: bars 0..=30 and quotes 0..=5.
+        let horizon = start().saturating_sub(Duration::from_days(10));
+        let earlier = platform.published_observations(horizon, metrics.into_iter());
+        assert_eq!(
+            numeric(&earlier, "close:obj-AAA"),
+            Some(130.0),
+            "the close as of the horizon is the bar that opened on it, not a later one"
+        );
+        let closes: Vec<f64> = (0..=30).map(|i| 100.0 + f64::from(i)).collect();
+        let returns = qip_numerics::stats::log_returns(&closes);
+        // Through the same `Decimal` the published observation passes through.
+        let expected =
+            Decimal::from_f64(qip_numerics::stats::stddev(&returns[returns.len() - 20..]))
+                .expect("a volatility")
+                .to_f64();
+        let volatility = numeric(&earlier, "volatility:obj-AAA").expect("a volatility");
+        let newest_volatility = numeric(&newest, "volatility:obj-AAA").expect("a volatility");
+        assert!(
+            (newest_volatility - expected).abs() > 1e-9,
+            "the premise: the window as of the horizon differs from the newest window"
+        );
+        assert!(
+            (volatility - expected).abs() < 1e-12,
+            "volatility as of the horizon read {volatility}, the window ending there is {expected}"
+        );
+        assert_eq!(
+            numeric(&earlier, "spread:obj-AAA"),
+            None,
+            "no quote existed ten days back, and one from later was published"
+        );
+        let quoted = platform.published_observations(
+            start().saturating_sub(Duration::from_secs(5)),
+            metrics.into_iter(),
+        );
+        let spread = numeric(&quoted, "spread:obj-AAA").expect("a spread");
+        assert!(
+            (spread - 12.0).abs() < 1e-6,
+            "the spread as of five seconds back is quote 5's twelve basis points, read {spread}"
+        );
+
+        // Before any bar: nothing is published, so the claim would stay open.
+        let before = platform.published_observations(
+            start().saturating_sub(Duration::from_days(400)),
+            metrics.into_iter(),
+        );
+        for metric in metrics {
+            assert_eq!(numeric(&before, metric), None, "{metric}");
+        }
+
+        // Past the bound the stamps are trimmed with the values, so the pair
+        // stays index for index and the spread stays publishable.
+        let fed = SERIES_HISTORY + 50;
+        assert_eq!(platform.observe(counting_quotes(fed)), fed, "the premise");
+        assert_eq!(platform.spread_history["obj-AAA"].len(), SERIES_HISTORY);
+        assert_eq!(platform.spread_observed_at["obj-AAA"].len(), SERIES_HISTORY);
+        let bounded = platform.published_observations(start(), metrics.into_iter());
+        let expected = 2.0 * fed as f64;
+        let spread = numeric(&bounded, "spread:obj-AAA").expect("a spread past the bound");
+        assert!(
+            (spread - expected).abs() < 1e-3,
+            "{spread} against {expected}"
         );
     }
 

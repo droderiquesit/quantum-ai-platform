@@ -1,0 +1,231 @@
+{
+ "lane": "r63-r65-readers",
+ "date": "2026-11-22",
+ "what": "Two independent readers per claimed row, one tracing production reach and one judging test strength, each told to refute the claim and to default to refuted when unsure. They read the code and ran no test. A row is regraded only when both fail to refute it; none did, so no register row changed status.",
+ "claims": [
+  "R12-AMBIENT-3073",
+  "R12-ASSET-4067",
+  "R12-COMMERCE-5096",
+  "R12-EXPAND-6050",
+  "R12-FABRIC-7034"
+ ],
+ "verdicts": [
+  {
+   "round": "63",
+   "id": "R12-COMMERCE-5096",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "replayable (resumes on deployed path)"
+   ],
+   "reasons": [
+    "qip-deepbrain/src/config.rs::event_log_destination yields EventLogDestination::InMemory because infrastructure/gitops/envs/{dev,test,stage,prod}/deepbrain.yaml set QIP_STORAGE_TARGET=memory and no committed file sets QIP_DEEPBRAIN_EVENT_LOG, so commerce_ledger_journal.rs::resume_commerce_ledger replays an empty log after every deployed restart.",
+    "The register gap (ledger starts fresh after restart) therefore still holds in every committed configuration; infrastructure/workload-register.json itself says the deep brain's event log does not outlive the instance.",
+    "qip-deepbrain/tests/commerce.rs named test proves resume only under with_event_log_file, a configuration main.rs reaches only through an unset variable or a durable storage target.",
+    "Register row in docs/blueprint/assessment/R12-M5.json is unchanged by 7750a5fd6: still PARTIAL, integrated/deployable/e2e false.",
+    "Tests and mutations not rerun by this reviewer; pass claims are the commit message's."
+   ]
+  },
+  {
+   "round": "63",
+   "id": "R12-COMMERCE-5096",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "replayable (restart resume, the register gap)",
+    "check: mutating core refusal or arithmetic fails it"
+   ],
+   "reasons": [
+    "backend/crates/apps/qip-deepbrain/tests/commerce.rs::the_committed_plans_ledger_reserves_each_unit_for_its_sale_and_a_restart_resumes_every_unit_record_from_the_log proves restart resume only under with_event_log_file, while infrastructure/gitops/envs/dev/deepbrain.yaml (QIP_STORAGE_TARGET=memory, no QIP_DEEPBRAIN_EVENT_LOG) makes config.rs::event_log_destination return InMemory.",
+    "backend/crates/runtime/qip-kernel/src/commerce_ledger_journal.rs::resume_commerce_ledger returns at events.is_empty() on every committed environment, so Ledger::replay has no effective deployed caller and the register gap (ledger starts fresh after restart) still holds there.",
+    "The named test asserts cost basis only with is_positive() and never provokes a Ledger::apply refusal, so the check's refusal-or-arithmetic mutation would not fail it; the agent's two mutations (sell unreserved, drop resume) are wiring mutations.",
+    "The named test's condition assertion is any(condition == Condition::New) against commerce_research.rs's hard-coded receipt literal, with returns.rate 0 in data/breadth/dev-commerce-paper.json, so no second condition value is exercised on the committed plan.",
+    "Test pass is the agent's quoted line only; cargo was forbidden here, so not re-run."
+   ]
+  },
+  {
+   "round": "63",
+   "id": "R12-AMBIENT-3073",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "...and trigger scouts, tools, simulations, specialists or symbolic hypotheses",
+    "Disabling it removes its signals"
+   ],
+   "reasons": [
+    "research.rs::ResearchLoop::sweep_over routes each curiosity signal as (None, signal), so an Activated event finds no entry in self.pending and continues: no scout, tool, simulation, specialist or hypothesis is triggered.",
+    "node.rs::research_pass hands only round.scouted to the discovery desk, and no curiosity signal reaches admit or launch_ranked, so even the 'scout' the claim names is never launched.",
+    "tests/curiosity_sentinel.rs asserts only answered.pathway == Pathway::ResearchTask, so no assertion would fail if nothing downstream were triggered.",
+    "research.rs::ResearchConfig::from_lookup reads no variable for curiosity_sentinel, so no deployed binary can disable it; the off path is reached only by a test struct literal.",
+    "The claim's 'remains' (trigger targets) is itself a clause of the statement, and the register row in docs/blueprint/assessment/R12-M3.json still reads PARTIAL, deployable false, e2e false."
+   ]
+  },
+  {
+   "round": "63",
+   "id": "R12-AMBIENT-3073",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "search for high-value unknowns",
+    "trigger scouts, tools, simulations, specialists or symbolic hypotheses",
+    "disabling it removes its signals"
+   ],
+   "reasons": [
+    "research.rs::ResearchLoop::sweep_over routes each curiosity signal with no pending entry, so an activated one triggers no scout, tool, simulation, specialist or hypothesis; it only gets a pathway label.",
+    "curiosity_sentinel.rs::an_unknown_the_kernel_measures_reaches_the_attention_router_without_an_exploration_budget asserts answered.pathway only, never Disposition::Activated or any downstream work, so it passes when nothing is triggered.",
+    "research.rs::ResearchConfig::from_lookup has no switch for curiosity_sentinel, so the disable test in curiosity_sentinel.rs exercises a test-only configuration.",
+    "research.rs::rank_unknowns ranks by uncertainty alone, so 'high-value' has no code and no assertion.",
+    "The agent's own 'remains' concedes the trigger clause; even the scout arm it claims is only a Pathway::ResearchTask label, with nothing added to round.scouted.",
+    "Cap and ordering are proven on research.rs::rank_unknowns directly, not through the sweep, since the default platform measures exactly MAXIMUM_OPEN_UNKNOWNS."
+   ]
+  },
+  {
+   "round": "63",
+   "id": "R12-ASSET-4067",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "Check: stale valuation confidence refuses sizing"
+   ],
+   "reasons": [
+    "platform.rs Platform::sizing_confidence refuses a stale mark only for objects in illiquid_marks, and the only writer is private_holdings_of at assembly, reading Extension::PrivateAsset objects.",
+    "libs/qip-financial/src/catalogue.rs load never sets an extension, and committed data/datasets/universe.json holds six common stocks, so load_universe in qip-api, qip-fastbrain and qip-deepbrain main.rs can never yield a private asset.",
+    "Extension::PrivateAsset(PrivateAssetDetails{..}) is constructed only in tests (platform.rs cfg(test) modules, qip-kernel/tests), so the stale-refusal path runs only under test universes.",
+    "Consequence: routes.rs portfolio_holdings serves valuation_confidence from the no-mark branch (constant times counterfactual multiplier) for every deployed position; no deployed position can carry a confidence that goes stale.",
+    "Commit 4a266832f body itself lists 'the stale-confidence refusal half predates this and is unchanged' under Still open.",
+    "docs/blueprint/assessment/R12-M4.json row still reads PARTIAL, deployable false, e2e false, gap 'no default-path surface serves the record'; never regraded.",
+    "Agent's 'remains' (no portal page) is not a clause of statement or check; not a refutation ground."
+   ]
+  },
+  {
+   "round": "63",
+   "id": "R12-ASSET-4067",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "For every position (universal coverage; a position whose record cannot be stated is surfaced, not dropped)",
+    "Record carries expected liquidity"
+   ],
+   "reasons": [
+    "backend/crates/apps/qip-api/tests/holdings.rs::a_held_position_is_served_with_its_confidence_horizon_and_expected_liquidity asserts expected_exit_days only with is_number(), so routes.rs::portfolio_holdings may serve any number for expected liquidity.",
+    "The same test's valuation_confidence is trivially \"1\" on a listed fixture with no premise that it is non-trivial, so a hard-coded \"1\" in routes.rs::portfolio_holdings passes.",
+    "No test reaches the Err arm of routes.rs::portfolio_holdings (stated:false) or the stage_learn problem \"holding record cannot be stated\" in platform.rs, so omitting unstated positions fails nothing.",
+    "Every fixture holds one position, so a first-only mutation of platform.rs::Platform::position_holdings is not caught and \"for every position\" is unproven.",
+    "The exit_days_with_forecast branch of platform.rs::Platform::position_holding has no assertion on the record; position_record.rs checks only the 90-day catalogue branch.",
+    "The held-with-no-horizon refusal in Platform::position_holding lost its only assertion when position_record.rs was changed to expect the resumed horizon.",
+    "Register row in docs/blueprint/assessment/R12-M4.json still reads PARTIAL, deployable false, e2e false; no cargo test was run by this review (build in progress), so the commit's \"3 passed\" is unverified here."
+   ]
+  },
+  {
+   "round": "triage r66",
+   "id": "R12-EXPAND-6050",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "Paper environment: candidate installed in paper book and acts",
+    "Reproducible (replay)",
+    "With lineage",
+    "Check: mutating the step's check fails the test"
+   ],
+   "reasons": [
+    "backend/crates/services/qip-expansion/src/promotion.rs::ResearchCampaign::record refuses an empty lineage, but no test passes one (loop.rs blanks only dataset_digest), so deleting that arm survives.",
+    "backend/crates/services/qip-expansion/src/executor.rs::run_fill_bias_campaign writes Provenance.lineage and Provenance.seed, and no test or production reader ever reads either, so a constant lineage or seed 0 survives.",
+    "backend/crates/apps/qip-deepbrain/tests/expansion_rows.rs::a_research_campaign_runs_four_environments_in_order_with_provenance_and_replays_to_the_same_digests asserts only a non-empty digest and equality of two runs over identical inputs, which a digest_of that ignores its input also passes.",
+    "backend/crates/runtime/qip-kernel/src/fill_bias_installation.rs::resume has no test (unit tests cover apply only), so the claimed replay of the installed correction from the log is unverified, as is the journal_record call in Platform::install_fill_bias.",
+    "backend/crates/apps/qip-deepbrain/src/node.rs::research_pass calls admit_fill_bias, but no test drives research_pass to an install, so deleting that call survives.",
+    "backend/crates/apps/qip-deepbrain/src/research.rs::carry_out withdrawal push (install: false) and admit_fill_bias's withdraw arm have no test; the only hand-off test asserts every action is an install and exercises the refused path on an empty Universe.",
+    "backend/crates/services/qip-expansion/src/executor.rs::run_fill_bias_campaign scores the Paper stage on residuals recorded before the install reaches the kernel (ADR 0482 says the next campaign reads corrected fills), and no test scores a paper stage on fills produced under the correction.",
+    "The claimant ran nothing and the register row on HEAD 2ed2ce9e5 still reads PARTIAL with e2e false; I ran no tests either, findings are from reading code and grep."
+   ]
+  },
+  {
+   "round": "triage r66",
+   "id": "R12-EXPAND-6050",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "reproducible",
+    "paper environment",
+    "with lineage",
+    "mutating the step's check fails the test"
+   ],
+   "reasons": [
+    "Static read only at HEAD 2ed2ce9e5 in wt-ro; no test was run, and origin/main does not resolve there, so 'worktree is origin/main' is unchecked.",
+    "backend/crates/runtime/qip-kernel/src/platform.rs::install_fill_bias refuses a venue no factory candidate trades, and in qip-deepbrain fills carry SimulatedBroker::name 'simulated-venue' (qip-execution-engine broker.rs, oms.rs) while the only production registration is StrategyFoundry at 'XSIM' (qip-deepbrain evolution.rs) and the deep brain never calls ingest_cell_report, so the paper install is refused on every committed path.",
+    "backend/crates/apps/qip-deepbrain/src/node.rs::research_pass is the only caller of ResearchRound::admit_fill_bias, and no test drives it: tests/expansion_rows.rs calls the method directly, so deleting the node call fails nothing.",
+    "backend/crates/services/qip-expansion/src/executor.rs::run_fill_bias_campaign scores the Paper stage in the same call as Shadow on fills recorded before any install, so no campaign's paper window runs under its correction and Installation.installed_at is back-dated against the kernel record.",
+    "backend/crates/services/qip-expansion/src/promotion.rs::ResearchCampaign::record lineage check has no test (tests/loop.rs blanks only dataset_digest), and Provenance.lineage is read by nothing else and journaled nowhere.",
+    "backend/crates/runtime/qip-kernel/src/fill_bias_installation.rs::resume, the replay the row cites, has no test; its unit tests cover only InstalledFillBiases::apply."
+   ]
+  },
+  {
+   "round": "65",
+   "id": "R12-AMBIENT-3073",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "search for high-value unknowns",
+    "trigger scouts, tools, simulations, specialists or symbolic hypotheses"
+   ],
+   "reasons": [
+    "curiosity_sentinel.rs::measured builds its expected order from Platform::resolution_value itself, monotone in uncertainty (exploration.rs RESOLUTION_VALUE_BPS doc: 'measures no per-subject value'), so sorting by uncertainty alone or inverting the valuation passes every sweep test.",
+    "Value-over-uncertainty is shown only on research.rs::rank_unknowns with a closure production never supplies, and the agent's own 'remains' concedes value order equals uncertainty order, which is the 'high-value' clause.",
+    "curiosity_sentinel.rs calls acquisition_dispatch::dispatch itself; node.rs::research_pass `desk.hand_off(&to_desk)` has no test, so deleting it fails nothing.",
+    "discovery.rs::DiscoveryDesk::maybe_run returns before reading the scout queue when every_cycles is 0, and deepbrain_discover_every is null in all four terraform.tfvars, so no committed deployment ever acts on the scout.",
+    "research.rs::wanting_for arms for Model, Execution and CausalLink (experiment, tick campaign, simulation) are unasserted: the test only expects 'Memory gap' questions, and never checks the desk entry's plan, tools or blocked state.",
+    "No specialist is woken: research.rs sweep_over never sets pending_wakes for an unknown."
+   ]
+  },
+  {
+   "round": "65",
+   "id": "R12-AMBIENT-3073",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "Trigger scouts, tools, simulations, specialists or symbolic hypotheses"
+   ],
+   "reasons": [
+    "backend/crates/apps/qip-deepbrain/src/discovery.rs::DiscoveryDesk::maybe_run is the only reader of the scout queue hand_off fills, and it returns before the drain when every_cycles is 0, which DiscoveryConfig::default sets and no committed environment overrides (deepbrain_discover_every is null in infrastructure/environments/{dev,test,stage,prod}/terraform.tfvars), so the scout a curiosity signal launches is never consumed in any committed deployment.",
+    "backend/crates/apps/qip-deepbrain/tests/curiosity_sentinel.rs asserts the trigger only through round.scouted and the pure acquisition_dispatch::dispatch; removing desk.hand_off from node.rs::research_pass fails no curiosity test.",
+    "Of the statement's five trigger targets only scouts is asserted; the desk question is admitted as blocked on the deployed default and no test asserts a tool, simulation, specialist or hypothesis started from an unknown.",
+    "Making the scout effective needs an owner to turn on the discovery cadence together with a source catalogue, which prod/terraform.tfvars says waits on a call not yet observed from a deployed process: outside the repository.",
+    "Caveat on research.rs::rank_unknowns: Platform::resolution_value is equity times a constant times uncertainty, so on the production path the value ranking is the uncertainty ranking."
+   ]
+  },
+  {
+   "round": "65",
+   "id": "R12-FABRIC-7034",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "Brokers apply EACH stream's policy: span class For (fallback_series)",
+    "Brokers apply EACH stream's policy: classes with a non-span bound (derived_state InMemoryFixed 'fixed size', referenced ManifestOnly, compact_derived Series)"
+   ],
+   "reasons": [
+    "backend/crates/services/qip-streaming/src/event_fabric/broker.rs::age_limit: the `Retention::For` arm (FallbackSeries, named in the register gap) has no test anywhere; deleting it fails nothing.",
+    "broker.rs::policy_window returns None for DerivedState, so committed infrastructure/event-fabric/streams.local.json stream `telemetry.local` (derived_state, 'fixed size') keeps every segment forever on the default broker; the agent's 'remains' item is the statement's 'each stream' clause and the row's bounded-retention rationale.",
+    "backend/crates/apps/qip-fabricd/tests/retention.rs::with_no_hot_window_configured_each_stream_is_still_trimmed_by_its_own_retention_class asserts `starts(&broker, FEATURES) == features`, pinning unbounded retention as correct rather than failing on it.",
+    "retention.rs::a_segment_past_its_streams_span_stays_until_it_is_archived_and_goes_after bypasses start_with_archive (Broker::open, hand-built SegmentLogConfig) and passes with Broker::retain's archive guard removed, by the agent's own mutation report.",
+    "retention.rs test catalogue is test-only: its transient stream has no counterpart in the committed catalogues, so the Never arm is never reached on a committed configuration.",
+    "docs/blueprint/assessment/R12-M7.json row R12-FABRIC-7034 still reads status PARTIAL, integrated false, with the old gap text at HEAD; commit c513d038a did not touch it."
+   ]
+  },
+  {
+   "round": "65",
+   "id": "R12-FABRIC-7034",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "EACH stream's policy is applied (every retention class)",
+    "Segments older than a For span are removed (fallback_series)"
+   ],
+   "reasons": [
+    "broker.rs::policy_window and ::age_limit give no bound to five classes, so the agent's 'remains' item is the statement's 'each stream's' clause, unmet.",
+    "infrastructure/event-fabric/streams.local.json declares telemetry.local (derived_state, seal_age_ms 5000, never archived) and two irreplaceable streams, so 3 of 4 committed streams grow unbounded under Broker::retain_by_policy.",
+    "broker.rs::age_limit's Retention::For arm has no test and no committed stream reaching it.",
+    "infrastructure/terraform/modules/event-fabric-broker/startup.sh.tftpl's fabricd.env sets no archive target, HEALTH_LISTEN, PARTITIONS or IDENTITIES_FILE, so config.rs::Config::parse_with would refuse that broker, and variables.tf event_fabric_broker is null in every environment: reach ends at main.rs, not at a committed deployment.",
+    "Tests were read, not run: cargo was prohibited in this worktree."
+   ]
+  }
+ ]
+}
