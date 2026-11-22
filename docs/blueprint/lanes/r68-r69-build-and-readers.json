@@ -1,0 +1,186 @@
+{
+ "lane": "r68-r69",
+ "date": "2026-11-22",
+ "base": "fd9ac6523",
+ "what": "Rounds 68 and 69, run inside the orchestrator session. Three commerce rows on the committed dev plan were triaged and each found to wait on a figure or a decision only the owner can state; nothing was built for them. R12-AMBIENT-3024 was built, refuted by two independent readers, reworked (a usage limit cut the rework off twice; the third agent finished it), and read again: the test-strength reader could not refute it and the production-reach reader refuted it on governance alone, an owner decision recorded as ADR 0724. Readers read the code and ran no test. No row changes status.",
+ "rows": [
+  {
+   "pass": "round 68",
+   "cluster": "C-commerce-a",
+   "id": "R12-COMMERCE-5094",
+   "outcome": "NEEDS_PERSON",
+   "commit": "",
+   "production_caller": "Existing: qip-deepbrain main -> breadth::install -> CommerceResearch::work_candidate -> PurchaseExecutor::purchase. Nothing added.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Credential clause: commerce_research.rs builds Credential from plan.account, so mismatch cannot fire; no other credential source exists on the paper plane. Payment fraud same (one literal paper-instrument). Source of credential is an owner design decision; no accepted ADR or owner-decisions-2026-11-16 entry settles it. Fraud merchant/listing fields closable after that decision. No cargo run, nothing built."
+  },
+  {
+   "pass": "round 68",
+   "cluster": "C-commerce-a",
+   "id": "R12-COMMERCE-5095",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "Existing: qip-deepbrain main -> breadth::install -> CommerceResearch (LogisticsPlanDraft from plan.logistics). Nothing added.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Committed data/breadth/dev-commerce-paper.json has consolidate_with null and insurance null (declined, stated reason). Exercising consolidation needs a shipment count; insurance needs coverage and premium (or an insured threshold). Nobody stated any of them; no owner decision or ADR gives them. Not invented. No cargo run, nothing built."
+  },
+  {
+   "pass": "round 68",
+   "cluster": "C-commerce-b",
+   "id": "R12-COMMERCE-5097",
+   "outcome": "NEEDS_FIGURE",
+   "commit": "",
+   "production_caller": "qip-deepbrain main -> breadth::install -> CommerceResearch SIMULATE pass -> resale.reprice (backend/crates/runtime/qip-kernel/src/commerce_research.rs:1107). Reached every cycle, but returns Ok(None) for every unit under data/breadth/dev-commerce-paper.json.",
+   "tests": [],
+   "mutations": [],
+   "result_lines": [],
+   "remains": "Reprice clause cannot fire on committed plan: longest hold is days_on_market=2, markdown_after_days=3, synthetic reference_price constant per SKU (batch_at), held-by-break units skip reprice. Needs owner figure: markdown_after_days below days_on_market, or a reference drift rate. Venue clause already tested (commerce.rs:1068). Nothing built, no cargo run, no commit."
+  },
+  {
+   "pass": "round 68",
+   "cluster": "C-meta",
+   "id": "R12-AMBIENT-3024",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "6bd80af79",
+   "production_caller": "qip-api/qip-fastbrain/qip-deepbrain main -> Platform::run_cycle -> stage_reason -> brief_the_desk_on_models (Tournament::regime_briers -> ModelsView::regime_records) -> Organisation::standard dispatch second phase -> MetaBrain::arbitrate (ReadModelRegistry). Triage lead was wrong: tournament already keyed scores by regime; only the hand-off was missing.",
+   "tests": [
+    "qip-kernel tests/episodic.rs the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in (PlatformConfig::default, 13 cells equal scorecards)",
+    "qip-investment-agents tests/organisation.rs the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earned_in",
+    "qip-investment-agents tests/organisation.rs removing_the_meta_brain_from_the_standard_organisation_drops_the_resolution_of_its_contested_panel"
+   ],
+   "mutations": [
+    "MetaBrain model count ignores regime: 'left: Some(2.0)' in trending/high, expected 1",
+    "records_in ignores regime: 'trending/high: resolved to -0.7518097759580634, expected 0.12091321175212423'",
+    "coverage label dropped: 'the model record does not evidence the scope'",
+    "kernel never sets view.regime_records: model cells 'left: {}'",
+    "regime_briers files all under one regime: '@any' vs '@quiet/normal'",
+    "all restored by cp, cmp clean, rerun green"
+   ],
+   "result_lines": [
+    "organisation.rs: test result: ok. 93 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s",
+    "episodic.rs: test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s",
+    "qip-kernel all 91 binaries ok: 1373 passed, 0 failed",
+    "qip-learning-engine lib: test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.57s",
+    "manifest_wiring: test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 459.61s",
+    "architecture: test result: ok. 59 passed; 0 failed",
+    "documentation 28, api_boundary 10, order_placement_paths 13, event_fabric_schema_lock 6, paper_boundary 5, security 29, compliance_proof 8: all ok, 0 failed",
+    "fmt --check clean; clippy -D warnings on 3 crates: Finished, no warning; secret scan: nothing found"
+   ],
+   "remains": "No clause open. Reader caveats: default-cycle fixture opens every question in one regime (quiet/normal), so two-regime discrimination is proven on Organisation::standard with a fixed registry, not in the kernel. REASON still does not act on the resolution (ADR 0466 leaves that undecided; statement says measure/resolve, not drive). No ADR written for the new ReadModelRegistry grant. Register not edited."
+  },
+  {
+   "pass": "round 69 rework",
+   "cluster": "D-meta3",
+   "id": "R12-AMBIENT-3024",
+   "outcome": "CLAIMS_COMPLETE",
+   "commit": "fa433a04f",
+   "production_caller": "qip-api/qip-fastbrain/qip-deepbrain main.rs -> Platform::run_cycle -> stage_reason -> hand_the_arbiters_the_models_record (Tournament::regime_briers) -> Organisation::hand_model_records -> dispatch second phase PanelView::model_records -> MetaBrain::arbitrate. Manifest grants read_research_memory only.",
+   "tests": [
+    "qip-investment-agents organisation.rs::the_meta_brain_holds_the_research_memory_capability_and_no_other",
+    "organisation.rs::the_meta_brain_measures_each_model_only_under_the_regime_its_record_was_earned_in",
+    "qip-kernel episodic.rs::a_model_scored_in_one_regime_is_unmeasured_when_the_tape_turns_and_is_never_pooled_across_them",
+    "episodic.rs::the_cycle_resolves_its_own_contested_panel_and_allocates_attention_by_the_record_it_charged",
+    "episodic.rs::the_reason_stage_runs_the_meta_brain_under_the_regime_in_force",
+    "episodic.rs::the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in"
+   ],
+   "mutations": [
+    "Pool scores across regimes in Tournament::regime_briers: episodic.rs:1689 failed",
+    "Delete hand-off call in stage_reason: episodic.rs:1629 and :1295 failed, left: {}",
+    "PanelView model_records emptied: organisation.rs:5244 failed, left: {}",
+    "Add ReadModelRegistry to manifests::meta_brain: organisation.rs:5310 failed, left: [ReadResearchMemory, ReadModelRegistry]",
+    "Drop regime filter in MetaBrain::arbitrate: organisation.rs:5262 failed, left: Some(2.0)",
+    "Drop in_regime in stage_reason: four episodic tests failed, left: None",
+    "Conviction-only balance: episodic.rs:1880 failed; even attention share: episodic.rs:1918 failed",
+    "All restored, cmp identical, rerun green"
+   ],
+   "result_lines": [
+    "organisation: test result: ok. 94 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s",
+    "episodic: test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.18s",
+    "qip-investment-agents + qip-kernel full: 95 result lines, 1488 passed, 0 failed",
+    "five apps: 1018 passed, 1 failed (qip-cli event_fabric_produce throttle load test; alone 3x: test result: ok. 2 passed; 0 failed)",
+    "paper_boundary: test result: ok. 27 passed; 0 failed",
+    "documentation: test result: FAILED. 27 passed; 1 failed",
+    "architecture: test result: ok. 59 passed; 0 failed",
+    "fmt exit 0; clippy -D warnings clean; secret scan: nothing found"
+   ],
+   "remains": "documentation::every_decision_record_is_listed_in_the_index fails: 0724 not in docs/adr/README.md, which this agent may not edit; index owner must add the row. ADR 0724 is Proposed, awaits owner. qip-cli throttle test failed once under load, unrelated to diff. Default cycle does produce a contested panel; tested. REASON does not act on the resolution (0466 leaves open)."
+  }
+ ],
+ "reader_verdicts": [
+  {
+   "pass": "on e7f0d48e7",
+   "id": "R12-AMBIENT-3024",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "measuring models by regime"
+   ],
+   "reasons": [
+    "tournament.rs::Tournament::regime_briers is exercised only on a one-regime fixture, so a mutation pooling scores across regimes under each label survives every test.",
+    "organisation.rs::desk_with_model_records hand-builds ModelsView::regime_records, a path production never takes, so two-regime discrimination is unproven from the tournament through platform.rs::brief_the_desk_on_models.",
+    "episodic.rs::the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in asserts no premise that any model is measured in the regime in force.",
+    "manifests.rs::meta_brain now grants ReadModelRegistry, contradicting accepted ADR 0466 decision 2 (\"read_research_memory and nothing else\") with no amending record, which 00-boundaries.md \"Recording a decision\" requires; the grant exposes the whole ModelsView.",
+    "Order path gains no model dependence: qip-reasoning-engine engine.rs::stance_of drops the Neutral finding and only meta_brain.rs reads regime_records.",
+    "attention_weight and reliability_weighted_balance reach only platform.rs::record_scopes_reported and the run journal; the register's gap item on REASON not acting stays open.",
+    "I ran no tests (cargo forbidden); every test leg is judged by reading."
+   ]
+  },
+  {
+   "pass": "on e7f0d48e7",
+   "id": "R12-AMBIENT-3024",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "[repo rule, not a statement clause] decision record for the ReadModelRegistry grant"
+   ],
+   "reasons": [
+    "docs/adr/0466 decision 2 says the manifest grants read_research_memory \"and nothing else\" and leaves model reliability by regime under \"Not decided here\"; manifests.rs::meta_brain now grants Capability::ReadModelRegistry with no ADR amended, against 00-boundaries.md \"Recording a decision\".",
+    "episodic.rs::the_meta_brain_reports_every_forecasters_record_under_the_regime_the_tournament_scored_it_in asserts no premise on in_force, so models_measured_in_regime passes on a regime-blind count and does not pin platform.rs::observe_hypothesis's regime key to Platform::regime_context.",
+    "episodic.rs::the_reason_stage_runs_the_meta_brain_under_the_regime_in_force asserts claim.contains(\"; in \"), a literal of MetaBrain::arbitrate's format string, always true.",
+    "No kernel test asserts AttentionAllocation or DisagreementResolution through Platform::run_cycle; organisation.rs::contested_standard_desk hand-builds the memory.",
+    "Order path unchanged: ModelsView::regime_records has one reader, MetaBrain::arbitrate, whose finding is Neutral at zero conviction.",
+    "REASON not acting is not a clause: the check asks findings and coverage only.",
+    "No test was run by me (cargo forbidden); pass counts are the agent's."
+   ]
+  },
+  {
+   "pass": "on cd8cb08b5",
+   "id": "R12-AMBIENT-3024",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [],
+   "reasons": [
+    "Every clause has code, a committed production caller and a test by reading; the refutation rests on the outside-the-repository rule, not on reach.",
+    "platform.rs::hand_the_arbiters_the_models_record reads the same self.tournament that brief_the_desk_on_models writes behind ReadModelRegistry, and hands it to MetaBrain::arbitrate ungated with no AccessRecord.",
+    "manifests.rs::model_failure describes ReadModelRegistry as the gate on 'the tournament's forecaster records', which is exactly what chief.rs::PanelView::model_records now carries to an agent without that capability.",
+    "Accepted docs/adr/0466 decision 2 says 'What the arbiter may reach beyond it is still gated'; docs/adr/0724 quotes only the manifest half, is Proposed, and its own 'What would make this wrong' says the owner may require 0466 amended.",
+    "Owner acceptance of docs/adr/0724 is outside the repository and absent, so the models clause stands on an undecided decision the agent lists under 'remains'.",
+    "organisation.rs::the_meta_brain_holds_the_research_memory_capability_and_no_other pins manifests::meta_brain only and cannot see data passed through the public chief.rs::Organisation::hand_model_records.",
+    "Checked and clean: manifests.rs::meta_brain grants only ReadResearchMemory, meta_brain.rs reads only desk.memory, and platform.rs::stage_reason is the sole production dispatch caller.",
+    "Checked and clean: qip-reasoning-engine engine.rs::stance_of drops the neutral finding and no production code reads model_brier or attention_weight, so nothing on the order path depends on model cells.",
+    "Not a clause: REASON not acting on the resolution and nothing deployed, since the check asks for findings and coverage only.",
+    "Not run: cargo was forbidden, so the test results and mutations in fa433a04f are unverified by me."
+   ]
+  },
+  {
+   "pass": "on cd8cb08b5",
+   "id": "R12-AMBIENT-3024",
+   "lens": "tests",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Not refuted on test strength: I ran no test (cargo forbidden here); verdict is from reading, and the concurrent gate log r70-gate.log had not reached organisation/episodic.",
+    "All five earlier findings are fixed as claimed: manifests.rs::meta_brain grants only ReadResearchMemory, pinned by exact-set equality in organisation.rs::the_meta_brain_holds_the_research_memory_capability_and_no_other; the always-true contains(\"; in \") is replaced by episodic.rs::regime_the_claim_names delimited equality.",
+    "Only adversary.rs:849 reads desk.models; platform.rs::hand_the_arbiters_the_models_record reads the kernel tournament, not the desk slot.",
+    "Caveat for the owner: PanelView::model_records lets the Meta Brain derive the gated ForecasterHealth::mean_brier (weighted mean of handed cells) without read_model_registry, and the pin test cannot see that; ADR 0724 (Proposed) leaves it open.",
+    "No order-path reader: nothing outside tests reads model_brier/model_records, and MetaBrain::arbitrate stays Neutral at 0.0 conviction.",
+    "Minor: meta_brain.rs stamps handed model_brier facts through support::computed, whose doc reserves it for derived numbers; no test asserts provenance.",
+    "Remains items (ADR Proposed, REASON not acting, nothing deployed) are not clauses of the statement or check."
+   ]
+  }
+ ]
+}
