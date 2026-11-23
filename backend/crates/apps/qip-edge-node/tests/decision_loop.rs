@@ -2672,11 +2672,13 @@ fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them
     use qip_edge_node::standard_engine_and_catalogue;
     use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
     use std::collections::BTreeSet;
-    /// The last second a pass may run at. The simulated venue's session is
-    /// heartbeated once, at the gateway's `t(0)`, and nothing in the pass
-    /// loop answers another (`tests/degraded.rs`), so thirty seconds later
-    /// it degrades and a pass that sends fails rather than runs.
-    const SESSION_ENDS: i64 = 30;
+    /// The last second a pass may run at: three passes need a handful of
+    /// turns from `t(10)`, and a loop still turning at `t(30)` is chasing
+    /// something. Until 2026-11-23 this was also the end of the simulated
+    /// venue's session — heartbeated once, at the gateway's `t(0)`, and
+    /// degraded thirty seconds later, after which a pass that sent failed —
+    /// and the pass now heartbeats it (`tests/venue_session.rs`).
+    const LAST_SECOND: i64 = 30;
     let (engine, _catalogue) = standard_engine_and_catalogue(&object(), DEFAULT_MAX_STALENESS)?;
     let config = CellConfig::new(CELL, REGION)
         .with_venue(venue())
@@ -2699,8 +2701,8 @@ fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them
     let mut second = 10;
     while ran.len() < 3 {
         assert!(
-            second <= SESSION_ENDS,
-            "premise: three passes ran inside the simulated venue's session, and {} did by t({})",
+            second <= LAST_SECOND,
+            "premise: three passes ran by t({LAST_SECOND}), and {} did by t({})",
             ran.len(),
             second - 1
         );

@@ -18,10 +18,13 @@
 //! than stubbing one in order to kill it.
 //!
 //! Every timeline here ends inside thirty seconds of the venue session's
-//! start: nothing in the pass loop answers a heartbeat, and the simulated
-//! venue degrades its session after thirty. The slots' own instants are set
-//! so their staleness thresholds fall inside that window; the thresholds
-//! themselves are the contract's.
+//! start. Until 2026-11-23 that was forced — nothing in the pass loop
+//! answered a heartbeat, and the simulated venue degraded its session after
+//! thirty — and it is now only how the slots' instants were chosen: the pass
+//! heartbeats the venue (`SimulatedGateway::advance_to`), and
+//! `tests/venue_session.rs` drives a node past the window. The slots' own
+//! instants are set so their staleness thresholds fall inside it; the
+//! thresholds themselves are the contract's.
 
 #![allow(clippy::panic_in_result_fn)]
 #![allow(clippy::unwrap_used, clippy::expect_used)] // integration tests may unwrap: a panic is the failure report

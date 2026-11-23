@@ -650,8 +650,9 @@ impl Run {
 }
 
 /// Instant of turn `turn`. Two seconds apart, so the whole run sits inside
-/// the thirty seconds the simulated venue's session lasts with nothing
-/// answering its heartbeat.
+/// the thirty seconds the simulated venue's session lasted with nothing
+/// answering its heartbeat, as it did until the pass began answering it on
+/// 2026-11-23.
 fn instant(turn: usize) -> Timestamp {
     t(10 + 2 * turn as i64)
 }
