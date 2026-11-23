@@ -700,19 +700,20 @@ fn a_failed_adversarial_result_rewritten_as_passed_is_not_promoted() -> Result<(
         registry.clearance(&artifact.reference).is_none(),
         "premise: a failed run lodges no clearance"
     );
-    // The forgery: every result on the card rewritten as passed.
-    let card = registry
-        .get_mut(&artifact.reference)
-        .expect("premise: the card is registered");
-    for test in card
-        .promotion_tests
-        .as_mut()
-        .expect("premise: the run wrote its record")
-        .results
-        .values_mut()
-    {
-        test.passed = true;
-    }
+    // The forgery: every result on the card rewritten as passed, through
+    // the one write the registry still offers on a card's record.
+    registry.amend(&artifact.reference, |card| {
+        for test in card
+            .promotion_tests
+            .as_mut()
+            .expect("premise: the run wrote its record")
+            .results
+            .values_mut()
+        {
+            test.passed = true;
+        }
+        Ok(())
+    })?;
     assert_eq!(
         registry
             .get(&artifact.reference)
@@ -771,6 +772,263 @@ fn a_failed_run_withdraws_the_clearance_a_passing_run_left() -> Result<()> {
     assert!(
         registry.clearance(&artifact.reference).is_none(),
         "a failed run left the earlier clearance in place"
+    );
+    Ok(())
+}
+
+/// Serves exactly what the in-tree provider serves, under another name: the
+/// stand-in for a provider whose arithmetic the platform does not run. Its
+/// passes are real measurements of the in-tree model, which is the point —
+/// the refusal below is about whose arithmetic was measured, not about the
+/// verdicts.
+#[derive(Debug)]
+struct Renamed;
+
+impl ModelProvider for Renamed {
+    fn name(&self) -> &str {
+        "a provider the platform does not serve through"
+    }
+    fn serves(&self) -> &[ModelFormat] {
+        InTreeProvider.serves()
+    }
+    fn serve(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
+        InTreeProvider.serve(artifact)
+    }
+}
+
+/// R12-MODEL-4021, the reader's third finding: `run_promotion_tests` takes a
+/// caller-chosen provider, so a clearance could be minted on one provider's
+/// arithmetic and spent on a promotion the platform serves through another.
+/// The clearance names the provider it measured through, and
+/// `Platform::promote_model_from` refuses one that is not its own.
+///
+/// Premise first: the same artifact, measured through the platform's own
+/// provider, promotes; so the refusal is about the provider and nothing else.
+///
+/// Mutation: drop the `measured_through` comparison in `promote_model_from`
+/// — the renamed provider's clearance promotes and the `expect_err` fires.
+#[test]
+fn a_clearance_measured_through_another_provider_does_not_promote() -> Result<()> {
+    let teacher = teacher("bar-linear-renamed")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("renamed-recorded", 200, 400)?;
+
+    let mut registry = registry_with(&teacher)?;
+    let tests = run_promotion_tests(&Renamed, &mut registry, &artifact, &recorded, start())?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: every test passed"
+    );
+    assert_eq!(
+        registry
+            .clearance(&artifact.reference)
+            .map(qip_ai::registry::PromotionClearance::measured_through),
+        Some("a provider the platform does not serve through"),
+        "premise: the pass minted a clearance naming the provider it measured"
+    );
+    let mut platform = platform()?;
+    let error = platform
+        .promote_model(&mut registry, &artifact, None, &[], start())
+        .expect_err("a clearance measured through another provider must not promote");
+    assert_eq!(
+        error.message(),
+        format!(
+            "{} is not promoted: its promotion clearance was measured through provider a \
+             provider the platform does not serve through and this platform serves it through \
+             {}; run the promotion tests through the provider that serves it",
+            artifact.reference,
+            InTreeProvider::NAME
+        )
+    );
+    assert!(platform.model_promotions().is_empty());
+
+    let mut registry = registry_with(&teacher)?;
+    let mut platform = self::platform()?;
+    platform.test_model_for_promotion(&mut registry, &artifact, &recorded, start())?;
+    platform.promote_model(&mut registry, &artifact, None, &[], start())?;
+    assert!(
+        platform
+            .model_promotions()
+            .contains_key(&artifact.reference),
+        "the same bytes measured through the platform's own provider promote"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-4021, the reader's distilled-student finding: the deep brain
+/// named a student to the cells on its fidelity to the teacher alone, and no
+/// attack ran on the student's own outputs. A promotion naming a student now
+/// needs a clearance that names it, and a clearance names one only when the
+/// adversarial suite passed on it.
+///
+/// Three runs on one window. No student: the clearance names none, and a
+/// promotion naming one is refused. A student that steps inside the data: its
+/// attack fails, the clearance names none, and the promotion is refused. A
+/// smooth linear student: its attack passes, the clearance names its digest,
+/// and the promotion record names it.
+///
+/// Mutations: drop the student comparison in `promote_model_from` — the
+/// first `expect_err` fires; set the cleared student whatever the verdict in
+/// `run_promotion_tests_with_student` — the stepping student is named and the
+/// `distilled_digest` assertion fires.
+#[test]
+fn a_promotion_names_a_distilled_student_only_after_the_attack_ran_on_it() -> Result<()> {
+    use qip_ai::registry::{DISTILLED_ADVERSARIAL_TEST, PromotionClearance};
+    use qip_kernel::central::models::run_promotion_tests_with_student;
+    use qip_strategy::model::{DistilledModel, TreeNode};
+
+    let teacher = teacher("bar-linear-student")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("student-recorded", 200, 400)?;
+    let smooth = DistilledModel::linear("bar-linear-student", 0.1, vec![0.5, -0.25])?;
+    let stepping = DistilledModel::tree(
+        "bar-linear-student",
+        2,
+        vec![
+            TreeNode::Branch {
+                input: 0,
+                threshold: 0.0,
+                below: 1,
+                at_or_above: 2,
+            },
+            TreeNode::Leaf { value: -0.2 },
+            TreeNode::Leaf { value: 0.2 },
+        ],
+    )?;
+
+    let mut registry = registry_with(&teacher)?;
+    let mut platform = platform()?;
+    platform.test_model_for_promotion(&mut registry, &artifact, &recorded, start())?;
+    assert_eq!(
+        registry
+            .clearance(&artifact.reference)
+            .map(PromotionClearance::distilled_digest),
+        Some(None),
+        "premise: a clearance is held, and it names no student"
+    );
+    let unattacked = platform
+        .promote_model(&mut registry, &artifact, Some(&smooth), &[], start())
+        .expect_err("a student no attack ran on must not be named");
+    assert!(
+        unattacked
+            .message()
+            .contains(&format!("naming the distilled student {}", smooth.digest())),
+        "{}",
+        unattacked.message()
+    );
+
+    let tests = run_promotion_tests_with_student(
+        &InTreeProvider,
+        &mut registry,
+        &artifact,
+        &recorded,
+        Some(&stepping),
+        start(),
+    )?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: the teacher passed"
+    );
+    assert!(
+        !passed(&tests, DISTILLED_ADVERSARIAL_TEST),
+        "a student that steps inside the data must fail its attack: {}",
+        evidence(&tests, DISTILLED_ADVERSARIAL_TEST)
+    );
+    assert_eq!(
+        registry
+            .clearance(&artifact.reference)
+            .map(PromotionClearance::distilled_digest),
+        Some(None),
+        "a student that failed its attack was named on the clearance"
+    );
+    assert!(
+        platform
+            .promote_model(&mut registry, &artifact, Some(&stepping), &[], start())
+            .is_err(),
+        "a student that failed its attack was named to the cells"
+    );
+
+    let tests = run_promotion_tests_with_student(
+        &InTreeProvider,
+        &mut registry,
+        &artifact,
+        &recorded,
+        Some(&smooth),
+        start(),
+    )?;
+    assert!(
+        passed(&tests, DISTILLED_ADVERSARIAL_TEST),
+        "premise: the smooth student holds: {}",
+        evidence(&tests, DISTILLED_ADVERSARIAL_TEST)
+    );
+    let digest = smooth.digest();
+    assert_eq!(
+        registry
+            .clearance(&artifact.reference)
+            .and_then(PromotionClearance::distilled_digest),
+        Some(digest.as_str())
+    );
+    platform.promote_model(&mut registry, &artifact, Some(&smooth), &[], start())?;
+    assert_eq!(
+        platform
+            .model_promotions()
+            .get(&artifact.reference)
+            .and_then(|record| record.distilled.as_ref())
+            .map(|entry| entry.digest.as_str()),
+        Some(digest.as_str()),
+        "the promotion names the student the attack cleared"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-4021, the restart door: a card read back from storage is data,
+/// and its stage is a public field. `Platform::readmit_promoted_card` puts a
+/// production card back only on a promotion record on the log naming the
+/// same reference at the same bytes.
+///
+/// Mutation: treat every card as promoted in `readmit_promoted_card` — the
+/// card the log never promoted is readmitted and the `expect_err` fires.
+#[test]
+fn a_card_returns_to_production_after_a_restart_only_on_the_logs_record() -> Result<()> {
+    let teacher = teacher("bar-linear-readmit")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("readmit-recorded", 200, 400)?;
+    let mut registry = registry_with(&teacher)?;
+    let mut platform = platform()?;
+
+    let mut forged = registry
+        .get(&artifact.reference)
+        .cloned()
+        .ok_or_else(|| qip_core::error::Error::not_found("the card"))?;
+    forged.stage = qip_ai::registry::ModelStage::Production;
+    forged.artifact_digest = Some(artifact.digest.clone());
+    let refused = platform
+        .readmit_promoted_card(&mut ModelRegistry::new(), forged)
+        .expect_err("a card the log never promoted must not be readmitted");
+    assert!(
+        refused
+            .message()
+            .contains("no promotion record on the log promoted it with those bytes"),
+        "{}",
+        refused.message()
+    );
+
+    platform.test_model_for_promotion(&mut registry, &artifact, &recorded, start())?;
+    platform.promote_model(&mut registry, &artifact, None, &[], start())?;
+    let promoted = registry
+        .get(&artifact.reference)
+        .cloned()
+        .ok_or_else(|| qip_core::error::Error::not_found("the promoted card"))?;
+    assert_eq!(promoted.stage, qip_ai::registry::ModelStage::Production);
+    let mut restarted = ModelRegistry::new();
+    platform.readmit_promoted_card(&mut restarted, promoted)?;
+    assert!(
+        restarted
+            .require_for_decision(&artifact.reference, start())
+            .is_ok(),
+        "the log's record readmits the card it promoted"
     );
     Ok(())
 }

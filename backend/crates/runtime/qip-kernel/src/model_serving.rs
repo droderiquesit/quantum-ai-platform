@@ -55,7 +55,9 @@
 //! the model (ADR 0043).
 
 use crate::platform::Platform;
-use qip_ai::registry::{ModelRegistry, PublishedArtifact};
+use qip_ai::registry::{
+    JournaledAdmission, ModelCard, ModelRegistry, ModelStage, PublishedArtifact,
+};
 use qip_ai::serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
 use qip_contracts::policy::{InlineModel, ModelManifest, Slot};
 use qip_core::Timestamp;
@@ -1035,6 +1037,10 @@ impl Platform {
     /// in `registry` (ADR 0392, R12-MODEL-10202). The promotion that follows
     /// refuses without them. See
     /// [`crate::central::models::run_promotion_tests`].
+    ///
+    /// The tests run through this platform's provider, the provider
+    /// [`Self::promote_model_from`] serves through, so the clearance a pass
+    /// mints is one this platform accepts (R12-MODEL-4021).
     pub fn test_model_for_promotion(
         &self,
         registry: &mut ModelRegistry,
@@ -1042,13 +1048,64 @@ impl Platform {
         recorded: &qip_training::dataset::TrainingDataset,
         now: Timestamp,
     ) -> Result<qip_ai::registry::PromotionTests> {
-        crate::central::models::run_promotion_tests(
+        self.test_model_and_student_for_promotion(registry, artifact, recorded, None, now)
+    }
+
+    /// [`Self::test_model_for_promotion`] for a promotion that will name
+    /// `student` to the cells: the student is attacked by the same
+    /// adversarial suite, and the clearance names it only if it held
+    /// (R12-MODEL-4021).
+    pub fn test_model_and_student_for_promotion(
+        &self,
+        registry: &mut ModelRegistry,
+        artifact: &ModelArtifact,
+        recorded: &qip_training::dataset::TrainingDataset,
+        student: Option<&DistilledModel>,
+        now: Timestamp,
+    ) -> Result<qip_ai::registry::PromotionTests> {
+        crate::central::models::run_promotion_tests_with_student(
             self.model_provider.as_ref(),
             registry,
             artifact,
             recorded,
+            student,
             now,
         )
+    }
+
+    /// Put `card` back into `registry` at the stage the promotion log gives
+    /// it (R12-MODEL-4021): the restart path a desk refills its registry by.
+    ///
+    /// A card at `Production`, or a retired card carrying the bytes it was
+    /// promoted with, is readmitted only on a promotion record on this
+    /// platform's log naming the same reference at the same artifact digest;
+    /// the [`JournaledAdmission`] is minted here and nowhere else in
+    /// production. Any other card is registered as it is, which the registry
+    /// refuses at `Production`. A card read back from storage is data: what
+    /// admits it is the log's record of a promotion that spent a clearance.
+    pub fn readmit_promoted_card(
+        &self,
+        registry: &mut ModelRegistry,
+        card: ModelCard,
+    ) -> Result<()> {
+        let reference = card.reference();
+        let Some(digest) = card.artifact_digest.clone() else {
+            return registry.register(card);
+        };
+        if !matches!(card.stage, ModelStage::Production | ModelStage::Retired) {
+            return registry.register(card);
+        }
+        let promoted = promotions_in(self.event_log())?
+            .into_iter()
+            .any(|record| record.reference == reference && record.artifact_digest == digest);
+        if !promoted {
+            return Err(Error::denied(format!(
+                "{reference} is not readmitted at artifact {digest}: no promotion record on the \
+                 log promoted it with those bytes"
+            )));
+        }
+        let admission = JournaledAdmission::minted_from_the_promotion_log(&reference, &digest);
+        registry.readmit_on_journaled_admission(card, admission)
     }
 
     /// Every promotion this process holds, by reference, in reference order.
@@ -1303,6 +1360,35 @@ impl Platform {
             )));
         }
         let name = card.name.clone();
+        // R12-MODEL-4021: the clearance was measured through this platform's
+        // provider — the one that just served the bytes above — and on the
+        // student this promotion names, if any. A clearance measured through
+        // another provider measured some other arithmetic; a student it does
+        // not name was never attacked.
+        if let Some(clearance) = registry.clearance(&artifact.reference) {
+            if clearance.measured_through() != self.model_provider.name() {
+                return Err(Error::denied(format!(
+                    "{} is not promoted: its promotion clearance was measured through provider \
+                     {} and this platform serves it through {}; run the promotion tests \
+                     through the provider that serves it",
+                    artifact.reference,
+                    clearance.measured_through(),
+                    self.model_provider.name()
+                )));
+            }
+            if let Some(student) = distilled
+                && clearance.distilled_digest() != Some(student.digest().as_str())
+            {
+                return Err(Error::denied(format!(
+                    "{} is not promoted naming the distilled student {}: its promotion clearance \
+                     names {}; a student is named to the cells only once the adversarial suite \
+                     ran on it",
+                    artifact.reference,
+                    student.digest(),
+                    clearance.distilled_digest().unwrap_or("no student")
+                )));
+            }
+        }
         let desk = self.require_model_desk(&artifact.reference, "promoted")?;
         let mut scratch = registry.clone();
         let published = scratch.promote_artifact(artifact, now)?;

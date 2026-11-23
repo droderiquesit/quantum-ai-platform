@@ -7,6 +7,37 @@ use qip_ai::registry::{EvaluationRecord, ModelCard, ModelRegistry, ModelStage};
 use qip_core::{ModelId, Timestamp};
 use std::collections::BTreeMap;
 
+/// R12-MODEL-4021: `ModelRegistry::register` refuses a card at `Production`
+/// that the registry never admitted, because a card is plain data whose
+/// stage anyone can write. These tests start from a model already in
+/// production, which in a running process means a promotion the log
+/// recorded; they stage that as the restart path does, readmitting the card
+/// on the log's admission (tests may mint one; production may not). A card
+/// below production is registered as it is.
+trait AdmitForTest {
+    fn admit_for_test(&mut self, card: qip_ai::registry::ModelCard) -> qip_core::error::Result<()>;
+}
+
+impl AdmitForTest for qip_ai::registry::ModelRegistry {
+    fn admit_for_test(
+        &mut self,
+        mut card: qip_ai::registry::ModelCard,
+    ) -> qip_core::error::Result<()> {
+        if card.stage != qip_ai::registry::ModelStage::Production {
+            return self.register(card);
+        }
+        let digest = card
+            .artifact_digest
+            .get_or_insert_with(|| "0".repeat(64))
+            .clone();
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &digest,
+        );
+        self.readmit_on_journaled_admission(card, admission)
+    }
+}
+
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -132,7 +163,7 @@ fn bounds_on_a_feature_the_card_does_not_consume_or_an_inverted_range_are_refuse
 fn the_registry_lists_a_production_model_whose_skill_was_measured_elsewhere() {
     let mut registry = ModelRegistry::default();
     registry
-        .register(bounded())
+        .admit_for_test(bounded())
         .expect("a registry below its cap admits a card");
     assert!(
         registry.ineligible(now()).is_empty(),

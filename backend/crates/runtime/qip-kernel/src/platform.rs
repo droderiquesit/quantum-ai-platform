@@ -38308,9 +38308,16 @@ mod central_sizing_tests {
         card.stage = ModelStage::Production;
         card.drift_threshold = 0.2;
         card.drift_score = 0.1;
+        // R12-MODEL-4021: a production card stands only where it was
+        // admitted; this one is staged as the log's readmission would.
+        card.artifact_digest = Some("0".repeat(64));
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &"0".repeat(64),
+        );
         let mut registry = ModelRegistry::new();
         registry
-            .register(card)
+            .readmit_on_journaled_admission(card, admission)
             .expect("an empty registry admits a card");
         platform.observe_model_drift(&registry);
         assert!(platform.drifted_models().is_empty());

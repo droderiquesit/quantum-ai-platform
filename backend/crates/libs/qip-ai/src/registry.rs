@@ -397,6 +397,14 @@ pub const RISK_ENVELOPE_TEST: &str = "risk_envelope";
 /// model that was never attacked: a guard that is a convention one caller
 /// follows is one the next caller does not.
 pub const ADVERSARIAL_TEST: &str = "adversarial";
+/// The adversarial test run on the distilled student a promotion names to
+/// the cells, over the same recorded rows and under the same default policy
+/// (R12-MODEL-4021). Not one of [`PROMOTION_TESTS`]: a promotion may name no
+/// student. A promotion that does name one names a model the execution path
+/// runs inline, and a student only ever checked for fidelity to its teacher
+/// is a model nobody attacked; so the clearance records the student it was
+/// measured on, and a promotion naming any other is refused.
+pub const DISTILLED_ADVERSARIAL_TEST: &str = "distilled_adversarial";
 
 /// The tests a promotion needs, in the order a refusal names them
 /// (ADR 0392; the adversarial test since R12-MODEL-4021).
@@ -483,44 +491,70 @@ impl PromotionTests {
 ///
 /// Rust cannot restrict a public constructor to one other crate, so the
 /// constructor is called in production code only by the kernel's
-/// `central::models::run_promotion_tests`, at the end of a run that measured
-/// every test — the adversarial perturbation suite included — on the
-/// artifact's own bytes. `qip-acceptance`'s `model_promotion_clearance` suite
-/// is what holds that: it refuses the constructor in any other production
-/// source, the pattern ADR 0430 uses for `qip_risk::gate::DeterministicGate`.
-/// Tests may mint one; a unit test of the registry is not a path a model
-/// reaches production by.
+/// `central::models::run_promotion_tests_with_student`, at the end of a run
+/// that measured every test — the adversarial perturbation suite included —
+/// on the artifact's own bytes, through a named provider, and on the
+/// distilled student the promotion will name, if any. `qip-acceptance`'s
+/// `model_promotion_clearance` suite is what holds that: it refuses the
+/// constructor in any other production source, the pattern ADR 0430 uses for
+/// `qip_risk::gate::DeterministicGate`. Tests may mint one; a unit test of
+/// the registry is not a path a model reaches production by.
+///
+/// The clearance is also what a promotion cites: it carries the results it
+/// was minted from, and `promote_artifact` writes those on the card, so the
+/// card's own `promotion_tests` stay a record and stop being what promotion
+/// trusts.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PromotionClearance {
     reference: String,
     artifact_digest: String,
-    window: String,
-    ran_at: Timestamp,
+    measured_through: String,
+    distilled_digest: Option<String>,
+    tests: PromotionTests,
 }
 
 impl PromotionClearance {
     /// Mint a clearance for `reference` from the promotion tests just
     /// measured on it, refusing when any test in [`PROMOTION_TESTS`] is
-    /// missing or failed.
+    /// missing or failed. `measured_through` names the provider
+    /// ([`crate::serving::ModelProvider::name`]) whose arithmetic the tests
+    /// measured, so a clearance measured through one provider is not spent
+    /// on a promotion served through another.
+    /// `distilled_digest` names the student a promotion may carry, and is
+    /// refused unless [`DISTILLED_ADVERSARIAL_TEST`] passed on that record.
     ///
-    /// **Called by `qip_kernel::central::models::run_promotion_tests` alone in
-    /// production code.** The name is long and specific so that the
+    /// **Called by `qip_kernel::central::models::run_promotion_tests_with_student`
+    /// alone in production code.** The name is long and specific so that the
     /// acceptance scan refusing it elsewhere cannot be satisfied by a
     /// near-miss or collide with an unrelated `new`.
     pub fn minted_by_measured_promotion_tests(
         reference: &str,
         tests: &PromotionTests,
+        measured_through: &str,
+        distilled_digest: Option<&str>,
     ) -> Result<Self> {
         if let Some(gap) = tests.gap(&tests.artifact_digest) {
             return Err(Error::denied(format!(
                 "no promotion clearance for {reference}: {gap}"
             )));
         }
+        if let Some(student) = distilled_digest
+            && !tests
+                .results
+                .get(DISTILLED_ADVERSARIAL_TEST)
+                .is_some_and(|test| test.passed)
+        {
+            return Err(Error::denied(format!(
+                "no promotion clearance for {reference} naming the distilled student {student}: \
+                 no passing {DISTILLED_ADVERSARIAL_TEST} test is on the record"
+            )));
+        }
         Ok(Self {
             reference: reference.to_string(),
             artifact_digest: tests.artifact_digest.clone(),
-            window: tests.window.clone(),
-            ran_at: tests.ran_at,
+            measured_through: measured_through.to_string(),
+            distilled_digest: distilled_digest.map(str::to_string),
+            tests: tests.clone(),
         })
     }
 
@@ -534,14 +568,74 @@ impl PromotionClearance {
         &self.artifact_digest
     }
 
+    /// The provider, by name, whose served model the tests measured.
+    pub fn measured_through(&self) -> &str {
+        &self.measured_through
+    }
+
+    /// The distilled student the adversarial suite also passed on, if any.
+    pub fn distilled_digest(&self) -> Option<&str> {
+        self.distilled_digest.as_deref()
+    }
+
+    /// The results as measured: what a promotion record cites, never the
+    /// card's own `promotion_tests`, which any holder may rewrite.
+    pub fn tests(&self) -> &PromotionTests {
+        &self.tests
+    }
+
     /// The recorded window the tests ran over.
     pub fn window(&self) -> &str {
-        &self.window
+        &self.tests.window
     }
 
     /// When the tests ran.
     pub fn ran_at(&self) -> Timestamp {
-        self.ran_at
+        self.tests.ran_at
+    }
+}
+
+/// The proof that the platform's own promotion log admitted `reference` at
+/// `artifact_digest` (R12-MODEL-4021): what lets a restarted desk put a card
+/// back into production, or hold a retired one it may roll back to, without
+/// re-running tests on rows the restart no longer holds.
+///
+/// The failure it prevents: a card read back from storage is plain data. Its
+/// stage is a public field and it derives `Deserialize`, so a registry that
+/// accepted a card at `Production` on its own say-so admitted any model
+/// anyone could write down, never attacked. The log's promotion record was
+/// written only after a promotion that spent a [`PromotionClearance`], so a
+/// readmission is the clearance's consequence replayed, not a new door.
+/// Private fields, no `Clone`, `Default` or `Deserialize`; minted in
+/// production code only by the kernel's `Platform::readmit_promoted_card`,
+/// after it finds the record on the log (`qip-acceptance`'s
+/// `model_promotion_clearance` suite holds that).
+#[derive(Debug, PartialEq, Eq)]
+pub struct JournaledAdmission {
+    reference: String,
+    artifact_digest: String,
+}
+
+impl JournaledAdmission {
+    /// The admission a promotion record on the log grants.
+    ///
+    /// **Called by `qip_kernel::model_serving`'s
+    /// `Platform::readmit_promoted_card` alone in production code.**
+    pub fn minted_from_the_promotion_log(reference: &str, artifact_digest: &str) -> Self {
+        Self {
+            reference: reference.to_string(),
+            artifact_digest: artifact_digest.to_string(),
+        }
+    }
+
+    /// The reference the log promoted.
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    /// The bytes the log promoted it with.
+    pub fn artifact_digest(&self) -> &str {
+        &self.artifact_digest
     }
 }
 
@@ -1030,6 +1124,14 @@ pub struct ModelRegistry {
     /// of the registry carries it; nothing can construct or relabel one.
     /// Bounded by the cards, one per reference.
     clearances: BTreeMap<String, Arc<PromotionClearance>>,
+    /// The artifact digest each reference was admitted to production with,
+    /// in this process: by a cleared [`Self::promote_artifact`] or by a
+    /// [`JournaledAdmission`] the log granted (R12-MODEL-4021). Never
+    /// serialised. What [`Self::register`], [`Self::rollback`] and
+    /// [`Self::reactivate`] check before a card stands in production, so the
+    /// only ways in are the measured clearance and the log that recorded
+    /// one. Bounded by the cards, one per reference.
+    admitted: BTreeMap<String, String>,
 }
 
 /// The four kinds of package the registry holds (MODEL-068).
@@ -1142,6 +1244,22 @@ impl ModelRegistry {
                 )));
             }
         }
+        // R12-MODEL-4021: a card stands in production only where this
+        // registry admitted its bytes — a cleared promotion or the log's
+        // record of one. A card is plain data with a public stage and a
+        // `Deserialize`; registered at `Production` on its own say-so it was
+        // decision-eligible without the adversarial suite ever running.
+        if card.stage == ModelStage::Production
+            && (card.artifact_digest.is_none()
+                || self.admitted.get(&reference) != card.artifact_digest.as_ref())
+        {
+            return Err(Error::denied(format!(
+                "{reference} is not registered at Production: no cleared promotion or promotion \
+                 record admitted it at artifact {}; register it below production and promote \
+                 it on a measured promotion clearance, or readmit it from the promotion log",
+                card.artifact_digest.as_deref().unwrap_or("none")
+            )));
+        }
         if !self.cards.contains_key(&reference) && self.cards.len() >= MAX_CARDS {
             return Err(Error::denied(format!(
                 "{reference} is not registered: the registry holds {MAX_CARDS} model cards, its \
@@ -1228,8 +1346,60 @@ impl ModelRegistry {
         self.cards.get(reference)
     }
 
-    pub fn get_mut(&mut self, reference: &str) -> Option<&mut ModelCard> {
+    /// Private on purpose (R12-MODEL-4021): a `&mut ModelCard` is a card
+    /// whose stage, deployment and bytes any holder could rewrite, which
+    /// made production a field assignment away. Callers outside the
+    /// registry change a card through [`Self::amend`].
+    fn get_mut(&mut self, reference: &str) -> Option<&mut ModelCard> {
         self.cards.get_mut(reference)
+    }
+
+    /// Change what is recorded about `reference` through `edit`, refusing —
+    /// and changing nothing — when the edit touched what only the
+    /// registry's lifecycle moves: the card's name or version, its stage,
+    /// when it was deployed or retired, or the artifact it is bound to
+    /// (R12-MODEL-4021). Production is entered by a cleared
+    /// [`Self::promote_artifact`] alone, so an edit that would put a card
+    /// there, or swap the bytes a production card names, is a refusal and
+    /// not a write.
+    ///
+    /// `edit` may refuse; its refusal is returned and nothing is written.
+    pub fn amend<T>(
+        &mut self,
+        reference: &str,
+        edit: impl FnOnce(&mut ModelCard) -> Result<T>,
+    ) -> Result<T> {
+        let held = self
+            .cards
+            .get(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
+        let mut amended = held.clone();
+        let edited = edit(&mut amended)?;
+        let moved = [
+            ("name", amended.name != held.name),
+            ("version", amended.version != held.version),
+            ("stage", amended.stage != held.stage),
+            ("deployed_at", amended.deployed_at != held.deployed_at),
+            ("retired_at", amended.retired_at != held.retired_at),
+            (
+                "artifact_digest",
+                amended.artifact_digest != held.artifact_digest,
+            ),
+        ];
+        let moved: Vec<&str> = moved
+            .iter()
+            .filter(|(_, changed)| *changed)
+            .map(|(field, _)| *field)
+            .collect();
+        if !moved.is_empty() {
+            return Err(Error::denied(format!(
+                "{reference} is not amended: the edit moved {}, which only the registry's \
+                 lifecycle moves; promote on a measured clearance, retire, or roll back instead",
+                moved.join(", ")
+            )));
+        }
+        self.cards.insert(reference.to_string(), amended);
+        Ok(edited)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &ModelCard> {
@@ -1417,8 +1587,11 @@ impl ModelRegistry {
         }
     }
 
-    /// Promote a model to production, recording when.
-    pub fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
+    /// Move a model to production, recording when. Private (R12-MODEL-4021):
+    /// called only by [`Self::promote_artifact`] once a clearance measured on
+    /// the bytes admitted them. Public, it moved any holder's card into
+    /// production with no attack run.
+    fn promote(&mut self, reference: &str, at: Timestamp) -> Result<()> {
         self.require_promotable(reference)?;
         let card = self
             .get_mut(reference)
@@ -1482,6 +1655,12 @@ impl ModelRegistry {
     /// replacing any earlier one (R12-MODEL-4021). Taking the clearance by
     /// value is the point: a caller can lodge only what it was minted.
     pub fn lodge_clearance(&mut self, clearance: PromotionClearance) {
+        // A lodged clearance carries its own results; the card's record is
+        // brought into line with what was measured, so the two never differ
+        // at the moment a clearance is first held.
+        if let Some(card) = self.cards.get_mut(&clearance.reference) {
+            card.promotion_tests = Some(clearance.tests.clone());
+        }
         self.clearances
             .insert(clearance.reference.clone(), Arc::new(clearance));
     }
@@ -1497,6 +1676,50 @@ impl ModelRegistry {
     /// in this process passed every test.
     pub fn clearance(&self, reference: &str) -> Option<&PromotionClearance> {
         self.clearances.get(reference).map(Arc::as_ref)
+    }
+
+    /// Put `card` back where the platform's promotion log says it stood —
+    /// in production, or retired after it — on the [`JournaledAdmission`]
+    /// the kernel minted from that log (R12-MODEL-4021). Refused, changing
+    /// nothing, when the admission names another reference or other bytes
+    /// than the card, or the card names no bytes. Then registered under
+    /// [`Self::register`]'s own refusals.
+    pub fn readmit_on_journaled_admission(
+        &mut self,
+        card: ModelCard,
+        admission: JournaledAdmission,
+    ) -> Result<()> {
+        let reference = card.reference();
+        if admission.reference != reference
+            || card.artifact_digest.as_deref() != Some(admission.artifact_digest.as_str())
+        {
+            return Err(Error::denied(format!(
+                "{reference} at artifact {} is not readmitted: the promotion log admitted {} at \
+                 artifact {}",
+                card.artifact_digest.as_deref().unwrap_or("none"),
+                admission.reference,
+                admission.artifact_digest
+            )));
+        }
+        let before = self
+            .admitted
+            .insert(reference.clone(), admission.artifact_digest);
+        if let Err(refusal) = self.register(card) {
+            match before {
+                Some(digest) => self.admitted.insert(reference, digest),
+                None => self.admitted.remove(&reference),
+            };
+            return Err(refusal);
+        }
+        Ok(())
+    }
+
+    /// Whether this registry admitted `reference` to production at
+    /// `artifact_digest`, by a cleared promotion or the log's record of one.
+    pub fn admitted_at(&self, reference: &str, artifact_digest: &str) -> bool {
+        self.admitted
+            .get(reference)
+            .is_some_and(|held| held == artifact_digest)
     }
 
     /// Promote a model together with the artifact a deployment will carry
@@ -1592,11 +1815,23 @@ impl ModelRegistry {
             }
             Some(_) => {}
         }
+        let measured = self
+            .clearances
+            .get(&artifact.reference)
+            .map(|clearance| clearance.tests.clone());
         self.promote(&artifact.reference, at)?;
+        self.admitted
+            .insert(artifact.reference.clone(), artifact.digest.clone());
         let card = self.get_mut(&artifact.reference).ok_or_else(|| {
             Error::not_found(format!("no model registered as {}", artifact.reference))
         })?;
         card.artifact_digest = Some(artifact.digest.clone());
+        // What admitted the bytes is what the card records: a record
+        // rewritten after the clearance was lodged is not what production
+        // cites.
+        if measured.is_some() {
+            card.promotion_tests = measured;
+        }
         let contents = serde_json::to_string_pretty(artifact).map_err(|error| {
             Error::invalid(format!(
                 "artifact {} could not be serialised: {error}",
@@ -1664,10 +1899,17 @@ impl ModelRegistry {
         let held = self.get(&parent).ok_or_else(|| {
             Error::not_found(format!("the recorded parent {parent} is not registered"))
         })?;
-        if held.artifact_digest.is_none() {
+        let Some(held_digest) = held.artifact_digest.as_deref() else {
             return Err(Error::denied(format!(
                 "the recorded parent {parent} holds no artifact digest, so a rollback could \
                  not say which bytes it restores"
+            )));
+        };
+        if !self.admitted_at(&parent, held_digest) {
+            return Err(Error::denied(format!(
+                "the recorded parent {parent} was never admitted to production at artifact \
+                 {held_digest} in this registry — no cleared promotion and no promotion record \
+                 put it there — so rolling back to it would admit bytes nothing measured"
             )));
         }
         self.retire(reference, at)?;
@@ -1690,17 +1932,24 @@ impl ModelRegistry {
     /// replaces one failure with another and says it recovered.
     pub fn reactivate(&mut self, reference: &str, at: Timestamp) -> Result<()> {
         let card = self
-            .get_mut(reference)
+            .get(reference)
             .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
         if card.stage != ModelStage::Retired {
             return Err(Error::denied(format!(
                 "{reference} is not retired, so there is nothing to reactivate"
             )));
         }
-        if card.artifact_digest.is_none() {
+        let Some(digest) = card.artifact_digest.as_deref() else {
             return Err(Error::denied(format!(
                 "{reference} was never promoted with an artifact, so no known-good bytes exist \
                  to roll back to"
+            )));
+        };
+        if self.admitted.get(reference).map(String::as_str) != Some(digest) {
+            return Err(Error::denied(format!(
+                "{reference} was never admitted to production at artifact {digest} in this \
+                 registry — no cleared promotion and no promotion record put it there — so \
+                 reactivating it would admit bytes nothing measured"
             )));
         }
         if card.latest_evaluation().is_none_or(|e| !e.passed) {
@@ -1715,6 +1964,9 @@ impl ModelRegistry {
                 card.drift_score, card.drift_threshold
             )));
         }
+        let card = self
+            .get_mut(reference)
+            .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
         card.stage = ModelStage::Production;
         card.deployed_at = Some(at);
         card.retired_at = None;

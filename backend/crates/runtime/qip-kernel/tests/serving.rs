@@ -30,6 +30,67 @@ use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher
 use qip_training::serve::InTreeProvider;
 use std::collections::BTreeMap;
 
+/// R12-MODEL-4021: a promotion that names a distilled student to the cells
+/// is refused unless its clearance names that student, and a clearance names
+/// one only after the adversarial suite ran on the student's own outputs.
+/// These tests are about what follows such a promotion, so they run the
+/// promotion tests with the student on a window the teacher scores, through
+/// the provider the platform serves by, and assert the student held.
+fn clear_student(
+    registry: &mut qip_ai::registry::ModelRegistry,
+    artifact: &qip_ai::serving::ModelArtifact,
+    student: &qip_strategy::model::DistilledModel,
+    now: qip_core::Timestamp,
+) -> qip_core::error::Result<()> {
+    use qip_ai::serving::ModelProvider as _;
+    let features = registry
+        .get(&artifact.reference)
+        .ok_or_else(|| qip_core::error::Error::not_found("the card to clear"))?
+        .features
+        .clone();
+    let served = qip_training::serve::InTreeProvider.serve(artifact)?;
+    let (mut rows, mut targets, mut times) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..64_usize {
+        let row: Vec<f64> = (0..features.len())
+            .map(|j| ((i * (j + 3)) as f64 * 0.37).sin())
+            .collect();
+        targets.push(served.score(&row)?);
+        rows.push(row);
+        times.push(now.saturating_add(qip_core::Duration::from_mins(i as i64)));
+    }
+    let recorded = qip_training::dataset::TrainingDataset::new(
+        "student-window",
+        features,
+        rows,
+        targets,
+        times,
+    )?;
+    let tests = qip_kernel::central::models::run_promotion_tests_with_student(
+        &qip_training::serve::InTreeProvider,
+        registry,
+        artifact,
+        &recorded,
+        Some(student),
+        now,
+    )?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: the teacher passed its promotion tests on the student's window"
+    );
+    assert!(
+        tests
+            .results
+            .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+            .is_some_and(|test| test.passed),
+        "premise: the student held under attack: {:?}",
+        tests
+            .results
+            .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+    );
+    Ok(())
+}
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -145,9 +206,10 @@ fn registered(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<
 /// staging it, for the tests that exercise the trial gate itself.
 fn registered_untried(registry: &mut ModelRegistry, teacher: &TrainedTeacher) -> Result<String> {
     let reference = registered(registry, teacher)?;
-    if let Some(card) = registry.get_mut(&reference) {
+    registry.amend(&reference, |card| {
         card.trial = None;
-    }
+        Ok(())
+    })?;
     Ok(reference)
 }
 
@@ -247,6 +309,7 @@ fn a_promotion_is_journalled_before_the_registry_adopts_it_and_names_the_distill
         "premise: the two digests differ"
     );
 
+    clear_student(&mut registry, &artifact, &student, start())?;
     let published =
         platform.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
     assert_eq!(published.file_name, format!("{}.json", artifact.digest));
@@ -302,6 +365,7 @@ fn a_restarted_platform_resumes_its_promotions_from_the_log_alone() -> Result<()
         let mut registry = ModelRegistry::new();
         registered(&mut registry, &teacher)?;
         let artifact = InTreeProvider::pack(&teacher)?;
+        clear_student(&mut registry, &artifact, &student, start())?;
         first.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
         first_promotions = first.model_promotions().clone();
         first_manifest = first.model_manifest()?.manifest().clone();
@@ -403,6 +467,12 @@ fn a_displaced_incumbent_is_retired_on_the_same_record_and_leaves_the_manifest()
         let mut registry = ModelRegistry::new();
         let old_reference = registered(&mut registry, &incumbent)?;
         let new_reference = registered(&mut registry, &successor)?;
+        clear_student(
+            &mut registry,
+            &InTreeProvider::pack(&incumbent)?,
+            &old_student,
+            start(),
+        )?;
         platform.promote_model(
             &mut registry,
             &InTreeProvider::pack(&incumbent)?,
@@ -420,6 +490,12 @@ fn a_displaced_incumbent_is_retired_on_the_same_record_and_leaves_the_manifest()
             "premise: the incumbent's distillate is in the manifest"
         );
         let later = start().saturating_add(qip_core::Duration::from_hours(1));
+        clear_student(
+            &mut registry,
+            &InTreeProvider::pack(&successor)?,
+            &new_student,
+            later,
+        )?;
         platform.promote_model(
             &mut registry,
             &InTreeProvider::pack(&successor)?,
@@ -615,6 +691,7 @@ fn a_degraded_model_is_retired_and_the_one_it_displaced_returns_at_the_digest_th
         );
         let old_student = DistilledModel::linear("bar-linear-rb", 0.1, vec![0.5, -0.25])?;
         let new_student = DistilledModel::linear("bar-linear-rb", 0.1, vec![0.4, -0.2])?;
+        clear_student(&mut registry, &old_artifact, &old_student, start())?;
         platform.promote_model(
             &mut registry,
             &old_artifact,
@@ -624,6 +701,7 @@ fn a_degraded_model_is_retired_and_the_one_it_displaced_returns_at_the_digest_th
         )?;
         first_manifest = platform.model_manifest()?.manifest().clone();
         let later = start().saturating_add(qip_core::Duration::from_mins(1));
+        clear_student(&mut registry, &new_artifact, &new_student, later)?;
         platform.promote_model(
             &mut registry,
             &new_artifact,
@@ -700,15 +778,56 @@ fn a_rollback_refuses_a_predecessor_whose_card_no_longer_carries_the_digest_that
         std::slice::from_ref(&old_reference),
         later,
     )?;
-    registry
-        .get_mut(&old_reference)
-        .ok_or_else(|| Error::not_found("the old card"))?
-        .artifact_digest = Some("0".repeat(64));
+    // R12-MODEL-4021: the edit itself is refused now — a registry no longer
+    // hands out a card whose bound bytes a holder can swap.
+    let swapped = registry
+        .amend(&old_reference, |card| {
+            card.artifact_digest = Some("0".repeat(64));
+            Ok(())
+        })
+        .expect_err("a card's bound digest is not amendable");
+    assert!(
+        swapped.message().contains("artifact_digest"),
+        "the refusal does not name the field: {swapped}"
+    );
+    // A registry rebuilt from cards that disagree with the log — the
+    // predecessor retired at other bytes, the live model readmitted at its
+    // own — is still refused the rollback.
+    let mut registry = {
+        let mut rebuilt = ModelRegistry::new();
+        let mut old_card = registry
+            .get(&old_reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the old card"))?;
+        old_card.artifact_digest = Some("0".repeat(64));
+        rebuilt.register(old_card)?;
+        let new_card = registry
+            .get(&new_reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the new card"))?;
+        let digest = new_card
+            .artifact_digest
+            .clone()
+            .ok_or_else(|| Error::not_found("the new card's digest"))?;
+        rebuilt.readmit_on_journaled_admission(
+            new_card,
+            qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+                &new_reference,
+                &digest,
+            ),
+        )?;
+        rebuilt
+    };
     let refused = platform
         .rollback_model(&mut registry, &new_reference, later)
         .unwrap_err();
+    // The registry refuses first now: the swapped bytes were never admitted
+    // to production there, which is the same mismatch named one layer in.
     assert!(
-        refused.message().contains("first recorded"),
+        refused.message().contains(&format!(
+            "{old_reference} was never admitted to production at artifact {}",
+            "0".repeat(64)
+        )),
         "the refusal does not name the digest mismatch: {refused}"
     );
     assert_eq!(
@@ -1070,6 +1189,7 @@ fn every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walkin
         assert!(platform.model_pack().is_none());
         assert!(platform.model_pack_lineage()?.is_empty());
 
+        clear_student(&mut registry, &first_artifact, &student, minute(0))?;
         platform.promote_model(
             &mut registry,
             &first_artifact,
@@ -1078,6 +1198,7 @@ fn every_accepted_model_makes_a_pack_naming_its_predecessor_and_delta_and_walkin
             minute(0),
         )?;
         platform.promote_model(&mut registry, &other_artifact, None, &[], minute(1))?;
+        clear_student(&mut registry, &second_artifact, &next_student, minute(2))?;
         platform.promote_model(
             &mut registry,
             &second_artifact,

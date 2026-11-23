@@ -28,6 +28,64 @@ use qip_cost_router::{
 use qip_financial::asset_class::AssetClass;
 use std::collections::BTreeMap;
 
+/// R12-MODEL-4021: `ModelRegistry::promote` is private, and production is
+/// entered only by `promote_artifact` spending a measured promotion
+/// clearance. These tests are about what a production card does, not about
+/// how it was measured, so they stage the promotion as the kernel would: a
+/// passing record on fixture bytes named for the reference, the clearance
+/// that record earns (tests may mint one; production may not), and the real
+/// `promote_artifact`, whose own refusals still apply.
+trait PromoteCleared {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()>;
+}
+
+impl PromoteCleared for qip_ai::registry::ModelRegistry {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()> {
+        let artifact = qip_ai::serving::ModelArtifact::new(
+            reference,
+            qip_ai::serving::ModelFormat::DistilledLinear,
+            serde_json::Value::String(format!("test fixture for {reference}")),
+        );
+        let tests = qip_ai::registry::PromotionTests {
+            artifact_digest: artifact.digest.clone(),
+            window: "test-fixture".to_string(),
+            rows: 1,
+            ran_at: at,
+            results: qip_ai::registry::PROMOTION_TESTS
+                .iter()
+                .map(|name| {
+                    (
+                        (*name).to_string(),
+                        qip_ai::registry::PromotionTest {
+                            passed: true,
+                            evidence: "test fixture".to_string(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        if self.get(reference).is_some() {
+            self.lodge_clearance(
+                qip_ai::registry::PromotionClearance::minted_by_measured_promotion_tests(
+                    reference,
+                    &tests,
+                    "test-fixture",
+                    None,
+                )?,
+            );
+        }
+        self.promote_artifact(&artifact, at).map(|_| ())
+    }
+}
+
 fn now() -> Timestamp {
     Timestamp::from_secs(1_700_000_000)
 }
@@ -746,7 +804,7 @@ fn production_model(registry: &mut ModelRegistry, name: &str, at: Timestamp) -> 
             passed: true,
         },
     )?;
-    registry.promote(&reference, at)?;
+    registry.promote_cleared(&reference, at)?;
     Ok(reference)
 }
 
@@ -1321,7 +1379,7 @@ fn a_card_with_no_name_or_no_version_cannot_mint_a_judgement_the_replay_would_re
             passed: true,
         },
     )?;
-    registry.promote(&nameless_reference, now())?;
+    registry.promote_cleared(&nameless_reference, now())?;
 
     let book = ReputationBook::new();
     let ranked = book.rank(&registry, &conditions(MarketRegime::Quiet), now());
@@ -1420,7 +1478,7 @@ fn a_model_validated_only_in_a_calm_regime_is_not_ranked_for_a_stressed_decision
             passed: true,
         },
     )?;
-    registry.promote(&calm, now())?;
+    registry.promote_cleared(&calm, now())?;
     let general = production_model(&mut registry, "general", now())?;
     let book = ReputationBook::new();
 

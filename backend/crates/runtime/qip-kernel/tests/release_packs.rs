@@ -25,6 +25,67 @@ use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher
 use qip_training::serve::InTreeProvider;
 use std::collections::BTreeSet;
 
+/// R12-MODEL-4021: a promotion that names a distilled student to the cells
+/// is refused unless its clearance names that student, and a clearance names
+/// one only after the adversarial suite ran on the student's own outputs.
+/// These tests are about what follows such a promotion, so they run the
+/// promotion tests with the student on a window the teacher scores, through
+/// the provider the platform serves by, and assert the student held.
+fn clear_student(
+    registry: &mut qip_ai::registry::ModelRegistry,
+    artifact: &qip_ai::serving::ModelArtifact,
+    student: &qip_strategy::model::DistilledModel,
+    now: qip_core::Timestamp,
+) -> qip_core::error::Result<()> {
+    use qip_ai::serving::ModelProvider as _;
+    let features = registry
+        .get(&artifact.reference)
+        .ok_or_else(|| qip_core::error::Error::not_found("the card to clear"))?
+        .features
+        .clone();
+    let served = qip_training::serve::InTreeProvider.serve(artifact)?;
+    let (mut rows, mut targets, mut times) = (Vec::new(), Vec::new(), Vec::new());
+    for i in 0..64_usize {
+        let row: Vec<f64> = (0..features.len())
+            .map(|j| ((i * (j + 3)) as f64 * 0.37).sin())
+            .collect();
+        targets.push(served.score(&row)?);
+        rows.push(row);
+        times.push(now.saturating_add(qip_core::Duration::from_mins(i as i64)));
+    }
+    let recorded = qip_training::dataset::TrainingDataset::new(
+        "student-window",
+        features,
+        rows,
+        targets,
+        times,
+    )?;
+    let tests = qip_kernel::central::models::run_promotion_tests_with_student(
+        &qip_training::serve::InTreeProvider,
+        registry,
+        artifact,
+        &recorded,
+        Some(student),
+        now,
+    )?;
+    assert_eq!(
+        tests.gap(&artifact.digest),
+        None,
+        "premise: the teacher passed its promotion tests on the student's window"
+    );
+    assert!(
+        tests
+            .results
+            .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+            .is_some_and(|test| test.passed),
+        "premise: the student held under attack: {:?}",
+        tests
+            .results
+            .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+    );
+    Ok(())
+}
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -202,6 +263,7 @@ fn a_promoted_distillate_reaches_the_manifest_only_when_a_verified_release_pack_
     );
     let artifact = InTreeProvider::pack(&fitted)?;
     let student = DistilledModel::linear("release-linear", 0.1, vec![0.5, -0.25])?;
+    clear_student(&mut registry, &artifact, &student, start())?;
     platform.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
 
     // Premise: ungated, the promotion is named to the cells.
@@ -345,6 +407,7 @@ fn a_pack_announced_for_another_node_is_withheld_from_this_nodes_manifest() -> R
     tested(&mut registry, &fitted)?;
     let artifact = InTreeProvider::pack(&fitted)?;
     let student = DistilledModel::linear("announced-linear", 0.1, vec![0.5, -0.25])?;
+    clear_student(&mut registry, &artifact, &student, start())?;
     platform.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
     let pack = pack_for(&artifact.digest, Some((student.name(), student.digest())));
     platform.admit_model_packs(vec![pack.clone()], &Admits("released"), start())?;

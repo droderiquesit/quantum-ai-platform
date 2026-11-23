@@ -39,13 +39,14 @@
 //!   candidates.
 
 use qip_ai::registry::{
-    ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, EvaluationRecord, ModelCard,
-    ModelRegistry, PromotionClearance, PromotionTest, PromotionTests, REPLAY_TEST,
-    RISK_ENVELOPE_TEST, ResourceBudget,
+    ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, DISTILLED_ADVERSARIAL_TEST,
+    EvaluationRecord, ModelCard, ModelRegistry, PromotionClearance, PromotionTest, PromotionTests,
+    REPLAY_TEST, RISK_ENVELOPE_TEST, ResourceBudget,
 };
 use qip_ai::serving::{ModelArtifact, ModelProvider};
 use qip_core::error::{Error, Result};
 use qip_core::{ModelId, Timestamp};
+use qip_strategy::model::DistilledModel;
 use qip_training::dataset::TrainingDataset;
 use qip_training::local::{SkillPolicy, TrainedTeacher};
 use std::collections::BTreeMap;
@@ -346,9 +347,116 @@ pub fn register_fit(
 /// a window naming other features, an artifact the provider will not serve
 /// — and writes nothing. A `TrainingDataset` holds at least one row by
 /// construction, so there is no empty window to refuse here.
+///
+/// R12-MODEL-4021: when every test passed, the run also mints the
+/// [`PromotionClearance`] a promotion spends and lodges it, naming
+/// `provider`; `Platform::promote_model_from` refuses a clearance measured
+/// through any provider but the one it serves through, so a lenient
+/// provider's pass admits nothing the platform would serve. A failed run
+/// withdraws any clearance an earlier run left.
 pub fn run_promotion_tests(
     provider: &dyn ModelProvider,
     registry: &mut ModelRegistry,
+    artifact: &ModelArtifact,
+    recorded: &TrainingDataset,
+    now: Timestamp,
+) -> Result<PromotionTests> {
+    run_promotion_tests_with_student(provider, registry, artifact, recorded, None, now)
+}
+
+/// [`run_promotion_tests`] for a promotion that will name `student` to the
+/// cells (R12-MODEL-4021). The student is attacked too, on the same rows and
+/// under the same default policy, and written as
+/// [`DISTILLED_ADVERSARIAL_TEST`]; the clearance names it only when that
+/// passed, so a student checked only for fidelity to its teacher is never
+/// named. The one production minter of a [`PromotionClearance`].
+pub fn run_promotion_tests_with_student(
+    provider: &dyn ModelProvider,
+    registry: &mut ModelRegistry,
+    artifact: &ModelArtifact,
+    recorded: &TrainingDataset,
+    student: Option<&DistilledModel>,
+    now: Timestamp,
+) -> Result<PromotionTests> {
+    let mut tests = measure_promotion_tests(provider, registry, artifact, recorded, now)?;
+    let mut cleared_student = None;
+    if let Some(student) = student {
+        let policy = qip_training::adversarial::PerturbationPolicy::default();
+        let digest = student.digest();
+        let verdict = match qip_training::adversarial::attack(
+            |row| student.evaluate(row),
+            recorded.rows(),
+            &policy,
+        ) {
+            Ok(report) => match report.refusal(&policy) {
+                None => {
+                    cleared_student = Some(digest.clone());
+                    PromotionTest {
+                        passed: true,
+                        evidence: format!(
+                            "student {digest}: {} row(s) nudged by {:.2} of each feature's \
+                             spread either way: {} fragile, worst movement {:.2} of the \
+                             output's spread",
+                            report.rows,
+                            policy.input_step_sd,
+                            report.fragile_rows,
+                            report.worst_movement_sd
+                        ),
+                    }
+                }
+                Some(why) => PromotionTest {
+                    passed: false,
+                    evidence: format!("student {digest}: {why}"),
+                },
+            },
+            Err(error) => PromotionTest {
+                passed: false,
+                evidence: format!(
+                    "student {digest}: the suite could not run: {}",
+                    error.message()
+                ),
+            },
+        };
+        tests
+            .results
+            .insert(DISTILLED_ADVERSARIAL_TEST.to_string(), verdict);
+    }
+    write_promotion_record(registry, &artifact.reference, &tests)?;
+    // R12-MODEL-4021: the record is written either way, so a refusal names
+    // the test that failed; the clearance that admits a promotion is minted
+    // here and nowhere else in production (`qip-acceptance`'s
+    // `model_promotion_clearance` suite), and only when every test above —
+    // the adversarial attack included — was measured and passed.
+    if let Ok(clearance) = PromotionClearance::minted_by_measured_promotion_tests(
+        &artifact.reference,
+        &tests,
+        provider.name(),
+        cleared_student.as_deref(),
+    ) {
+        registry.lodge_clearance(clearance);
+    }
+    Ok(tests)
+}
+
+/// Write `tests` on `reference`'s card and withdraw any clearance an earlier
+/// run left, so a failed measurement is never outvoted by a stale pass.
+fn write_promotion_record(
+    registry: &mut ModelRegistry,
+    reference: &str,
+    tests: &PromotionTests,
+) -> Result<()> {
+    registry.withdraw_clearance(reference);
+    registry.amend(reference, |card| {
+        card.promotion_tests = Some(tests.clone());
+        Ok(())
+    })
+}
+
+/// The measurement [`run_promotion_tests`] and
+/// [`run_promotion_tests_with_student`] share, writing nothing.
+fn measure_promotion_tests(
+    provider: &dyn ModelProvider,
+    registry: &ModelRegistry,
     artifact: &ModelArtifact,
     recorded: &TrainingDataset,
     now: Timestamp,
@@ -528,27 +636,11 @@ pub fn run_promotion_tests(
             }
         }
     }
-    let tests = PromotionTests {
+    Ok(PromotionTests {
         artifact_digest: artifact.digest.clone(),
         window: recorded.name().to_string(),
         rows: rows.len(),
         ran_at: now,
         results,
-    };
-    // R12-MODEL-4021: the record is written either way, so a refusal names
-    // the test that failed; the clearance that admits a promotion is minted
-    // here and nowhere else in production (`qip-acceptance`'s
-    // `model_promotion_clearance` suite), and only when every test above —
-    // the adversarial attack included — was measured and passed. A failed
-    // run withdraws any clearance an earlier run left.
-    let clearance = PromotionClearance::minted_by_measured_promotion_tests(reference, &tests).ok();
-    let card = registry
-        .get_mut(reference)
-        .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
-    card.promotion_tests = Some(tests.clone());
-    match clearance {
-        Some(clearance) => registry.lodge_clearance(clearance),
-        None => registry.withdraw_clearance(reference),
-    }
-    Ok(tests)
+    })
 }
