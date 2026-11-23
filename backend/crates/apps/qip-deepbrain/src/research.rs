@@ -163,19 +163,6 @@ pub fn resolved_against(resolution: &Resolution) -> Option<bool> {
     Some((p > 0.5) != resolution.outcome)
 }
 
-/// What [`federation_stage::instrument_proposition`] appends to an
-/// instrument after its id and before the `@<cycle>`.
-const INSTRUMENT_QUESTION: &str = ":next-close-up";
-
-/// The instrument a belief subject asks about, where the subject is one
-/// instrument's next close; `None` for every other proposition, which names
-/// no tape a simulation could shock.
-pub fn belief_instrument(subject: &str) -> Option<&str> {
-    subject
-        .strip_suffix(INSTRUMENT_QUESTION)
-        .filter(|instrument| !instrument.is_empty())
-}
-
 /// The cycle a federation proposition was asked in, from its `@<cycle>`.
 fn proposition_cycle(proposition: &str) -> Option<u64> {
     proposition
@@ -222,10 +209,8 @@ struct BeliefRun {
 /// order, so `x@10` comes before `x@9`, and reading that order would let the
 /// older question decide. Log order and not the cycle across reviews,
 /// because a restarted platform numbers its cycles from one again over the
-/// same journal. The raised item moves nothing: it asks for a simulation of
-/// the instrument's measured move (`stress-simulator`, registered on every
-/// node), the research item that tests whether the federation is wrong
-/// about that subject.
+/// same journal. The raised item moves nothing: it asks a specialist whether
+/// the federation is wrong about that subject.
 #[derive(Debug, Clone)]
 pub struct BeliefWatch {
     /// How many reviews, in log order, have already been read. A count and
@@ -305,22 +290,9 @@ impl BeliefWatch {
                     "the federation's forecast on `{subject}` was resolved against on \
                      {PERSIST_SWEEPS} consecutive resolutions"
                 );
-                // Routed to a simulation, not a specialist. The tracker
-                // raises `Wanting::Specialist`, which asks for
-                // `specialist-factory`; no committed node registers it, so
-                // the item sat `Blocked` behind a tool build and nothing
-                // tested the discrepancy at all. `stress-simulator` is
-                // registered on every node and `ConstructSimulation` has an
-                // executor in this loop (`construct_simulation`), which
-                // shocks the instrument the `subject:` evidence names on its
-                // measured move: a test of whether the market's move the
-                // federation keeps missing is real.
-                observation.wanting = vec![Wanting::CausalLink];
-                let instrument = belief_instrument(&subject).map(|i| format!("subject:{i}"));
                 observation.evidence = ["belief-discrepancy".to_string()]
                     .into_iter()
                     .chain(observation.evidence)
-                    .chain(instrument)
                     .chain(
                         run.cited
                             .iter()
@@ -6031,29 +6003,20 @@ mod tests {
 
     /// R12-EXPAND-6067's verification, through the sweep and onto the desk:
     /// a persistent price/belief discrepancy yields exactly one queued item
-    /// naming its origin, and that item is a simulation the node can run.
-    /// The loop is the one `main.rs` builds (`new_for_node` on the committed
-    /// default compute settings and no connector feed) and the sweep is the
-    /// one `sweep_over` runs after it reads the journal, over a real
-    /// platform, handed the federation's reviews: the federation put
-    /// `obj-AAA:next-close-up` above one half on four cycles and the market
-    /// closed down after each. Nothing is queued from the belief watch
-    /// before the third resolution; after it the desk holds exactly one
-    /// entry of that origin — no tool build beside it — a `Simulation`
-    /// whose acquisition is `ConstructSimulation` on `stress-simulator`, not
-    /// `Blocked`, naming the `persistent_discrepancy` detector, the subject,
-    /// the instrument the simulation shocks and the three resolved
-    /// propositions; a fourth resolution against queues nothing more.
+    /// naming its origin. The sweep is the one `sweep_over` runs after it
+    /// reads the journal, over a real platform, handed the federation's
+    /// reviews: the federation put `obj-AAA:next-close-up` above one half
+    /// on four cycles and the market closed down after each. Nothing is
+    /// queued from the belief watch before the third resolution; after it
+    /// the desk holds exactly one item whose origin is the
+    /// `persistent_discrepancy` detector on that subject, citing the three
+    /// resolved propositions; a fourth resolution against queues nothing
+    /// more. Until this test the closure's tests drove `BeliefWatch::feed`
+    /// and `raise` directly, so nothing proved the sweep queued anything.
     ///
-    /// Until 2026-11-23 the item asked for `specialist-factory`, which no
-    /// committed node registers, so it sat `Blocked` behind a `ToolBuild`
-    /// under the same origin and this test partitioned the build out
-    /// rather than see it.
-    ///
-    /// Mutations: feed the watch nothing in `read_beliefs` (the closure's)
-    /// and the queue never holds the item; leave the tracker's
-    /// `Wanting::Specialist` in `BeliefWatch::feed` and the entry is an
-    /// `Experiment` with a tool build beside it.
+    /// Mutation (the closure's): feed the watch what the anomaly path
+    /// flagged — on this quiet platform, nothing — in `read_beliefs`, and
+    /// the queue never holds the item.
     #[test]
     fn a_persistent_belief_discrepancy_swept_from_the_log_queues_exactly_one_item_naming_its_origin()
      {
@@ -6070,40 +6033,25 @@ mod tests {
         )
         .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
         let subject = "obj-AAA:next-close-up";
-        assert_eq!(
-            federation_stage::instrument_proposition("obj-AAA", 1),
-            format!("{subject}@1"),
-            "premise: the subject is the kernel's own instrument question"
-        );
-        // Every entry the belief watch's gaps put on the desk, whatever its
-        // kind or state.
-        let ours = |research: &ResearchLoop| -> Vec<(TaskKind, State, String, Vec<String>)> {
+        // Every entry the belief watch's gaps put on the desk, by kind. A
+        // specialist item the factory cannot yet serve is queued with the
+        // tool build it is blocked on, under the same origin; the research
+        // item is the one the verification counts.
+        let ours = |research: &ResearchLoop| -> Vec<(TaskKind, Vec<String>)> {
             research
                 .desk()
                 .queue()
                 .ranked()
                 .into_iter()
-                .filter_map(|entry| entry.origin().map(|gap| (entry, gap)))
+                .filter_map(|entry| entry.origin().map(|gap| (entry.kind(), gap)))
                 .filter(|(_, gap)| {
                     gap.signal.evidence.first().map(String::as_str) == Some("belief-discrepancy")
                 })
-                .map(|(entry, gap)| {
-                    (
-                        entry.kind(),
-                        entry.state().clone(),
-                        entry.item().research_question.clone(),
-                        gap.signal.evidence.clone(),
-                    )
-                })
+                .map(|(kind, gap)| (kind, gap.signal.evidence.clone()))
                 .collect()
         };
-        let mut research = ResearchLoop::new_for_node(
-            ResearchConfig::default(),
-            BTreeMap::new(),
-            &qip_kernel::compute_routing::ComputeSettings::default(),
-            &[],
-        )
-        .expect("assembles");
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
         let mut log: Vec<Result<Vec<Resolution>>> = Vec::new();
         for n in 1..=u64::from(PERSIST_SWEEPS) + 1 {
             log.push(Ok(vec![against(subject, n)]));
@@ -6130,34 +6078,24 @@ mod tests {
             }
         }
         let queued = ours(&research);
-        assert_eq!(
-            queued.len(),
-            1,
-            "exactly one entry of this origin: {queued:#?}"
-        );
-        let (kind, state, question, evidence) = &queued[0];
-        assert_eq!(*kind, TaskKind::Simulation, "{queued:#?}");
+        let (research_items, other): (Vec<_>, Vec<_>) = queued
+            .into_iter()
+            .partition(|(kind, _)| *kind != TaskKind::ToolBuild);
         assert!(
-            matches!(state, State::Queued | State::Started),
-            "the item can run, not wait on a tool: {state:?}"
+            other.len() == 1 && other.iter().all(|(kind, _)| *kind == TaskKind::ToolBuild),
+            "only the one tool build the item waits on may share its origin: {other:?}"
         );
-        let lineage = research
-            .desk()
-            .lineage(question)
-            .unwrap_or_else(|| panic!("the item carries its lineage"));
-        assert_eq!(lineage.action, AcquisitionAction::ConstructSimulation);
-        assert_eq!(lineage.action.tool().0, "stress-simulator");
+        let queued: Vec<Vec<String>> = research_items.into_iter().map(|(_, e)| e).collect();
         assert_eq!(
-            *evidence,
-            [
+            queued,
+            [[
                 "belief-discrepancy".to_string(),
                 "detector:persistent_discrepancy".to_string(),
                 format!("persistent:{subject}"),
-                "subject:obj-AAA".to_string(),
                 format!("resolved:{subject}@1"),
                 format!("resolved:{subject}@2"),
                 format!("resolved:{subject}@3"),
-            ],
+            ]],
             "exactly one queued item, naming the detector and the subject it came from"
         );
     }
