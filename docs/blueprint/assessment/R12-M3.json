@@ -561,7 +561,7 @@
   },
   {
     "id": "R12-AMBIENT-3024",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "The Meta Brain (meta-brain, ADR 0466) is rostered and built by Organisation::standard as the one arbiter: it runs after the panel in a second dispatch phase with the panel's findings, reads per-(agent, regime) hit rates from research memory (the kernel now stamps every charged call with its regime, and the REASON brief carries the regime in force), allocates attention by that record, and resolves a contested panel to a reliability-weighted balance reported as a fact, never a vote. Since 2026-11-22 it also measures models by regime: stage_reason hands every arbiter the forecaster tournament's own per-(model, regime) Brier record (Tournament::regime_briers -> Organisation::hand_model_records -> PanelView::model_records), and the Meta Brain reports each model's record in each regime and which models are measured in the regime in force, never reading a model at its record in another. Its manifest still grants read_research_memory and nothing else, pinned by a test. The default cycle produces a contested panel and the kernel test resolves it and allocates attention through Platform::run_cycle.",
     "evidence": [
       "backend/crates/agents/qip-investment-agents/src/meta_brain.rs MetaBrain, reliability_weighted_balance",
@@ -577,9 +577,10 @@
       "backend/crates/runtime/qip-kernel/src/platform.rs hand_the_arbiters_the_models_record; backend/crates/agents/qip-investment-agents/src/chief.rs Organisation::hand_model_records, PanelView::model_records",
       "backend/crates/runtime/qip-kernel/tests/episodic.rs a_model_scored_in_one_regime_is_unmeasured_when_the_tape_turns_and_is_never_pooled_across_them",
       "backend/crates/runtime/qip-kernel/tests/episodic.rs the_cycle_resolves_its_own_contested_panel_and_allocates_attention_by_the_record_it_charged",
-      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_meta_brain_holds_the_research_memory_capability_and_no_other"
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_meta_brain_holds_the_research_memory_capability_and_no_other",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs the_meta_brain_reports_each_analysts_record_in_every_regime_memory_holds_and_not_only_the_one_in_force"
     ],
-    "gap": "2026-11-22 (rounds 68 and 69; built in e7f0d48e7 and fa433a04f, read three times by two independent readers who ran no test): every clause of the statement now has code, a caller the three central binaries reach every cycle, and a test; the last test-strength reader could not refute it, and both readers found nothing on the order path that depends on a model cell. The row waits on one owner decision, recorded as ADR 0724 (Proposed 2026-11-22, for the owner). The forecaster tournament's records are what read_model_registry gates for the model-failure probe, and decision 2 of accepted ADR 0466 says both that the Meta Brain's manifest grants read_research_memory and nothing else and that what an arbiter may reach beyond the panel is still gated. A first attempt widened the grant, which contradicts the first half; the code as it stands hands the per-regime cells to the arbiter with the panel, ungated and with no access record, which the last production-reach reader held against the second half. From the handed cells the Meta Brain can derive a figure the gate otherwise protects (a forecaster's mean Brier). The owner's choices: accept ADR 0724 as written; require the read to go through the gate and amend 0466 to grant it; or keep the hand-off and have it write an access record. Until one is accepted the models half stands on an undecided record and the row is not regraded. REASON does not act on the resolution (ADR 0466 leaves that open; the statement asks for findings, not for a driver).",
+    "gap": "",
     "implemented": true,
     "tested": true,
     "integrated": true,
@@ -587,10 +588,10 @@
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cd backend && cargo test -p qip-investment-agents --test organisation && cargo test -p qip-agents --test memory && cargo test -p qip-kernel --test episodic -- every_call_charged the_reason_stage_runs_the_meta",
+    "verification": "cd backend && cargo test -p qip-investment-agents --test organisation && cargo test -p qip-kernel --test episodic",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  2026-11-12 lane t50-20 (wave580): Meta Brain built and wired (ADR 0466). Mutations, each restored by cp+cmp: records_in ignores the regime -> resolved to 0, expected 0.8; second phase never runs -> AttentionAllocation not covered with it; resolution on any panel -> the agreeing-panel test fails; weight ignores reliability -> resolved to 0; regime_reliability_cells renamed -> RegimeReliability not covered; attention_allocated renamed -> AttentionAllocation not covered; doubled arbiter admitted -> assembly test fails; reliability_by_regime drops the resolved_at check -> the late resolution leaked in; kernel regime: None -> equity-analyst was charged with no regime; stage_reason drops in_regime -> the brief named no regime; Organisation::standard drops with_arbiters -> the meta brain never ran. Observed, not changed: ResearchMemory::hit_rate counts an outcome resolved after as_of (filters occurred_at only), a point-in-time leak in the pooled rate."
+    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed.  2026-11-12 lane t50-20 (wave580): Meta Brain built and wired (ADR 0466). Mutations, each restored by cp+cmp: records_in ignores the regime -> resolved to 0, expected 0.8; second phase never runs -> AttentionAllocation not covered with it; resolution on any panel -> the agreeing-panel test fails; weight ignores reliability -> resolved to 0; regime_reliability_cells renamed -> RegimeReliability not covered; attention_allocated renamed -> AttentionAllocation not covered; doubled arbiter admitted -> assembly test fails; reliability_by_regime drops the resolved_at check -> the late resolution leaked in; kernel regime: None -> equity-analyst was charged with no regime; stage_reason drops in_regime -> the brief named no regime; Organisation::standard drops with_arbiters -> the meta brain never ran. Observed, not changed: ResearchMemory::hit_rate counts an outcome resolved after as_of (filters occurred_at only), a point-in-time leak in the pooled rate. Re-graded 2026-11-23. Built across e7f0d48e7 and fa433a04f (merged in pull request #288) and cad0d17e2. Read five times by two independent readers who ran no test. The models half waited on ADR 0724, which the owner accepted by merging #288 (recorded in docs/blueprint/owner-decisions-2026-11-23.md). The last test-strength reader before the regrade found the brains half's per-(analyst, regime) facts unasserted; cad0d17e2 asserts all four cells with values written out from the fixture, and three mutations (skip the loop, key a cell under the regime in force, pool over regimes) each fail it. On the tree with that commit both readers failed to refute every clause. Limits they named and did not hold against the row: nothing reads the attention weights or the resolution outside coverage labels, so both are advisory findings, which is what the check asks; nothing is deployed."
   },
   {
     "id": "R12-WORLD-3025",
@@ -645,7 +646,7 @@
   },
   {
     "id": "R12-AMBIENT-3027",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists; its attention events are on every ResearchRound. It is registered as `ambient/attention` in the deep brain's Brain Registry (brains.rs), built at start-up, and it is the only entry covering the `attention-routing` scope. Since 2026-11-22 the deep brain's research sweep composes one attention finding from the sweep's AttentionRouter events, carrying an attention_routing fact; an ambient scope set beside coverage::Scope (the desk's scopes and their tests are unchanged) reads the scope as covered from that finding; the gauge qip_ambient_scope_covered records it; and the run loop journals the finding after the events it cites.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs AttentionRouter",
@@ -655,20 +656,22 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_coverage.rs attention_finding; backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::sweep_over",
       "backend/crates/agents/qip-investment-agents/src/coverage.rs AmbientScope, ambient_covered_by",
       "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs removing_the_attention_router_drops_attention_routing_from_covered_scopes",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs the_deep_brain_builds_its_attention_router_and_ambient_journal_unconditionally_and_hands_both_to_the_run_loop",
+      "docs/blueprint/owner-decisions-2026-11-23.md (ADR 0725 accepted; decision 4 governs the quiet sweep)"
     ],
-    "gap": "2026-11-22 (round 70; built in ceec1d800 under the owner's 2026-10-31 ruling on this row, then read by two independent readers on 2026-11-22, who read the code and ran no test, who refuted the claim): the scope is covered by a finding the sweep composes, on a research cadence that is on by default in every committed deployment, and removing the router drops the scope; no capability grant changed and nothing on the order path reads the finding. What is unmet is one clause of the check and it is not code: 'constructed in the production organisation'. The router is built by the deep brain (ResearchLoop::new_holding), not seated in chief::standard_agents; the ruling keeps it off the roster but never says the deployed deep brain is the production organisation. ADR 0725 (Proposed 2026-11-22, for the owner) writes that reading down and says it must be replaced if the owner meant a roster seat. Until the owner accepts it the row is not regraded. Smaller points the readers raised: the finding's woken-pathway facts were asserted for one pathway only, which was closed the same day (every pathway, and every disposition that wakes nothing, is now asserted with the labels written out, and three mutations fail the test); still to fix when the decision lands: a quiet sweep composes no finding where the ruling says one per round, and its gauge reads 0, the same as a removed router; removal is shown through a constructor only tests call; the ruling asked for the record's number to be claimed in the index before its body and under the ruled title, and the body was committed first and the title drops the ruled word 'eight' (Scope::ALL holds 25).",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_coverage --test ambient_journal && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028)."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028). Re-graded 2026-11-23. Built in ceec1d800 and 35751eba1 (merged in pull request #288) under the owner's 2026-10-31 ruling, with the composition-root pin added in fd9838679 and strengthened in 7bb1b295c. Read six times by two independent readers who ran no test. It was held on three grounds in turn: the reading that the deployed deep brain is the production organisation (ADR 0725, accepted by the owner by merging #288); a conflict between the ruling's 'one finding per round' and ADR 0725 decision 4 ('no events, no finding'), which the owner settled on 2026-11-23 under the instruction 'Make decisions for me to complete this' in favour of decision 4; and a composition root no test read, now pinned against a conditional build, a missing hand-off and any deployed call of without_attention_router. On the tree with those changes both readers failed to refute every clause. Limits they named and did not hold against the row: removal is shown through a constructor only tests call; a quiet router and a missing one read the same on the gauge; no test drives main.rs's own catalogue universe through a sweep that routes an event; the ambient journal is in-memory unless a deployment names a destination; nothing is deployed."
   },
   {
     "id": "R12-AGENCY-3028",
