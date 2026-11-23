@@ -1063,9 +1063,9 @@ fn the_committed_dev_plan_keeps_a_variant_apart_from_the_product_it_varies_and_r
 /// from the plan's fee, capital cost and days on market and the unit's
 /// ledger cost basis, not read back from the router.
 ///
-/// The repricing clause of the row is not proven here and cannot be under
-/// this plan: it sells a marketplace unit after `days_on_market` = 2 days,
-/// marks down after 3, and the synthetic reference price never moves.
+/// The repricing clause of the row is proven by the test after this one,
+/// not here: the committed plan now marks a unit down after 1 day, inside
+/// the two-day marketplace hold.
 ///
 /// Mutation: reverse the comparison in `route_resale` and every unit is
 /// listed on the direct buyer, so the venue assertion fails.

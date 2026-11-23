@@ -1,0 +1,356 @@
+{
+  "run": "drive-home chain A, 2026-11-23",
+  "note": "Each row: a builder, then two independent readers (callers lens, tests lens) told to refute; a rework on code-fixable refutations, up to the limit. No row survived. The rework commit 6770a6e16 for R12-EXPAND-6067 was reverted (ADR 0346 decision 5).",
+  "rows": [
+    {
+      "id": "R12-EXPAND-6067",
+      "final": "REFUTED_NOT_CODE",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "aefd9e330",
+            "f46cbff82"
+          ],
+          "remains": "No deep brain is deployed or applied, so nothing shows this running in a cloud process. The detector only raises the item. Testing it with a specialist or simulator is R12-EXPAND-6049's executor work, as the register gap says. The register row was not edited.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "qip-expansion detectors.rs::PersistenceTracker::observe raises Wanting::Specialist. That maps through plan.rs::InstantiateSpecialist to `specialist-factory`, which research.rs::registered_tools_holding and node_tools never register, so in every committed configuration the belief-discrepancy item is State::Blocked and no specialist, simulator, feed or model family is triggered.",
+                "The check's 'exactly one queued item' is met only because research::tests::a_persistent_belief_discrepancy_swept_from_the_log_queues_exactly_one_item_naming_its_origin partitions out the ToolBuild entry that shares the origin and never asserts the item's state. That test is also built with ResearchLoop::new rather than the deployed ResearchLoop::new_for_node.",
+                "The agent's remains defer 'testing with a specialist or simulator' to R12-EXPAND-6049, but the statement's own clause 'trigger ... to test' is not met. The statement could be met in code by routing the observation to a registered tool (stress-simulator via ConstructSimulation, or model-fit via SelectModel), which ADR 0158 d8 does not forbid."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "No test reaches the production mapping in backend/crates/apps/qip-deepbrain/src/research.rs::ResearchLoop::sweep_over (replay_each -> review.resolved) with resolutions that should raise: tests/research.rs::the_deployed_sweep_reads_every_federation_review_the_journal_holds checks only the review count, so the mutation `review.map(|_| Vec::new())` survives every listed test.",
+                "src/research.rs tests::a_persistent_belief_discrepancy_swept_from_the_log_queues_exactly_one_item_naming_its_origin injects a hand-built log through the test-only sweep_with_beliefs, so despite its name it never reads the journal; no test shows a journaled persistent discrepancy reaching the desk queue."
+              ]
+            }
+          ]
+        },
+        {
+          "attempt": 1,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "6770a6e16"
+          ],
+          "remains": "ADR 0346 line 55 still says the watch raises a 'specialist' item; the code now routes to a simulation. Existing ADRs are protected, so a person must amend it. Kernel tests for the earlier f46cbff82 federation_stage change were not rerun here. No deployed node exists (execution infrastructure is not applied), as for every deep-brain row.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "research.rs::construct_simulation pushes its ConstructedSimulation onto ResearchRound::constructed, which no production code (node.rs::research_pass, main.rs, ambient_journal.rs) reads or journals, so nothing tests whether the discrepancy is real.",
+                "research.rs::ResearchLoop::carry_out skips every Gathered item without a fill venue, so the belief-discrepancy Simulation item never gets a conclusion or verdict on the desk.",
+                "Accepted ADR 0346 decision 5 says the watch raises a specialist research item, but BeliefWatch::feed now routes to Wanting::CausalLink; the agent lists this under remains, and the ADR is protected, so a person must amend it.",
+                "The integration test builds new_for_node on ComputeSettings::default(), while the committed infrastructure/gitops/envs/dev/deepbrain.yaml sets QIP_QUANTUM_PROVIDER=simulated, so it does not run the configuration dev deploys."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "research.rs::construct_simulation builds a one-shock scenario from obj-AAA's latest move and nothing applies or scores it (the R12-EXPAND-6049 gap says the same), so the journal test's `Gathered { records: 1 }` assertion proves only that a scenario was built, not that the discrepancy was tested; the ruling hands this testing to 6049, which is still PARTIAL.",
+                "BeliefWatch::feed now routes to Wanting::CausalLink and counts resolutions, but accepted ADR 0346 decisions 5 and 7 and its What it costs section still describe a specialist item, testing deferred, and counting by sweeps; no accepted record covers the simulation routing, so a new ADR that amends 0346 is needed and code alone cannot supply it."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-REASON-3003",
+      "final": "REFUTED_NOT_CODE",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "8c52f908e",
+            "046fca7e0"
+          ],
+          "remains": "The source is unchanged from 8c52f908e; 046fca7e0 is an empty commit that records the verification. Results go to the platform log, which ChainArchive archives. Whether that log is durable depends on the deployed storage setting. The register row and traceability-matrix.md still need an update, and this lane may not edit them. No deployment exists yet.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "Every committed infrastructure/gitops/envs/*/deepbrain.yaml sets QIP_STORAGE_TARGET=memory, so the ChainArchive that qip-deepbrain main.rs opens over config.storage.key_value(\"event-log\") keeps ResearchCampaignClosed and ResearchCampaignResults only in process memory, which breaks the 'what persists: the manifest and the results' arrow the row cites from §22.4. The agent lists this durability under remains.",
+                "qip_kernel::campaign_results::ResearchCampaignResults carries counts and a CandidateVerdict enum but no backtest statistic (no holdout return or deflated figure), so the 'emit results, statistics' half of §22.4 is only partly on the log. This part could be fixed in code.",
+                "Making the log durable needs a non-memory storage target and the backing infrastructure in the gitops manifests, which is a deployment and owner decision, not code."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "evolution.rs::a_strategy_round_over_the_fallback_series_backtests_the_campaigns_window_not_the_raw_history never asserts round.registered >= 1, so mutating turn's self.evaluate(..., &bars) to the raw 5-bar history (evaluate errs, every candidate discarded) leaves the candidate loop vacuous and record.window, computed by recorded_manifest from turn's own argument, still equal: the backtest-consumed-window binding is unproven.",
+                "In a_strategy_rounds_results_are_journaled_under_the_campaign_its_window_came_through the window equals the raw history byte for byte, so its candidate.window == record.window check cannot catch the same evaluate-input mutation either.",
+                "evolution.rs::a_strategy_round_backtests_over_a_campaign_window_and_journals_its_manifest's TTL-cache assertion persisted.get(\"cache\").is_none() is always true because references.rs::ResearchCampaignClosed and campaign.rs::CampaignManifest have no cache field; deletion rests only on FetchCampaign::close(self) consuming self, which no strategy-path test can fail on."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-COMMERCE-5097",
+      "final": "REFUTED_NOT_CODE",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "e774e60b7 R12-COMMERCE-5097: the committed dev commerce plan marks a listed unit down before it sells"
+          ],
+          "remains": "DECISION: markdown_after_days = 1 in data/breadth/dev-commerce-paper.json, because it is the smallest accepted value below the two-day hold, so reprice fires on committed config. Mount prefix moved to 307ad887bfdbb8cf in gitops dev deepbrain.yaml, gitops suite green. Dev deployment of the mount is a person's apply. Terraform gates not run (no tf touched). All gates passed: deepbrain 480/0, kernel 28/0, acceptance 408/0.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "backend/crates/runtime/qip-kernel/src/commerce_research.rs::resale_quotes quotes simulated-marketplace first, VenueKind::Marketplace sorts first in qip-financial commerce_resale.rs::route_resale, and the committed plan makes the marketplace win every unit, so the venue choice is vacuous on committed configuration.",
+                "qip-deepbrain tests/commerce.rs::every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highest_net_proceeds pins the reverse of the skeptic premise in wave1031-owner-rulings-2-2026-10-31.json (the first quote must not be the highest-net venue), so the ruling's named 'take the first quote' mutation survives it.",
+                "Fixing the venue clause on the committed path needs a plan fee, days_on_market or RESALE_FACTORS figure that no accepted record states (decision 38 sets only the markdown, insurance and consolidation terms).",
+                "Owner decision 14 keeps the row PARTIAL until dev runs with the mount, and e774e60b7 moved the mount in deepbrain.yaml to /etc/qip/307ad887bfdbb8cf, which no apply has published; the agent lists that apply under remains."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "backend/crates/apps/qip-deepbrain/tests/commerce.rs::every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highest_net_proceeds pins as its premise that simulated-marketplace, the first quote from CommerceResearch::resale_quotes and the first in route_resale's sorted figures, has the highest net, so the ruling's mandated mutation (route_resale takes the first quote) passes every qip-deepbrain test, and the governing skeptic text requires the opposite premise to be pinned.",
+                "A kernel mutation that makes CommerceResearch list on quotes[0] and ignore choice.chosen.venue in backend/crates/runtime/qip-kernel/src/commerce_research.rs survives all tests: no test anywhere names simulated-auction or simulated-direct as a winner, and the library router test never reaches the kernel.",
+                "The governing ruling in docs/blueprint/lanes/wave1031-owner-rulings-2-2026-10-31.json (decision 14) keeps the row PARTIAL until dev runs with the mount, and the agent lists that dev apply under remains, so a needed deployment is missing.",
+                "The doc comment on the venue test in tests/commerce.rs still says repricing cannot be proven because the plan marks down after 3 days, which contradicts the committed markdown_after_days = 1."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-COMMERCE-5095",
+      "final": "REFUTED_NOT_CODE",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "830459178"
+          ],
+          "remains": "DECISION: consolidate_with = 2, because owner decision 38 says two shipments. DECISION: insurance = (10000, 100), because 10000 is per_purchase_limit, which gives full declared value, and 100 is 1%. Both are in data/breadth/dev-commerce-paper.json. Terraform fmt/validate did not run because no .tf file changed. Dev still needs a person to apply the mount before a deployed process reads the plan.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "commerce_research.rs::unit_attributes never journals LogisticsPlan::delivery_risk, and no production code reads it after LogisticsPlanDraft::into_plan, so a deployed deep brain records no delivery-risk plan. By the commit's own argument, an unrecorded plan cannot be audited.",
+                "The insurance entry in data/breadth/dev-commerce-paper.json, [10000,100], does not encode decision 38's terms: synthetic purchases of about 2 x 120 get 10000 of cover with a premium near 40% of declared value, not full declared value at 1%. feasibility all_in_cost also omits the premium.",
+                "The row's notes say it stays PARTIAL until dev runs with the deepbrain.yaml mount. The agent says dev is unapplied, and decision 39 stopped deployment, so that condition is absent."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "data/breadth/dev-commerce-paper.json insures every purchase for a fixed 10000 at premium 100, but owner decision 38 says cover at the full declared value with a premium of 1% of it, and purchases are 2 units at 25-150 each, so the premium is roughly 30-200% of declared value.",
+                "qip-deepbrain tests/commerce.rs::every_unit_received_under_the_committed_dev_plan_is_journalled_consolidated_and_insured passes on that misreading: its premise checks premium == coverage*0.01 and purchase_value <= coverage, never premium == 0.01 * declared value.",
+                "qip-kernel commerce_research.rs::CommerceResearch::new passes plan.logistics.delivery_risk into LogisticsPlan, but nothing reads it and unit_attributes never journals it; swapping it for Decimal::ZERO would fail no test, so the delivery-risk clause has no test on the production path."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-COMMERCE-1171",
+      "final": "REFUTED_AFTER_REWORKS",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "c40dbb134"
+          ],
+          "remains": "No new decision: insurance cover 10000/premium 100 reused from R12-COMMERCE-5095. Known limit: learned cycles are not resumed from the log after a restart, so a restarted plane learns again from zero. Not run: terraform (no .tf changed), qip-financial tests (crate not changed). Register not edited.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "The insure clause has no effect on the committed path: in commerce_research.rs, Insurance::Insured only becomes the 'insurance' attribute string in tracked_unit; work_candidate's FeasibilityInput charges no premium, no cover pays any loss, and logistics.delivery_risk is never read.",
+                "data/breadth/dev-commerce-paper.json sets a fixed insurance of [10000, 100], but owner decision 38 (owner-decisions-2026-10-31.md) rules cover at each purchase's full declared value for one per cent of it, so cover and premium are both wrong for any purchase under 10000, and the 5095 test only asserts purchase_value <= coverage."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "commerce_research.rs::work_candidate feeds with_learned a resale from CycleEvent.resale_price, which is settlement.net_after_adjustments() (gross less the 5% fee), while assess charges the marketplace fee into all_in_cost again, so a learned SKU pays the fee twice; the test's expected value, plan.quantity * mean * keep over that same net figure, copies the bug instead of catching it.",
+                "The test every_assessment_of_a_sku_already_sold_under_the_committed_dev_plan_is_drawn_on_its_realised_cycles cannot detect deletion of with_learned's return-rate arm, because the committed plan's returns.rate is 0 and the realised rate is 0 too.",
+                "CommerceResearch::resume_ledger, called by resume_commerce_ledger on install, restores the ledger but not self.cycles. A restarted deep brain therefore journals learned_cycles=0 for SKUs whose sales are in the log, which breaks the test's own invariant, and no test covers a restart (the agent discloses this limit itself).",
+                "The insure clause is only a string: commerce_research.rs formats Insurance::Insured into an attribute, but no premium enters all_in_cost and no delivery_risk loss is ever recovered, so deleting the cover changes no figure, and every_unit_received_..._insured asserts only the label plus an always-true purchase_value <= coverage.",
+                "data/breadth/dev-commerce-paper.json sets a flat 10000 cover at a 100 premium, but owner decision 38 says full declared value at 1% of it. On a purchase of about 240 (2 x 120), that is 40x over-cover at about a 42% premium, and the test premise premium == coverage*0.01 encodes the agent's reading, not the ruling."
+              ]
+            }
+          ]
+        },
+        {
+          "attempt": 1,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "5d5f78fba"
+          ],
+          "remains": "DECISION: insurance_premium_rate = 0.01, insurance = null, because owner decision 38 sets cover at full declared value for 1%. This replaces 5095's flat (10000, 100) and adds no new figure. Limit: delivery loss is reserved as an expected value. No simulated shipment is lost, so cover never pays a realised claim. Totals: 803/0, 1931/0 and acceptance 408/0. Terraform not run (no .tf touched).",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": false,
+              "code_fixable": true,
+              "reasons": [
+                "qip-deepbrain/src/main.rs calls breadth::install with QIP_DEEPBRAIN_BREADTH_PLAN_PATH, and node::step calls run_cycle, which reaches breadth_discover and breadth_simulate, so every clause runs from the deployed root.",
+                "Committed config holds: dev terraform.tfvars names data/breadth/dev-commerce-paper.json, and modules/cloudrun config_prefixes recomputed from the file gives 8395d55079b248df, which matches infrastructure/gitops/envs/dev/deepbrain.yaml.",
+                "The committed plan's insurance_premium_rate 0.01 at full declared value is owner decision 38's own figure, so no figure is missing; delivery_risk 0.01 was already in the plan.",
+                "No claim path exists, but paying a claim is not a clause of the statement. The resume_cycles path is vacuous under dev QIP_STORAGE_TARGET=memory, but restart is not a clause either.",
+                "Not run by this reader: no tests and no mutations, because building was forbidden."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "The insure clause has no loss or claim path: qip-financial commerce.rs::FeasibilityInput::assess only uses Insurance::Insured coverage to zero delivery_loss_reserve, and nothing in commerce_research.rs ever loses a consignment or pays cover, so the agent's own remains item (cover never pays a realised claim) is part of the insure clause.",
+                "FeasibilityInput::assess adds insurance_premium to capital_lockup and so to carry and viability, but tests/commerce.rs only asserts capital_lockup.is_positive(), so deleting that addition fails no test.",
+                "tests/commerce.rs::every_paper_sale_is_settled_at_gross_less_the_marketplace_fee still documents the cycle resale as net, contradicting the gross CycleEvent.resale_price this change made (doc only)."
+              ]
+            }
+          ]
+        },
+        {
+          "attempt": 2,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "f419c655c R12-COMMERCE-1171: a consignment is lost at the plan's delivery risk and its cover pays the claim",
+            "5d5f78fba (earlier, kept) insurance charged, gross learning, restart resumes cycles",
+            "c40dbb134 (earlier, kept) learned SKU economics on committed plan"
+          ],
+          "remains": "All three reader points are fixed in code. No new figure was chosen: the committed delivery_risk 0.01 and premium rate 0.01 already on this branch now produce a lost consignment, the 100th. Terraform did not run because no .tf file changed. Nothing is deployed: the dev mount is committed configuration only. The claim payment is journalled but credited to no paper account.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": false,
+              "code_fixable": true,
+              "reasons": [
+                "No clause found unreached: every scope item runs in breadth_discover/breadth_simulate of Platform::run_cycle, which qip-deepbrain main reaches through node::step once breadth::install has loaded the committed plan.",
+                "data/breadth/dev-commerce-paper.json is the file deepbrain.yaml mounts: substr(sha256(sha256(file)),0,16) gives 8395d55079b248df, matching QIP_DEEPBRAIN_BREADTH_PLAN_PATH, and dev tfvars deepbrain_breadth_plan_file names the same file.",
+                "The disclosed remainder (Insurance::claim_for_loss paid credited to no paper account) is not a separate clause: CommercePlane::settle net proceeds are not credited to a cash account either, and PurchaseExecutor.committed only grows.",
+                "Not checked under this lens: whether the tests pass (no cargo allowed) and whether the mutations were run; HEAD is behind origin/main, but no main-only file names this row."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": true,
+              "reasons": [
+                "qip-financial commerce.rs::Insurance::claim_for_loss returns a DeliveryClaim whose paid figure nothing in production reads: no LedgerEvent, no settlement, no executor credit and no CycleEvent. The agent's own remains admit it is credited to no paper account, so the test the_hundredth_consignment_... checks a journal label the code under test wrote, not a cover that pays.",
+                "commerce_research.rs::work_candidate's loss arm writes no CycleEvent, so replay_economics learns a SKU's economics as if its lost consignments never happened. No test in tests/commerce.rs drives a delivery loss into the learned figures, because assert_learned_from_journalled_sales counts only run.sold.",
+                "tests/commerce.rs::every_assessment_of_a_sku_already_sold_under_the_committed_dev_plan_is_drawn_on_its_realised_cycles cannot fail on its time_to_sale_days assertion. Every committed-plan unit sells on simulated-marketplace at elapsed == days_on_market (2) (commerce_research.rs::resale_quotes), so learned days equal the stated days and no premise asserts they differ. Only the library test covers the days arm of with_learned."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-RES-7107",
+      "final": "PARTIAL",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "PARTIAL",
+          "commits": [
+            "6d3c81dd7"
+          ],
+          "remains": "DECISION: producer_quarantine_min_signals = 100, producer_quarantine_floor_bp = 100, because the floor sits below what a standing gap keeps at a 5-minute cadence and 1h TTL. Open: report_model_reputation (accuracy drift) has no deployed caller. The quarantine that runs is based on the producer's record. Reflex/ledger protection is structural (arch_001), not newly tested. No deep-brain serving deployment is committed.",
+          "readers": []
+        }
+      ]
+    },
+    {
+      "id": "R12-DATA-9187",
+      "final": "REFUTED_NOT_CODE",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "CLAIMS_COMPLETE",
+          "commits": [
+            "32d2d57bb"
+          ],
+          "remains": "DECISION: lake seal size bound = 1 MiB and age bound = 60 s (LAKE_SEAL_MAX_BYTES/AGE in drain.rs), because these are the smallest round figures that stop per-offset objects of a few hundred bytes. Per ADR 0181 d3, the \"compacted asynchronously\" clause is met by sizing segments at the seal on the drain thread. Compactor still has no production caller, by decision. Tests for qip-storage's other dependent apps were not run: compaction has no caller outside qip-storage. No execution node is deployed.",
+          "readers": [
+            {
+              "lens": "callers",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "infrastructure/terraform/modules/execution-node/templates/startup.sh.tftpl sets QIP_STORAGE_TARGET=engine, so qip-edge-node main.rs LakeSink writes through StorageProvider::blobs to a local FileBlobStore and no committed configuration produces a GCS lake object.",
+                "No environment's terraform.tfvars runs qip-edge-node (execution_nodes_enabled = false in dev, execution_nodes = {} elsewhere), so LakeBatching::deployed reaches no running process.",
+                "No test fails if main.rs's .with_batching(LakeBatching::deployed()) is removed; lake_batching.rs builds its own LakeSink.",
+                "drain.rs LAKE_SEAL_MAX_BYTES and LAKE_SEAL_MAX_AGE cite an owner delegation of 2026-11-23, but no docs/blueprint/owner-decisions-2026-11-23.md record exists.",
+                "qip-storage compaction.rs Compactor::compact has no production caller, and the agent lists this under remains; LakeSink::seal sizes segments on the write path, so it does not merge small objects off the write path as verification.check requires.",
+                "Central outcome lake segments from ChainArchive::absorb through Lake::seal_internal_outcomes are not size-batched, and on committed config they go to memory."
+              ]
+            },
+            {
+              "lens": "tests",
+              "refuted": true,
+              "code_fixable": false,
+              "reasons": [
+                "lake_batching.rs many_small_spool_batches_seal_as_one_segment_per_partition_and_read_back_every_tick gets 2 segments only from drain_to_tail's forced seal_all, and each holds 20 ticks, roughly a few KiB, below CompactionConfig::new's 64 KiB tiny line; no test shows the deployed bounds produce reasonably sized objects.",
+                "drain.rs LakeSink::seal_due tests Held::bytes, which sums every partition, but seals one object per partition, so with N instruments each object is about 1 MiB/N, or one tiny object per partition per 60 s age seal; the tests use only two partitions and cannot see this.",
+                "Removing .with_batching(LakeBatching::deployed()) from qip-edge-node main.rs run makes no test fail, because lake_batching.rs builds its own sink and nothing else references the wiring.",
+                "Under committed configuration, startup.sh.tftpl sets QIP_STORAGE_TARGET=engine, so provider.rs blobs gives the lake a FileBlobStore on local disk and no GCS object is ever written; no execution node is deployed either.",
+                "drain.rs LAKE_SEAL_MAX_BYTES/LAKE_SEAL_MAX_AGE cite an owner delegation of 2026-11-23 that no docs/blueprint/owner-decisions file or register row records."
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "R12-FINOPS-10139",
+      "final": "PARTIAL",
+      "attempts": [
+        {
+          "attempt": 0,
+          "build_outcome": "PARTIAL",
+          "commits": [
+            "681134886"
+          ],
+          "remains": "DECISION: RESEARCH_QUEUE_CONCURRENCY = 1, because a round fits one job at a time. Open: Spot changes nothing on the local provider, since a Vertex deployment is needed. Benefit is joined per rung, not per model version. Unverified: a deployed agent stopped on budget. A UFCS dodge of the order_placement_paths scanner was refused; run_to_completion is used instead.",
+          "readers": []
+        }
+      ]
+    }
+  ]
+}
