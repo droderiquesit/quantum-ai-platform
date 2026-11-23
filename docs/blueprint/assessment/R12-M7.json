@@ -2219,7 +2219,7 @@
     "verification": "cargo test -p qip-contracts; cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-11-23 (orchestrator, round 80; two read-only readers, clause and evidence lenses, both KEEP_COMPLETE_WITH_NOTE): ADR 0220 decision 1 wires no listing register into qip-edge-node until an execution node is deployed, so on a deployed node's default path gateway.rs admission() denies every placement, release and seed and Cell::send journals OrderRejected. This row holds on what the cell decides before it asks the venue: Cell::work narrows the size and journals DegradationChanged, and the cell is not halted. The order counts in degraded.rs ('keeps placing paper orders', orders and submitted_count) rest on a register the test grants by hand (degraded.rs:183) and are not what the row checks."
   },
   {
     "id": "R12-RES-7094",
@@ -2241,7 +2241,7 @@
     "verification": "cargo test -p qip-edge-node --test degraded",
     "work_item": "",
     "size": "S",
-    "notes": ""
+    "notes": "2026-11-23 (orchestrator, round 80; two read-only readers, clause and evidence lenses, both KEEP_COMPLETE_WITH_NOTE): ADR 0220 decision 1 wires no listing register into qip-edge-node until an execution node is deployed, so on a deployed node's default path gateway.rs admission() denies every placement, release and seed and Cell::send journals OrderRejected. The row holds on the cell's narrowing (Cell::narrowing), its DegradationChanged journal and its own envelope-expiry and valid_for refusals, all before the venue is asked; 'keeps trading at reduced size' is measured as the cell's sizing. The accepted-order assertions rest on hand-granted registers (degraded.rs:183, reasoning_outage.rs:253). Cited lines have drifted: Cell::narrowing is near cell.rs:3387, the valid_for refusal near :3922, PolicyPayload::narrowing near policy.rs:1277."
   },
   {
     "id": "R12-RES-7095",
