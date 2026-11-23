@@ -97,6 +97,45 @@ owner had already accepted the quiet-sweep rule. The second settled it on the
 orchestrator's own reading of which owner act ranked higher. Readers caught
 both, and the history of this file keeps them.
 
+## Figures decided under the same instruction, 2026-11-23
+
+The rows below each waited on a figure no accepted record states. Under the
+owner's instruction quoted above, the orchestrator decided them as
+provisional figures. Each one is a paper or engineering figure. None of them
+is a risk limit, a sizing budget, a payment or a deployed resource. Each is
+stated at its constant or plan entry, which cites this date. A later owner
+figure replaces it without an ADR.
+
+| Row | Figure | Where it is stated | Why this value |
+|---|---|---|---|
+| R12-COMMERCE-5097 | `markdown_after_days` = 1 | `data/breadth/dev-commerce-paper.json` | The smallest value the plan accepts. It is below the two-day marketplace hold, so a listed unit is marked down once before it sells and the reprice path runs on committed configuration |
+| R12-RES-7107 | producer quarantine `min_signals` = 100, `floor_bp` = 100 | `qip-deepbrain/src/research.rs`, `ResearchConfig` defaults | A producer is judged on more signals than one standing deviation repeats at the shortest cadence. Only a producer whose attention is almost all repeats or shed is stopped. Advisory routing, not a risk limit |
+| R12-DATA-9187 | lake seal size bound 1 MiB, age bound 60 s | `qip-edge-node/src/event_fabric/drain.rs`, `LAKE_SEAL_MAX_BYTES`, `LAKE_SEAL_MAX_AGE` | ADR 0181 decision 3 asks for both bounds and gives neither figure. These are the smallest round figures at which an object's request cost stops dominating its bytes, and a reader of the lake is at most a minute behind the cell |
+| R12-FINOPS-10139 | research training queue concurrency = 1 | `qip-deepbrain/src/learning.rs`, `RESEARCH_QUEUE_CONCURRENCY` | A round fits its baseline to completion before it submits its challenger. A second unfinished job is refused rather than run as unbudgeted compute |
+
+R12-COMMERCE-5095 and R12-COMMERCE-1171 needed no new figure. The committed
+plan now consolidates two shipments and insures each purchase at its full
+declared value for a premium of one per cent of that value. Those are owner
+decision 38's own terms (`owner-decisions-2026-10-31.md`, 2026-11-14). An
+earlier commit on the same day set a fixed cover of 10000 for 100, which
+misread that decision. The cover and premium are now drawn per purchase.
+
+**One change was withdrawn rather than decided.** A rework on
+R12-EXPAND-6067 routed a persistent belief discrepancy to a simulation
+instead of a specialist item. Accepted ADR 0346 decision 5 says the watch
+raises a specialist research item, and an accepted record is a protected
+path. Nothing in production read the simulation it built. The rework was
+reverted, and the row keeps the persistence fix that the 2026-10-31 ruling
+asks for. Changing what the watch raises needs a record that amends ADR
+0346. This file does not supply one.
+
+**No row is regraded on these figures.** Every row above went to two
+independent readers, and each was refuted or stopped at PARTIAL. Its gap
+text in the register says on what ground. Most of the grounds are
+deployment: the deep brain's committed storage target is `memory`, no dev
+apply carries the new plan mount, and no execution node is enabled.
+Decision 39 keeps deployment the owner's.
+
 ## What this file does not do
 
 - **No register row is regraded by this file.** Acceptance removes the one

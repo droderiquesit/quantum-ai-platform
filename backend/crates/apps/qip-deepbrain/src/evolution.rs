@@ -47,6 +47,7 @@ use qip_evolution::grammar::Grammar;
 use qip_evolution::palette::FeaturePalette;
 use qip_financial::history::UniverseHistory;
 use qip_financial::universe::Universe;
+use qip_kernel::campaign_results::{CandidateResult, CandidateVerdict, ResearchCampaignResults};
 use qip_kernel::central::factory::AlphaFamily;
 use qip_kernel::central::foundry::{HoldoutInputs, StrategyFoundry, recorded_manifest};
 use qip_kernel::platform::Platform;
@@ -1140,10 +1141,32 @@ impl EvolutionEngine {
         // the subject is chosen, for the same reason: a lapsed licence is
         // withdrawn from the platform on the round it lapsed.
         let gate = self.standing_admission_gate(platform, now);
+        let minimum_bars = self.config.minimum_bars;
         let Some((subject, bars)) = self
             .history
             .iter()
-            .filter(|(_, bars)| bars.len() >= self.config.minimum_bars)
+            // A subject is searchable when the campaign can assemble a
+            // window for it: its own stream holds enough history, or §22.1's
+            // fallback series does, which `campaign::assemble` then reads
+            // instead — the same insurance the learning round already draws
+            // on. Until 2026-11-23 only the first counted, so the turn's
+            // window was always the engine's own history byte for byte and
+            // nothing could show the backtest read the campaign's window
+            // rather than the raw one beside it.
+            //
+            // The window a subject would be searched over — its own history,
+            // or the fallback series where that is what the campaign will
+            // read — is also what it is ranked on below.
+            .filter_map(|(subject, bars)| {
+                let fallback = platform.fallback_bars(subject.as_str());
+                if bars.len() >= minimum_bars {
+                    Some((subject, bars, bars.as_slice()))
+                } else if fallback.len() >= minimum_bars {
+                    Some((subject, bars, fallback))
+                } else {
+                    None
+                }
+            })
             // Ranked by liquidity, not by bar count. Every subject on this
             // feed accumulates bars at the same rate, so ranking by count is
             // really ranking by key order -- and the synthetic exchange's
@@ -1156,7 +1179,9 @@ impl EvolutionEngine {
             // The statistic is the one `tradeable_capital` sizes against, so
             // "where can we trade" and "how much can we trade" are one rule
             // rather than two that happen to agree.
-            .filter_map(|(subject, bars)| depth(bars).map(|depth| (subject, bars, depth)))
+            .filter_map(|(subject, bars, searched)| {
+                depth(searched).map(|depth| (subject, bars, depth))
+            })
             .max_by(|left, right| left.2.total_cmp(&right.2))
             .map(|(subject, bars, _)| (subject.clone(), bars.clone()))
         else {
@@ -1181,8 +1206,9 @@ impl EvolutionEngine {
         // "backtest" in the campaign arrow fetch -> verify -> backtest ->
         // manifest did not hold on the shipped path. `assemble` counts its
         // own door refusal; `NotYet` cannot occur here, because the subject
-        // was chosen for holding at least `minimum_bars`, and is mapped to
-        // the cadence's `None` rather than invented into a round.
+        // was chosen for holding at least `minimum_bars` in its own stream or
+        // in the fallback series, and is mapped to the cadence's `None`
+        // rather than invented into a round.
         let object = ObjectId::from_string(&subject);
         let descriptor = self.adapter.descriptor();
         let window = match campaign::assemble(
@@ -1204,7 +1230,38 @@ impl EvolutionEngine {
         };
 
         self.universe_history = platform.universe_history().clone();
-        let mut summary = self.turn(platform, &subject, window.bars, now)?;
+        let (mut summary, results) = self.turn(platform, &subject, window.bars, now)?;
+        // Emit the results under the campaign (§22.4's "emit results,
+        // statistics, manifest"). The manifest went to the log when the
+        // campaign closed; the backtest's results go now, keyed on the same
+        // id, so the log alone ties every strategy this round registered —
+        // and the exact bars it was scored on — to the campaign that
+        // fetched and verified them. Before 2026-11-23 the id reached only
+        // this summary and the cycle line, and a replay of the log could not
+        // say which campaign any strategy backtest ran over.
+        let record = ResearchCampaignResults {
+            campaign_id: window.summary.id.clone(),
+            subject: subject.clone(),
+            at: now,
+            window: results.window,
+            proposed: summary.proposed,
+            registered: summary.registered,
+            discarded: summary.discarded,
+            promoted: summary.promoted,
+            gate_refused: summary.gate_refused,
+            held_back: summary.held_back,
+            trials: summary.trials,
+            candidates: results.candidates,
+        };
+        if !platform.journal_campaign_results(record)? {
+            return Err(Error::invalid(format!(
+                "the log already holds results under campaign `{}`, which this round has just \
+                 closed; the results of this backtest are therefore not on the log, and a \
+                 campaign id the log already holds is a collision to find rather than a round \
+                 to report",
+                window.summary.id
+            )));
+        }
         summary.campaign = Some(window.summary);
         self.stats.rounds += 1;
         self.stats.registered += summary.registered as u64;
@@ -1218,8 +1275,13 @@ impl EvolutionEngine {
         subject: &str,
         bars: Vec<Bar>,
         now: Timestamp,
-    ) -> Result<RoundSummary> {
+    ) -> Result<(RoundSummary, TurnResults)> {
         let object = ObjectId::from_string(subject);
+        // What the backtest below consumes, by content: the record that ties
+        // these results to their campaign carries it, so a backtest that ran
+        // on anything but the campaign's window disagrees with its manifest.
+        let window = recorded_manifest(&object, &bars)?;
+        let mut candidates: Vec<CandidateResult> = Vec::new();
         // §22.3's table, and §56.3's rule 31: "a data class with only one
         // viable source is a concentration risk, and a universe with fewer
         // than two cannot be promoted past validation." The verdict is taken
@@ -1294,6 +1356,7 @@ impl EvolutionEngine {
                 .ok_or_else(|| Error::not_found("the foundry that just searched"))?;
             match scored {
                 Ok(scored) => {
+                    let scored_window = scored.holdout.manifest.clone();
                     match foundry.register(
                         platform.central_mut().factory_mut(),
                         &id,
@@ -1376,11 +1439,23 @@ impl EvolutionEngine {
                                 )
                             } else {
                                 summary.held_back += 1;
+                                candidates.push(CandidateResult {
+                                    strategy_id: id.to_string(),
+                                    window: scored_window,
+                                    verdict: CandidateVerdict::HeldBack,
+                                });
                                 admitted.push(candidate);
                                 continue;
                             };
                             match verdict {
-                                Ok(_) => summary.promoted += 1,
+                                Ok(_) => {
+                                    summary.promoted += 1;
+                                    candidates.push(CandidateResult {
+                                        strategy_id: id.to_string(),
+                                        window: scored_window,
+                                        verdict: CandidateVerdict::Promoted,
+                                    });
+                                }
                                 // A refused gate is an outcome, not an error,
                                 // and it must not leave this loop: `?` here
                                 // would abandon the rest of the round because
@@ -1393,6 +1468,11 @@ impl EvolutionEngine {
                                 // as a verdict nobody reached.
                                 Err(qip_core::Error::Guard(why)) => {
                                     summary.gate_refused += 1;
+                                    candidates.push(CandidateResult {
+                                        strategy_id: id.to_string(),
+                                        window: scored_window,
+                                        verdict: CandidateVerdict::GateRefused,
+                                    });
                                     // The reason travels with the count. A
                                     // round that says two candidates were
                                     // refused and not why is a round an
@@ -1432,7 +1512,7 @@ impl EvolutionEngine {
         if let Some(foundry) = self.foundries.get(subject) {
             summary.trials = foundry.trials();
         }
-        Ok(summary)
+        Ok((summary, TurnResults { window, candidates }))
     }
 
     /// Install a first champion, or mount a challenge against the one there is.
@@ -1932,6 +2012,14 @@ fn peak_exposure(
         }
     }
     Ok(peak)
+}
+
+/// What a turn's backtest produced beyond its counts: the bars it consumed
+/// and every registered candidate's verdict, for the results record
+/// `maybe_turn` journals under the campaign.
+struct TurnResults {
+    window: qip_lifecycle::evidence::DatasetManifest,
+    candidates: Vec<CandidateResult>,
 }
 
 /// One candidate scored: the gate's evidence, and the holdout tail as a
@@ -3199,6 +3287,352 @@ mod tests {
         assert!(
             persisted.get("cache").is_none() && persisted["manifest"].get("cache").is_none(),
             "the closed record must not carry the campaign's cache: {persisted}"
+        );
+        Ok(())
+    }
+
+    /// R12-REASON-3003, "emit results". The manifest reaches the log when
+    /// the campaign closes, before anything is scored; until 2026-11-23 the
+    /// backtest's results reached only the in-memory round summary, the
+    /// factory journals no registration, and nothing on the log tied a
+    /// strategy the search registered to the campaign whose window it was
+    /// scored on. This drives the production engine through `maybe_turn`
+    /// and asserts the log holds exactly one results record, under the
+    /// campaign the round names, whose counts are the round's, whose window
+    /// is the campaign's extent, and which lists every registered candidate
+    /// — each scored over that same window — with the gate's verdict.
+    ///
+    /// Mutation: replace `platform.journal_campaign_results(record)?` in
+    /// `maybe_turn` with `true` — the round still searches and the manifest
+    /// is still journaled, and this fails on "one round, one results record".
+    #[test]
+    fn a_strategy_rounds_results_are_journaled_under_the_campaign_its_window_came_through()
+    -> Result<()> {
+        use qip_kernel::campaign_results::CandidateVerdict;
+
+        let (platform, _engine, summaries) = run_rounds(1)?;
+        assert_eq!(summaries.len(), 1, "premise: one round ran");
+        let round = &summaries[0];
+        let campaign = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the campaign the round's window came through"))?;
+        assert!(
+            round.registered >= 1,
+            "premise: the round registered: {round:?}"
+        );
+
+        let results = platform.campaign_results()?;
+        assert_eq!(results.len(), 1, "one round, one results record");
+        let record = &results[0];
+        assert_eq!(
+            record.campaign_id, campaign.id,
+            "the results name the campaign"
+        );
+        assert_eq!(record.subject, round.subject);
+        // The window is the campaign's extent, by count and by its two ends.
+        assert_eq!(record.window.bars, campaign.bars);
+        assert_eq!(record.window.subject, round.subject);
+        assert_eq!(record.window.first_open, campaign.period.start());
+        // The counts are the round's.
+        assert_eq!(
+            (
+                record.proposed,
+                record.registered,
+                record.discarded,
+                record.promoted,
+                record.gate_refused,
+                record.held_back,
+                record.trials
+            ),
+            (
+                round.proposed,
+                round.registered,
+                round.discarded,
+                round.promoted,
+                round.gate_refused,
+                round.held_back,
+                round.trials
+            )
+        );
+        // Every registered candidate, each scored over the campaign's window,
+        // each with the verdict the round counted.
+        assert_eq!(record.candidates.len(), round.registered);
+        for candidate in &record.candidates {
+            assert_eq!(
+                candidate.window, record.window,
+                "{} was scored over bars other than the campaign's window",
+                candidate.strategy_id
+            );
+        }
+        let tally = |verdict: CandidateVerdict| {
+            record
+                .candidates
+                .iter()
+                .filter(|candidate| candidate.verdict == verdict)
+                .count()
+        };
+        assert_eq!(tally(CandidateVerdict::Promoted), round.promoted);
+        assert_eq!(tally(CandidateVerdict::GateRefused), round.gate_refused);
+        assert_eq!(tally(CandidateVerdict::HeldBack), round.held_back);
+        let distinct: std::collections::BTreeSet<&str> = record
+            .candidates
+            .iter()
+            .map(|candidate| candidate.strategy_id.as_str())
+            .collect();
+        assert_eq!(
+            distinct.len(),
+            record.candidates.len(),
+            "a candidate listed twice"
+        );
+        Ok(())
+    }
+
+    /// R12-REASON-3003, the window binding. The backtest must consume the
+    /// window the campaign read back out of its cache, not the engine's raw
+    /// history beside it. On a stream that holds enough history the two are
+    /// the same bytes, so a test there cannot tell them apart; here the
+    /// subject's own stream holds a few minutes and §22.1's fallback series
+    /// holds the window, so the campaign's window and the raw history
+    /// differ, and the results record on the log says which one the
+    /// backtest ran over.
+    ///
+    /// Mutation: pass `bars.clone()` (the raw history) to `self.turn` in
+    /// `maybe_turn` instead of `window.bars` — the record's window is then
+    /// the raw history's, and this fails on "the backtest consumed the
+    /// campaign's window".
+    #[test]
+    fn a_strategy_round_over_the_fallback_series_backtests_the_campaigns_window_not_the_raw_history()
+    -> Result<()> {
+        use qip_market_ingestion::adapter::SensedRecord;
+
+        // A long run, to take one subject's bars from.
+        let (_long_platform, long_engine, _) = run_rounds(0)?;
+        let (subject, long_bars) = long_engine
+            .history
+            .iter()
+            .find(|(_, bars)| bars.len() >= long_engine.config.minimum_bars)
+            .map(|(subject, bars)| (subject.clone(), bars.clone()))
+            .ok_or_else(|| Error::not_found("a subject with a full history"))?;
+        let count = long_engine.config.minimum_bars + 8;
+        let long_bars = &long_bars[long_bars.len() - count..];
+        // The same prices as daily bars ending before the short run starts:
+        // what the fallback series retains.
+        let daily: Vec<SensedRecord> = long_bars
+            .iter()
+            .enumerate()
+            .map(|(index, bar)| {
+                let mut bar = bar.clone();
+                bar.interval = qip_market::bar::Interval::Day;
+                bar.open_time = start().saturating_sub(Duration::from_days((count - index) as i64));
+                SensedRecord::Bar(Box::new(bar))
+            })
+            .collect();
+
+        let mut platform = platform()?;
+        let mut engine = engine(1);
+        let mut now = start();
+        for _ in 0..5 {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        platform.observe(daily);
+        let raw = engine
+            .history
+            .get(&subject)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the subject in the short run's history"))?;
+        let fallback = platform.fallback_bars(&subject).to_vec();
+        // Premises: the raw history is short, the fallback holds the window,
+        // and no other subject is searchable.
+        assert!(!raw.is_empty() && raw.len() < engine.config.minimum_bars);
+        assert_eq!(fallback.len(), count);
+        assert!(
+            engine
+                .history
+                .iter()
+                .filter(|(other, _)| **other != subject)
+                .all(|(_, bars)| bars.len() < engine.config.minimum_bars)
+        );
+        let object = ObjectId::from_string(&subject);
+        let campaign_window = recorded_manifest(&object, &fallback)?;
+        let raw_window = recorded_manifest(&object, &raw)?;
+        assert_ne!(
+            campaign_window, raw_window,
+            "premise: the two windows differ"
+        );
+
+        let round = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::not_found("a round over the fallback window"))?;
+        let campaign = round
+            .campaign
+            .as_ref()
+            .ok_or_else(|| Error::not_found("the round's campaign"))?;
+        assert_eq!(round.subject, subject);
+        assert!(
+            campaign.fallback_used,
+            "premise: the campaign read the fallback series"
+        );
+
+        let results = platform.campaign_results()?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].campaign_id, campaign.id);
+        assert_eq!(
+            results[0].window, campaign_window,
+            "the backtest consumed the campaign's window"
+        );
+        for candidate in &results[0].candidates {
+            assert_eq!(candidate.window, campaign_window);
+        }
+        Ok(())
+    }
+
+    /// The turn's door arm: a stream the platform holds no admission for and
+    /// did not generate is refused by `campaign::assemble` before a byte is
+    /// read, and the turn reports a round refused at the door — counted,
+    /// every count zero, nothing referenced, no manifest, no results —
+    /// rather than `None`, which would read as a quiet cadence.
+    ///
+    /// Mutation: map `Assembly::RefusedAtDoor(reason)` in `maybe_turn` to
+    /// `return Ok(None)` — fails on "a refused round, not a quiet cadence".
+    #[test]
+    fn a_strategy_round_over_an_unadmitted_stream_is_refused_at_the_door() -> Result<()> {
+        let mut platform = platform()?;
+        let mut engine = EvolutionEngine::new(
+            EvolutionConfig {
+                every_cycles: 1,
+                minimum_bars: 64,
+                ..EvolutionConfig::default()
+            },
+            Box::new(qip_market_ingestion::replay::ReplayAdapter::from_records(
+                "replay",
+                recorded_market(94)?,
+            )),
+            7,
+            recorded_universe()?,
+        )?;
+        let now = start().saturating_add(Duration::from_hours(2));
+        engine.sense(&mut platform, now)?;
+        assert!(
+            engine.history.values().any(|bars| bars.len() >= 64),
+            "premise: a subject holds enough history to be searched"
+        );
+        assert!(platform.admitted_source("replay").is_none());
+
+        let round = engine
+            .maybe_turn(&mut platform, 1, now)?
+            .ok_or_else(|| Error::invalid("a refused round, not a quiet cadence"))?;
+        assert!(round.refused_at_door.is_some(), "{round:?}");
+        assert!(round.campaign.is_none());
+        assert_eq!(
+            (round.proposed, round.registered, round.trials),
+            (0, 0, 0),
+            "a refused round searched: {round:?}"
+        );
+        assert!(
+            platform.reference_ledger().is_empty(),
+            "the refused stream was referenced"
+        );
+        assert!(
+            platform
+                .event_log()
+                .by_topic(qip_events::Topic::ResearchCampaignClosed)
+                .is_empty()
+        );
+        assert!(platform.campaign_results()?.is_empty());
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                qip_observability::metrics::names::RESEARCH_CAMPAIGNS_REFUSED,
+                &qip_observability::metrics::labels([("gate", crate::campaign::GATE_DOOR)]),
+            ),
+            1
+        );
+        Ok(())
+    }
+
+    /// The turn's gate arm: a standing admission whose licence has lapsed
+    /// is refused by the gate the turn asks before a campaign opens. The
+    /// round carries the gate's own refusal — not the door's, which is what
+    /// a turn that skipped the gate would report once the lapsed admission
+    /// had been withdrawn — the source is withdrawn from the platform, and
+    /// nothing is referenced, manifested or searched.
+    ///
+    /// Mutation: delete the `if let Err(refusal) = gate { .. }` block in
+    /// `maybe_turn` — the round is then refused by `assemble`'s door with a
+    /// different reason, and this fails on the reason.
+    #[test]
+    fn a_strategy_round_whose_licence_has_lapsed_is_refused_by_the_standing_gate() -> Result<()> {
+        use qip_contracts::governance::Usage;
+        use qip_data_finder::admission::CatalogueEntry;
+        use qip_data_finder::legal::{LicensingPosture, SourceLicense};
+        use qip_data_finder::registration::RegistrationRegistry;
+        let source = "coinbase-spot-ticker";
+        let manifest = qip_market_ingestion::connector_feed::shipped_manifest(source)?;
+        let expiry = start().saturating_add(Duration::from_days(1));
+        let admission = || {
+            StandingAdmission::over(
+                vec![CatalogueEntry {
+                    source_id: "coinbase-spot-ticker",
+                    expected_class: manifest.licensing,
+                    posture: LicensingPosture::declared(
+                        SourceLicense::new(
+                            "terms-with-an-end-date",
+                            [Usage::Derive, Usage::Trade],
+                        )?
+                        .expiring_at(expiry),
+                    ),
+                }],
+                RegistrationRegistry::shipped(),
+                source,
+                manifest.licensing,
+                start(),
+            )
+            .map(|(admission, _)| admission)
+        };
+        // The gate's own answer at the expiry, from an identical admission.
+        let expected = match admission()?.check(expiry) {
+            Ok(_) => return Err(Error::invalid("premise: the licence lapses at its expiry")),
+            Err(refusal) => refusal.message().to_string(),
+        };
+
+        let mut platform = platform()?;
+        let mut engine =
+            engine_over_replay_recorded_from(source, admission()?, recorded_ticks(4)?)?;
+        engine.config.minimum_bars = 64;
+        let (subject, bars) = recorded_bars_of_one_subject(94)?;
+        assert!(bars.len() >= 64, "premise: the subject is searchable");
+        engine.history.insert(subject.clone(), bars);
+
+        let round = engine
+            .maybe_turn(&mut platform, 1, expiry)?
+            .ok_or_else(|| Error::invalid("a refused round, not a quiet cadence"))?;
+        assert_eq!(round.subject, subject);
+        assert_eq!(
+            round.refused_at_door.as_deref(),
+            Some(expected.as_str()),
+            "the round was not refused by the standing gate"
+        );
+        assert!(round.campaign.is_none());
+        assert_eq!((round.proposed, round.registered, round.trials), (0, 0, 0));
+        assert!(
+            platform.admitted_source(source).is_none(),
+            "the lapsed source is still admitted"
+        );
+        assert!(platform.reference_ledger().is_empty());
+        assert!(
+            platform
+                .event_log()
+                .by_topic(qip_events::Topic::ResearchCampaignClosed)
+                .is_empty()
+        );
+        assert!(platform.campaign_results()?.is_empty());
+        assert_eq!(
+            platform.telemetry().metrics.snapshot().counter(
+                qip_observability::metrics::names::RESEARCH_CAMPAIGNS_REFUSED,
+                &qip_observability::metrics::labels([("gate", crate::campaign::GATE_DOOR)]),
+            ),
+            1
         );
         Ok(())
     }

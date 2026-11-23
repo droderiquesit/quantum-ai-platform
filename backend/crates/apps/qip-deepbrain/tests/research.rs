@@ -2500,19 +2500,21 @@ fn a_persistent_belief_discrepancy_queues_exactly_one_item_naming_its_origin() {
     assert_eq!(watch.tracked(), 1, "only the discrepant subject is tracked");
 }
 
-/// ADR 0346: the latest resolution of a subject is the one of the latest
-/// cycle, not the last listed. A review lists resolutions in proposition
-/// order, so `@10` comes before `@9`; the federation called `@9` right and
-/// `@10` wrong, and the subject is flagged. And a watch counts reviews
+/// ADR 0346: inside one review the latest resolution of a subject is the
+/// one of the latest cycle, not the last listed. A review lists resolutions
+/// in proposition order, so `@10` comes before `@9`; the federation called
+/// `@10` wrong and `@9` right, so the run stands at one after that review,
+/// and two more reviews against it make three. And a watch counts reviews
 /// read, not cycle numbers: a log whose cycles restart from one (a
 /// restarted platform over the same journal) is still read past.
 ///
-/// Mutation: drop the sort by cycle. The restart half has no mutation to
+/// Mutation: drop the sort in `BeliefWatch::feed`; `@9` then resets the
+/// run after `@10` and nothing raises. The restart half has no mutation to
 /// run: `BeliefWatch::feed` takes no cycle number, so no cursor can be
 /// written on one; the assertion keeps it that way.
 #[test]
 fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_the_watch() {
-    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS, belief_discrepancies};
+    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS};
     use qip_kernel::federation_stage::Resolution;
 
     let resolved = |proposition: &str, ensemble: f64, outcome: bool| Resolution {
@@ -2522,7 +2524,7 @@ fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_th
         forecasts: Default::default(),
         ensemble: Some(ensemble),
     };
-    let listed = [
+    let listed = vec![
         resolved("macro:rates:move-persists@10", 0.8, false),
         resolved("macro:rates:move-persists@9", 0.8, true),
     ];
@@ -2530,11 +2532,27 @@ fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_th
         listed[0].proposition < listed[1].proposition,
         "premise: proposition order puts @10 first"
     );
-    let flagged = belief_discrepancies(listed.iter());
+    assert_eq!(PERSIST_SWEEPS, 3, "premise: the run below is three long");
+    let reviews = [
+        listed,
+        vec![resolved("macro:rates:move-persists@11", 0.8, false)],
+        vec![resolved("macro:rates:move-persists@12", 0.8, false)],
+    ];
+    let mut watch = BeliefWatch::new().unwrap();
+    let mut raised = Vec::new();
+    for read in 1..=reviews.len() {
+        let slices: Vec<&[Resolution]> = reviews[..read].iter().map(Vec::as_slice).collect();
+        raised.extend(watch.feed(&slices));
+    }
+    assert_eq!(raised.len(), 1, "{raised:#?}");
     assert_eq!(
-        flagged.get("macro:rates:move-persists"),
-        Some(&vec!["macro:rates:move-persists@10".to_string()]),
-        "{flagged:?}"
+        raised[0].evidence[3..],
+        [
+            "resolved:macro:rates:move-persists@10",
+            "resolved:macro:rates:move-persists@11",
+            "resolved:macro:rates:move-persists@12",
+        ]
+        .map(String::from)
     );
 
     // Cycles 7, 8, then a restart numbering from 1 again: three reviews,
@@ -2557,6 +2575,91 @@ fn the_latest_cycle_decides_a_belief_discrepancy_and_a_restart_does_not_blind_th
         raised += watch.feed(&slices).len();
     }
     assert_eq!(raised, 1, "the review after the restart was skipped");
+}
+
+/// R12-EXPAND-6067, the owner's ruling read exactly: persistence is
+/// counted in consecutive **resolutions**, not in sweeps. Two failures the
+/// sweep count had, each proven here:
+///
+/// - Three resolutions against the federation read in one sweep (the deep
+///   brain fell behind the log) are three, and raise one item at once; the
+///   sweep count read them as one and needed two more sweeps.
+/// - A subject the federation resolves less often than the deep brain
+///   sweeps still persists: sweeps that resolve nothing about it leave the
+///   run standing. The sweep count dropped it on the first empty sweep, so
+///   such a subject never raised at all.
+///
+/// And a resolution on the federation's side ends the run: after it, two
+/// more against are two, not five.
+///
+/// Mutations: end the run on a sweep with no resolution of the subject
+/// (retain only subjects resolved this sweep) and the second half fails;
+/// count once per sweep (feed each subject to its tracker once per `feed`)
+/// and the first half fails.
+#[test]
+fn persistence_is_counted_in_resolutions_not_in_sweeps() {
+    use qip_deepbrain::research::{BeliefWatch, PERSIST_SWEEPS};
+    use qip_kernel::federation_stage::Resolution;
+
+    let resolved = |cycle: u64, outcome: bool| Resolution {
+        proposition: format!("macro:rates:move-persists@{cycle}"),
+        outcome,
+        closed: Vec::new(),
+        forecasts: Default::default(),
+        ensemble: Some(0.8),
+    };
+    assert_eq!(PERSIST_SWEEPS, 3, "premise: the runs below are three long");
+
+    // One sweep reading three reviews, each resolving against.
+    let mut watch = BeliefWatch::new().unwrap();
+    let three: Vec<Vec<Resolution>> = (1..=3).map(|n| vec![resolved(n, false)]).collect();
+    let slices: Vec<&[Resolution]> = three.iter().map(Vec::as_slice).collect();
+    let out = watch.feed(&slices);
+    assert_eq!(out.len(), 1, "three resolutions in one sweep: {out:#?}");
+    assert!(
+        out[0].observation.ends_with("on 3 consecutive resolutions"),
+        "{}",
+        out[0].observation
+    );
+
+    // A subject resolved every other sweep: reviews that resolve nothing
+    // about it in between.
+    let mut watch = BeliefWatch::new().unwrap();
+    let sparse: Vec<Vec<Resolution>> = vec![
+        vec![resolved(1, false)],
+        Vec::new(),
+        vec![resolved(3, false)],
+        Vec::new(),
+        vec![resolved(5, false)],
+    ];
+    let mut raised = Vec::new();
+    for read in 1..=sparse.len() {
+        let slices: Vec<&[Resolution]> = sparse[..read].iter().map(Vec::as_slice).collect();
+        let out = watch.feed(&slices);
+        assert!(
+            read == sparse.len() || out.is_empty(),
+            "raised early at sweep {read}"
+        );
+        raised.extend(out);
+    }
+    assert_eq!(raised.len(), 1, "the sparse subject persisted: {raised:#?}");
+    assert_eq!(watch.tracked(), 1);
+
+    // A resolution the federation's way ends the run.
+    let mut watch = BeliefWatch::new().unwrap();
+    let broken: Vec<Vec<Resolution>> = vec![
+        vec![resolved(1, false)],
+        vec![resolved(2, false)],
+        vec![resolved(3, true)],
+        vec![resolved(4, false)],
+        vec![resolved(5, false)],
+    ];
+    let slices: Vec<&[Resolution]> = broken.iter().map(Vec::as_slice).collect();
+    assert!(
+        watch.feed(&slices).is_empty(),
+        "a run the federation broke was carried over"
+    );
+    assert_eq!(watch.tracked(), 1, "the new run of two stands");
 }
 
 /// Sixty quiet days of one product listed twice, the second listing a
@@ -3026,5 +3129,77 @@ fn the_test_loop_re_runs_each_fixture_and_reports_whether_its_shift_has_cleared(
     assert_eq!(
         check_fixture(&foreign, &fixture).unwrap_or_else(|e| panic!("{e}")),
         FixtureOutcome::NoLongerReproduces
+    );
+}
+
+/// R12-EXPAND-6067: the deployed sweep reads the federation's reviews off
+/// the platform's own journal. A real platform runs eight cycles over a
+/// tape the federation arbitrates on, the research loop sweeps after each
+/// as `node.rs`'s research pass does, and after every sweep the belief
+/// watch has read exactly the reviews the journal holds, none refused.
+/// Until this test nothing proved `sweep_over` fed the watch at all: the
+/// tests handed `BeliefWatch::feed` resolutions directly.
+///
+/// Mutation: hand `sweep_with_beliefs` an empty read in `sweep_over`
+/// (`Ok(Vec::new())`) and the watch reads nothing.
+#[test]
+fn the_deployed_sweep_reads_every_federation_review_the_journal_holds() {
+    use qip_kernel::federation_stage;
+    let mut platform = platform_knowing_aaa();
+    let cycles = 8usize;
+    let total = 120 + cycles;
+    let end = start().saturating_add(Duration::from_days(cycles as i64));
+    let mut price = 100.0_f64;
+    let mut tape = Vec::new();
+    for i in 0..total {
+        let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+        let jump = if i % 17 == 0 { 0.02 } else { 0.0 };
+        price *= 1.0 + noise + jump;
+        let at = end.saturating_sub(Duration::from_days((total - i) as i64));
+        tape.push(bar("obj-AAA", at, price));
+    }
+    let later = tape.split_off(120);
+    platform.observe(tape);
+    let mut loop_ = research(BTreeMap::new());
+    for (step, a) in later.into_iter().enumerate() {
+        let at = start().saturating_add(Duration::from_days(step as i64 + 1));
+        platform.observe(vec![a]);
+        platform.run_cycle(at);
+        let round = loop_
+            .sweep(&platform, at, &set(&[]), &set(&["US"]))
+            .unwrap_or_else(|e| panic!("sweep {step}: {e}"));
+        let journal = federation_stage::replay_each(&platform)
+            .unwrap_or_else(|e| panic!("the journal reads: {e}"));
+        assert!(
+            journal.len() > step && journal.iter().all(Result::is_ok),
+            "premise: the cycle journaled a trusted review"
+        );
+        assert!(
+            journal
+                .iter()
+                .flatten()
+                .any(|review| !review.arbitrations.is_empty()),
+            "premise: the federation arbitrated"
+        );
+        assert_eq!(round.belief_reviews_refused, None);
+        assert_eq!(round.belief_reviews_untrusted, 0);
+        assert_eq!(
+            loop_.belief_watch().read(),
+            journal.len(),
+            "sweep {step} read every review the journal holds"
+        );
+    }
+    // The read is not vacuous: the cycle the deployed node runs resolves
+    // federation propositions with an arbitrated number, so the watch the
+    // sweep fed was handed sided resolutions and not only empty reviews.
+    let journal = federation_stage::replay_each(&platform)
+        .unwrap_or_else(|e| panic!("the journal reads: {e}"));
+    assert!(
+        journal
+            .iter()
+            .flatten()
+            .flat_map(|review| review.resolved.iter())
+            .any(|resolution| resolution.ensemble.is_some()),
+        "the federation resolved a proposition it had arbitrated: {journal:?}"
     );
 }

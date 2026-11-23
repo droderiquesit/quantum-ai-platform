@@ -64,14 +64,15 @@
     "logistics": {
       "carrier": "paper-carrier",
       "warehouse": "paper-warehouse",
-      "consolidate_with": null,
+      "consolidate_with": 2,
       "insurance": null,
-      "decline_reason": "goods under the insured threshold",
+      "insurance_premium_rate": "0.01",
+      "decline_reason": null,
       "delivery_risk": "0.01"
     },
     "resale": {
       "floor_per_unit": "1",
-      "markdown_after_days": 3,
+      "markdown_after_days": 1,
       "markdown_rate": "0.05"
     }
   }

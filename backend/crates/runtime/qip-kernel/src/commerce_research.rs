@@ -44,13 +44,13 @@ use qip_data_finder::admission::LicensingDecision;
 use qip_events::{EventBody, Topic};
 use qip_financial::commerce::{
     Account, Candidate, Channel, CommercePlane, Condition, Consolidation, Credential,
-    FeasibilityInput, FraudBook, Insurance, Ledger, LedgerEvent, Listing, LogisticsPlan,
-    LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver, UnitState,
-    regions_spanned, scout,
+    DeliveryClaim, FeasibilityInput, FraudBook, Insurance, Ledger, LedgerEvent, Listing,
+    LogisticsPlan, LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver,
+    UnitState, lost_in_delivery, regions_spanned, scout,
 };
 use qip_financial::commerce_resale::{
-    Attr, CycleEvent, ResaleDesk, UNIT_ATTRIBUTES, UnitAttributes, VenueKind, VenueQuote,
-    route_resale,
+    Attr, CycleEvent, ResaleDesk, SkuEconomics, UNIT_ATTRIBUTES, UnitAttributes, VenueKind,
+    VenueQuote, replay_economics, route_resale,
 };
 use qip_financial::physical::{LogisticsTerms, Spoilage};
 use serde::{Deserialize, Serialize};
@@ -284,8 +284,18 @@ pub struct LogisticsEntry {
     pub warehouse: String,
     /// `None` ships direct; a count consolidates with that many shipments.
     pub consolidate_with: Option<u32>,
-    /// Coverage and premium; absent declines insurance with `decline_reason`.
+    /// A fixed coverage and premium for every purchase. Exactly one of this,
+    /// `insurance_premium_rate` and `decline_reason` is stated.
     pub insurance: Option<(Decimal, Decimal)>,
+    /// Insure each purchase at its full declared value, for this fraction of
+    /// that value as the premium, in `[0, 1)` (owner decision 38,
+    /// 2026-11-14). A fixed cover is right for one purchase size only: a
+    /// flat 10000 on a purchase of 240 is forty times the goods at a premium
+    /// of 42% of them, so the cover and its price are drawn per purchase
+    /// here (R12-COMMERCE-1171). Defaulted so a plan written before it
+    /// decodes as not stating it.
+    #[serde(default)]
+    pub insurance_premium_rate: Option<Decimal>,
     pub decline_reason: Option<String>,
     pub delivery_risk: Decimal,
 }
@@ -380,6 +390,29 @@ pub struct AssessedCandidate {
     /// still decodes, as zero, which is what it reserved.
     #[serde(default)]
     pub chargeback_reserve: Decimal,
+    /// How many completed purchase-and-resale cycles of this SKU the
+    /// assessment was drawn on (R12-COMMERCE-1171). Zero means the plan's
+    /// stated resale, days on market and return rate; above zero, those
+    /// three are the SKU's realised figures replayed from the cycles this
+    /// plane sold. Before this the realised cycles were journalled and read
+    /// by nothing, so the hundredth purchase of a SKU that had sold below
+    /// its reference every time was priced exactly as the first. Defaulted
+    /// so a record journalled before it existed decodes as zero, which is
+    /// what it learned from.
+    #[serde(default)]
+    pub learned_cycles: u32,
+    /// The purchase's declared value, the base its cover is drawn on, and
+    /// the premium and uncovered delivery-loss reserve inside `all_in_cost`
+    /// (R12-COMMERCE-1171). Before these the plan's insurance decision was
+    /// formatted into a unit attribute and charged nowhere, so deleting the
+    /// cover changed no figure. Defaulted so an older record decodes as
+    /// zero, which is what it charged.
+    #[serde(default)]
+    pub declared_value: Decimal,
+    #[serde(default)]
+    pub insurance_premium: Decimal,
+    #[serde(default)]
+    pub delivery_loss_reserve: Decimal,
     /// Expected resale exceeds the all-in cost plus carry.
     pub viable: bool,
 }
@@ -451,6 +484,26 @@ pub struct CommerceSimulated {
     /// existed.
     #[serde(default)]
     pub tracked: Vec<TrackedUnit>,
+    /// R12-COMMERCE-1171: every consignment bought this pass that the
+    /// delivery risk lost before it reached the warehouse, with the claim
+    /// its cover paid. Before this no consignment was ever lost, so the
+    /// cover the plan bought could never pay and an insured plan behaved
+    /// exactly like one whose cover was worthless. Absent from a record
+    /// written before it existed.
+    #[serde(default)]
+    pub lost: Vec<LostConsignment>,
+}
+
+/// A paper consignment lost in delivery, and what its cover paid on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LostConsignment {
+    pub sku: String,
+    pub merchant: String,
+    /// The purchase number, counted from one, the delivery-risk schedule
+    /// lost (`qip_financial::commerce::lost_in_delivery`).
+    pub consignment: u32,
+    pub quantity: Decimal,
+    pub claim: DeliveryClaim,
 }
 
 /// One unit's tracked attributes as journalled: each of the twelve names to
@@ -580,16 +633,10 @@ impl CommerceResearch {
             }),
             warehouse: Some(plan.logistics.warehouse.clone()),
             customs: Some(plan.terms.customs.clone()),
-            insurance: match (&plan.logistics.insurance, &plan.logistics.decline_reason) {
-                (Some((coverage, premium)), _) => Some(Insurance::Insured {
-                    coverage: *coverage,
-                    premium: *premium,
-                }),
-                (None, Some(reason)) => Some(Insurance::Declined {
-                    reason: reason.clone(),
-                }),
-                (None, None) => None,
-            },
+            // Checked once here at the largest purchase the account may
+            // make, so a plan whose cover cannot validate stops the install
+            // rather than the first purchase; each purchase draws its own.
+            insurance: purchase_insurance(&plan.logistics, plan.account.per_purchase_limit)?,
             delivery_risk: Some(plan.logistics.delivery_risk),
         }
         .into_plan()?;
@@ -654,6 +701,47 @@ impl CommerceResearch {
         self.plane = CommercePlane::new(ledger, self.plan.terms.fees.clone());
         self.purchases = purchases;
         Ok(())
+    }
+
+    /// Resume the completed cycles SKU economics are learned from, and the
+    /// sale and return counts the plan's return rate is counted on. Before
+    /// this a restart resumed the ledger and not the cycles, so a deep brain
+    /// restarted after a SKU had sold assessed it again on the plan's stated
+    /// figures, journalling `learned_cycles = 0` against sales the log
+    /// holds. Refused on a plane that has sold anything.
+    pub fn resume_cycles(&mut self, cycles: Vec<CycleEvent>) -> Result<()> {
+        if !self.cycles.is_empty() || self.sales != 0 {
+            return Err(Error::invalid(
+                "commerce cycles can be resumed only on a plane that has sold nothing",
+            ));
+        }
+        replay_economics(&cycles)?;
+        self.sales = i64::try_from(cycles.len())
+            .map_err(|_| Error::numeric("the resumed sale count overflowed"))?;
+        self.returns_taken = i64::try_from(cycles.iter().filter(|c| c.returned).count())
+            .map_err(|_| Error::numeric("the resumed return count overflowed"))?;
+        self.cycles = cycles;
+        Ok(())
+    }
+
+    /// The logistics plan for one purchase of `declared` value: the plan's
+    /// route, carrier, warehouse and customs, with the insurance drawn on
+    /// this purchase, validated again.
+    fn purchase_logistics(&self, declared: Decimal) -> Result<LogisticsPlan> {
+        let base = self
+            .logistics
+            .clone()
+            .ok_or_else(|| Error::invalid("the logistics plan is missing"))?;
+        LogisticsPlanDraft {
+            route: base.route,
+            carrier: Some(base.carrier),
+            consolidation: Some(base.consolidation),
+            warehouse: Some(base.warehouse),
+            customs: Some(base.customs),
+            insurance: purchase_insurance(&self.plan.logistics, declared)?,
+            delivery_risk: Some(base.delivery_risk),
+        }
+        .into_plan()
     }
 
     pub fn source(&self) -> &CommerceSource {
@@ -772,10 +860,15 @@ impl CommerceResearch {
                 found.sale, found.finding
             ));
         }
+        // SKU-level economics, replayed from every cycle completed so far,
+        // this pass's sales included, so a replay of the same log learns
+        // the same figures (R12-COMMERCE-1171).
+        let learned = replay_economics(&self.cycles)?;
         let take = self.queue.len().min(CANDIDATES_PER_PASS);
         let candidates: Vec<Candidate> = self.queue.drain(..take).collect();
         for candidate in candidates {
-            if let Err(error) = self.work_candidate(&candidate, &mut run, now) {
+            let economics = learned.get(&candidate.product);
+            if let Err(error) = self.work_candidate(&candidate, economics, &mut run, now) {
                 run.problems.push(format!(
                     "{} at {}: {}",
                     candidate.product,
@@ -790,10 +883,18 @@ impl CommerceResearch {
     fn work_candidate(
         &mut self,
         candidate: &Candidate,
+        economics: Option<&SkuEconomics>,
         run: &mut CommerceSimulated,
         now: Timestamp,
     ) -> Result<()> {
-        let assessment = FeasibilityInput {
+        // The plan for this purchase, its cover drawn on this purchase's
+        // declared value and checked again by `into_plan`.
+        let declared_value = candidate
+            .price
+            .checked_mul(self.plan.quantity)
+            .ok_or_else(|| Error::numeric("the declared value overflowed"))?;
+        let logistics = self.purchase_logistics(declared_value)?;
+        let stated = FeasibilityInput {
             unit_price: Some(candidate.price),
             quantity: Some(self.plan.quantity),
             declared_value_per_unit: Some(candidate.price),
@@ -803,8 +904,16 @@ impl CommerceResearch {
             daily_capital_cost: Some(self.plan.daily_capital_cost),
             purchase_tax_rate: Some(self.plan.purchase_tax_rate),
             chargeback_rate: Some(self.plan.chargeback_rate),
-        }
-        .assess()?;
+            insurance: Some(logistics.insurance.clone()),
+            delivery_risk: Some(logistics.delivery_risk),
+        };
+        // A SKU this plane has sold before is assessed on what it realised,
+        // not on what the plan expected of it.
+        let (input, learned_cycles) = match economics {
+            Some(learned) => (stated.with_learned(learned)?, learned.cycles),
+            None => (stated, 0),
+        };
+        let assessment = input.assess()?;
         let viable =
             assessment.expected_resale > assessment.all_in_cost + assessment.inventory_carry;
         run.assessed.push(AssessedCandidate {
@@ -819,6 +928,10 @@ impl CommerceResearch {
             duty: assessment.landed.duty,
             purchase_tax: assessment.purchase_tax,
             chargeback_reserve: assessment.chargeback_reserve,
+            learned_cycles,
+            declared_value,
+            insurance_premium: assessment.insurance_premium,
+            delivery_loss_reserve: assessment.delivery_loss_reserve,
             viable,
         });
         if !viable {
@@ -851,10 +964,27 @@ impl CommerceResearch {
             }
         };
         self.purchases = self.purchases.saturating_add(1);
-        let logistics = self
-            .logistics
-            .clone()
-            .ok_or_else(|| Error::invalid("the logistics plan is missing"))?;
+        // The delivery risk, realised: a consignment the schedule loses
+        // never reaches the warehouse, so nothing is received, listed or
+        // sold, and its cover pays the claim on its declared value.
+        if lost_in_delivery(self.purchases, logistics.delivery_risk)? {
+            let claim = logistics.insurance.claim_for_loss(declared_value)?;
+            run.lost.push(LostConsignment {
+                sku: record.sku.clone(),
+                merchant: record.merchant.clone(),
+                consignment: self.purchases,
+                quantity: record.quantity,
+                claim,
+            });
+            run.purchases.push(PaperPurchase {
+                sku: record.sku,
+                merchant: record.merchant,
+                quantity: record.quantity,
+                notional: record.notional,
+                units: Vec::new(),
+            });
+            return Ok(());
+        }
         let unit_count = whole_units(self.plan.quantity)?;
         let cost_basis = assessment
             .all_in_cost
@@ -1089,7 +1219,9 @@ impl CommerceResearch {
                 let event = CycleEvent {
                     sku: held.sku.clone(),
                     realised_cost: held.cost_basis,
-                    resale_price: settlement.net_after_adjustments(),
+                    // Gross: `with_learned` feeds it to `assess`, which
+                    // charges the fee and prices returns itself.
+                    resale_price: settlement.gross,
                     days_to_sale: elapsed,
                     returned,
                 };
@@ -1219,8 +1351,18 @@ impl CommerceResearch {
             ),
             (
                 "shipping",
+                // The consolidation decision is part of how the unit
+                // ships; before it was carried here the plan's
+                // consolidation was checked and then journalled nowhere,
+                // so a consolidated plan and a direct one left the same
+                // record (R12-COMMERCE-5095).
                 value(format!(
-                    "{} via {}",
+                    "{}, {} via {}",
+                    match &logistics.consolidation {
+                        Consolidation::Direct => "direct".to_string(),
+                        Consolidation::Consolidate { with_shipments } =>
+                            format!("consolidated with {with_shipments} shipments"),
+                    },
                     logistics.route.len(),
                     logistics.carrier
                 )),
@@ -1431,4 +1573,49 @@ fn whole_units(quantity: Decimal) -> Result<u32> {
             ))
         })?;
     Ok(count)
+}
+
+/// The insurance decision for one purchase of `declared` value, or `None`
+/// when the plan states no decision (which `into_plan` then refuses).
+fn purchase_insurance(logistics: &LogisticsEntry, declared: Decimal) -> Result<Option<Insurance>> {
+    match (
+        &logistics.insurance,
+        &logistics.insurance_premium_rate,
+        &logistics.decline_reason,
+    ) {
+        (None, None, None) => Ok(None),
+        (Some((coverage, premium)), None, None) => Ok(Some(Insurance::Insured {
+            coverage: *coverage,
+            premium: *premium,
+        })),
+        (None, Some(rate), None) => {
+            if rate.is_negative() || *rate >= Decimal::ONE {
+                return Err(Error::invalid(format!(
+                    "configuration: the commerce plan's insurance_premium_rate {rate} is outside \
+                     [0, 1); a premium of the whole declared value or more is not cover"
+                )));
+            }
+            let premium = declared
+                .checked_mul(*rate)
+                .ok_or_else(|| Error::numeric("the insurance premium overflowed"))?;
+            Ok(Some(Insurance::Insured {
+                coverage: declared,
+                premium,
+            }))
+        }
+        (None, None, Some(reason)) => Ok(Some(Insurance::Declined {
+            reason: reason.clone(),
+        })),
+        // Cover and a reason to decline it are two answers to one question;
+        // the reason used to be dropped silently, so a plan could read as
+        // declined to its reviewer and run insured, or the reverse.
+        (_, _, Some(reason)) => Err(Error::invalid(format!(
+            "configuration: the commerce plan both insures its goods and declines insurance \
+             ({reason}); state the cover or the reason, not both"
+        ))),
+        (Some(_), Some(_), None) => Err(Error::invalid(
+            "configuration: the commerce plan states both a fixed insurance cover and an \
+             insurance_premium_rate; state one",
+        )),
+    }
 }

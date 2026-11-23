@@ -361,6 +361,10 @@ fn input() -> FeasibilityInput {
         daily_capital_cost: Some(dec!("0.001")),
         purchase_tax_rate: Some(dec!("0.05")),
         chargeback_rate: Some(Decimal::ZERO),
+        insurance: Some(Insurance::Declined {
+            reason: "a fixture with no delivery risk".to_string(),
+        }),
+        delivery_risk: Some(Decimal::ZERO),
     }
 }
 
@@ -555,6 +559,79 @@ fn a_logistics_plan_missing_any_of_the_seven_parts_is_refused() {
     let mut bad = draft();
     bad.delivery_risk = Some(dec!("1.5"));
     assert!(bad.into_plan().is_err(), "a risk above one was clamped");
+}
+
+/// R12-COMMERCE-5095: a consolidation with no shipment to consolidate with,
+/// and an insurance policy that covers nothing or costs its whole cover,
+/// are refused rather than journalled as decisions. Before this any count
+/// and any pair of figures became a plan, so a typo in a plan file read as
+/// a consolidated, insured shipment. The good values beside each bad one
+/// are admitted, so the refusals are not a refusal of every plan.
+///
+/// Mutation: delete either check in `LogisticsPlanDraft::into_plan` and the
+/// matching `expect_err` fails.
+#[test]
+fn a_consolidation_of_no_shipments_or_an_insurance_that_covers_nothing_is_refused() {
+    let mut good = draft();
+    good.consolidation = Some(Consolidation::Consolidate { with_shipments: 2 });
+    good.insurance = Some(Insurance::Insured {
+        coverage: dec!("10000"),
+        premium: dec!("100"),
+    });
+    let plan = good
+        .into_plan()
+        .expect("two shipments, insured at one per cent");
+    assert_eq!(
+        plan.consolidation,
+        Consolidation::Consolidate { with_shipments: 2 }
+    );
+    assert_eq!(
+        plan.insurance,
+        Insurance::Insured {
+            coverage: dec!("10000"),
+            premium: dec!("100"),
+        }
+    );
+
+    let mut zero = draft();
+    zero.consolidation = Some(Consolidation::Consolidate { with_shipments: 0 });
+    let refusal = zero
+        .into_plan()
+        .expect_err("a consolidation with zero shipments became a plan");
+    assert!(
+        refusal
+            .message()
+            .starts_with("consolidation with zero shipments"),
+        "refused for another reason: {}",
+        refusal.message()
+    );
+
+    for (coverage, premium) in [
+        (dec!("0"), dec!("0")),
+        (dec!("-100"), dec!("1")),
+        (dec!("100"), dec!("-1")),
+        (dec!("100"), dec!("100")),
+        (dec!("100"), dec!("150")),
+    ] {
+        let mut bad = draft();
+        bad.insurance = Some(Insurance::Insured { coverage, premium });
+        let refusal = bad
+            .into_plan()
+            .expect_err("an insurance that covers nothing became a plan");
+        assert!(
+            refusal.message().starts_with(&format!(
+                "insurance for {coverage} at a premium of {premium} "
+            )),
+            "{coverage}/{premium} refused for another reason: {}",
+            refusal.message()
+        );
+    }
+    let mut free = draft();
+    free.insurance = Some(Insurance::Insured {
+        coverage: dec!("100"),
+        premium: dec!("0"),
+    });
+    assert!(free.into_plan().is_ok(), "a zero premium is still cover");
 }
 
 #[test]

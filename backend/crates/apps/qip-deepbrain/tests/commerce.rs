@@ -30,7 +30,8 @@ use qip_financial::physical::{
 use qip_financial::universe::Universe;
 use qip_kernel::breadth::BreadthPlan;
 use qip_kernel::commerce_research::{
-    AccountEntry, CommerceDiscovered, CommercePlan, CommerceSimulated, LogisticsEntry, ResaleEntry,
+    AccountEntry, AssessedCandidate, CommerceDiscovered, CommercePlan, CommerceSimulated,
+    LogisticsEntry, LostConsignment, PaperPurchase, PricedUnit, ResaleEntry,
     SYNTHETIC_COUNTERFEIT_SELLER, SyntheticCommerceFeed,
 };
 use qip_kernel::{Platform, PlatformConfig};
@@ -114,6 +115,7 @@ fn commerce_plan() -> Result<CommercePlan> {
             warehouse: WAREHOUSE.to_string(),
             consolidate_with: None,
             insurance: None,
+            insurance_premium_rate: None,
             decline_reason: Some("goods under the insured threshold".to_string()),
             delivery_risk: dec!("0.01"),
         },
@@ -433,7 +435,10 @@ fn a_received_units_cost_basis_carries_its_duty_and_purchase_tax() -> Result<()>
 }
 
 /// Every sale the cycle makes is settled on the simulated marketplace at
-/// gross less its fee, and the cycle's realised resale is that net (1094).
+/// gross less its fee (1094). The cycle's realised resale is the gross price
+/// the unit sold at, not that net: feasibility charges the fee itself, so a
+/// net figure learned from a cycle would pay it twice
+/// (`assert_cycles_are_gross_sale_prices` holds the cycle to the gross).
 ///
 /// Mutation: price the fee at zero in `CommercePlane::settle` and the fee
 /// assertion fails on a zero fee.
@@ -1058,9 +1063,9 @@ fn the_committed_dev_plan_keeps_a_variant_apart_from_the_product_it_varies_and_r
 /// from the plan's fee, capital cost and days on market and the unit's
 /// ledger cost basis, not read back from the router.
 ///
-/// The repricing clause of the row is not proven here and cannot be under
-/// this plan: it sells a marketplace unit after `days_on_market` = 2 days,
-/// marks down after 3, and the synthetic reference price never moves.
+/// The repricing clause of the row is proven by the test after this one,
+/// not here: the committed plan now marks a unit down after 1 day, inside
+/// the two-day marketplace hold.
 ///
 /// Mutation: reverse the comparison in `route_resale` and every unit is
 /// listed on the direct buyer, so the venue assertion fails.
@@ -1112,6 +1117,89 @@ fn every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highe
         assert_eq!(priced.venue, "simulated-marketplace", "{}", priced.unit);
         assert_eq!(priced.price, reference, "{}", priced.unit);
     }
+    Ok(())
+}
+
+/// R12-COMMERCE-5097, the reprice clause, through `breadth::install` on the
+/// committed dev plan: every unit listed under it is marked down by the
+/// plan's own rate on the pass after it was listed, at the venue it was
+/// listed on, and is then sold at that marked-down price. Until 2026-11-23
+/// the committed plan marked down only after three unsold days while its
+/// longest hold was two and the synthetic reference never moved, so
+/// `CommerceResearch::work_listed` called `reprice` every pass and it
+/// returned nothing for every unit; the clause was reached and vacuous.
+///
+/// Mutations, each run: disable `Resale::reprice`'s markdown arm, or stop
+/// `work_listed` pushing a repriced unit, and the repricing assertion fails
+/// (`left: None`); drop `l.price = new` from `reprice` and the settlement
+/// assertion fails (gross 120 against 114); set the committed plan's
+/// `markdown_after_days` back to 3 and the premise fails.
+#[test]
+fn every_unit_listed_under_the_committed_dev_plan_is_marked_down_the_day_after_and_sold_at_that_price()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    assert!(
+        plan.resale.markdown_after_days < plan.days_on_market,
+        "premise: the committed plan marks down before its marketplace hold ends"
+    );
+    let rate = plan.resale.markdown_rate;
+    assert!(
+        rate.is_positive(),
+        "premise: the committed plan states a markdown rate"
+    );
+    let platform = install_plan_file(&committed_plan_path(), 8)?;
+    let research = platform.commerce_research().expect("installed");
+    let runs = simulated(&platform)?;
+    let listed: Vec<(u32, PricedUnit)> = runs
+        .iter()
+        .flat_map(|run| run.listed.iter().map(|unit| (run.day, unit.clone())))
+        .collect();
+    assert!(!listed.is_empty(), "premise: nothing was listed");
+    let mut sold = 0;
+    for (day, unit) in &listed {
+        let marked = unit.price - unit.price * rate;
+        let repriced: Vec<(u32, &PricedUnit)> = runs
+            .iter()
+            .flat_map(|run| {
+                run.repriced
+                    .iter()
+                    .filter(|r| r.unit == unit.unit)
+                    .map(move |r| (run.day, r))
+            })
+            .collect();
+        let last_day = runs.iter().map(|run| run.day).max().unwrap_or(0);
+        if *day + plan.resale.markdown_after_days > last_day {
+            continue;
+        }
+        assert_eq!(
+            repriced
+                .first()
+                .map(|(d, r)| (*d, r.venue.as_str(), r.price)),
+            Some((
+                *day + plan.resale.markdown_after_days,
+                unit.venue.as_str(),
+                marked
+            )),
+            "{} listed on day {day} at {} was not marked down once its markdown interval passed",
+            unit.unit,
+            unit.price
+        );
+        if let Some(UnitState::Sold { sale }) =
+            research.ledger().units().get(&unit.unit).map(|u| &u.state)
+        {
+            let settlement = research
+                .plane()
+                .settlement(sale)
+                .unwrap_or_else(|| panic!("{}'s sale {sale} was never settled", unit.unit));
+            assert_eq!(
+                settlement.gross, marked,
+                "{} sold at a price other than its marked-down listing",
+                unit.unit
+            );
+            sold += 1;
+        }
+    }
+    assert!(sold > 0, "premise: no marked-down unit was sold");
     Ok(())
 }
 
@@ -1380,5 +1468,879 @@ fn a_returned_units_journalled_record_names_the_sale_it_reversed_and_reads_open_
         assert_eq!(logged[unit]["returns"], "return rate 0.5", "{unit}");
         assert_eq!(logged[unit]["inventory_state"], "sold", "{unit}");
     }
+    Ok(())
+}
+
+/// R12-COMMERCE-5095. Under the committed dev plan every unit the deployed
+/// deep brain receives is journalled as consolidated with the plan's stated
+/// shipment count and insured at the plan's cover and premium. Until
+/// 2026-11-23 the committed plan shipped direct and declined insurance, so
+/// the consolidation and insurance clauses ran on no committed
+/// configuration, and the consolidation decision reached no record at all.
+///
+/// The cover is the account's per-purchase limit, which the purchase
+/// executor refuses to exceed, so every purchase this plan can make is
+/// insured at its full declared value; the premium is one per cent of it
+/// (owner decision 38, 2026-11-14). Both are paper figures, not payments.
+///
+/// Mutations: format the consolidation arm of the `shipping` attribute in
+/// `commerce_research.rs` as `direct`, or the `insurance` attribute as the
+/// declined arm, and the journalled-value assertion fails; set the
+/// committed `consolidate_with` or `insurance` back to null and a premise
+/// fails.
+#[test]
+fn every_unit_received_under_the_committed_dev_plan_is_journalled_consolidated_and_insured()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    let with_shipments = plan
+        .logistics
+        .consolidate_with
+        .expect("premise: the committed plan consolidates");
+    assert!(with_shipments > 0, "premise: a real consolidation count");
+    // Owner decision 38 (2026-11-14): cover at each purchase's full
+    // declared value, for one per cent of it. A fixed cover is that ruling
+    // for one purchase size only, so the plan states the rate, not a cover.
+    assert_eq!(
+        plan.logistics.insurance, None,
+        "premise: no fixed cover, which would be wrong for every other purchase size"
+    );
+    let rate = plan
+        .logistics
+        .insurance_premium_rate
+        .expect("premise: the committed plan insures its goods");
+    assert_eq!(
+        rate,
+        dec!("0.01"),
+        "premise: owner decision 38's one per cent"
+    );
+    assert!(
+        plan.logistics.decline_reason.is_none(),
+        "premise: an insured plan states no decline reason"
+    );
+
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let research = platform.commerce_research().expect("installed");
+    let runs = simulated(&platform)?;
+    // Each unit's purchase notional, as the executor journalled it.
+    let notional: BTreeMap<String, Decimal> = runs
+        .iter()
+        .flat_map(|run| run.purchases.iter())
+        .flat_map(|purchase| {
+            purchase
+                .units
+                .iter()
+                .map(|unit| (unit.clone(), purchase.notional))
+        })
+        .collect();
+    let logged: BTreeMap<String, BTreeMap<String, String>> = runs
+        .into_iter()
+        .flat_map(|run| run.tracked)
+        .map(|tracked| (tracked.unit, tracked.attributes))
+        .collect();
+    let units = research.ledger().units();
+    assert!(!units.is_empty(), "premise: a unit was received");
+    let legs = plan.terms.route.len();
+    let expected_shipping = format!(
+        "consolidated with {with_shipments} shipments, {legs} via {}",
+        plan.logistics.carrier
+    );
+    let mut covers = BTreeSet::new();
+    for unit in units.keys() {
+        let attributes = logged
+            .get(unit)
+            .unwrap_or_else(|| panic!("{unit} was received and never journalled"));
+        assert_eq!(attributes["shipping"], expected_shipping, "{unit}");
+        let declared = notional[unit];
+        let expected_insurance = format!("insured for {declared} at {}", declared * rate);
+        assert_eq!(attributes["insurance"], expected_insurance, "{unit}");
+        covers.insert(declared);
+    }
+    // A fixed cover would read the same on every unit; full declared value
+    // reads differently on purchases of different sizes.
+    assert!(
+        covers.len() > 1,
+        "premise: purchases of more than one size, so a fixed cover would be caught: {covers:?}"
+    );
+    Ok(())
+}
+
+/// The all-in cost an assessment owes under `plan`, by hand from its terms:
+/// goods at the declared value, per-unit and per-shipment freight, duty on
+/// the declared value, clearance, the marketplace's ad valorem fee on the
+/// gross proceeds plus its per-unit and per-consignment fees, purchase tax on
+/// the goods, and the insurance premium and uncovered delivery-loss reserve
+/// the assessment journalled. Valid for plans with no spoilage, no storage
+/// and no returns, which each caller asserts.
+fn hand_all_in_cost(plan: &CommercePlan, assessed: &AssessedCandidate) -> Decimal {
+    let terms = &plan.terms;
+    let q = plan.quantity;
+    let goods = assessed.declared_value;
+    let freight: Decimal = terms
+        .route
+        .iter()
+        .map(|leg| q * leg.freight_per_unit + leg.freight_per_shipment)
+        .sum();
+    let duty = goods * terms.customs.duty_rate;
+    let proceeds = assessed.expected_resale + assessed.chargeback_reserve;
+    let marketplace =
+        proceeds * terms.fees.ad_valorem + q * terms.fees.per_unit + terms.fees.per_consignment;
+    goods
+        + freight
+        + duty
+        + terms.customs.clearance_fee
+        + marketplace
+        + goods * plan.purchase_tax_rate
+        + assessed.insurance_premium
+        + assessed.delivery_loss_reserve
+}
+
+/// The capital an assessment locks up under `plan`, by hand: the goods, the
+/// freight, the duty and clearance, the purchase tax and the insurance
+/// premium, every figure paid before the unit can sell. No storage, which
+/// each caller asserts. Not the marketplace fee, which comes out of the
+/// sale, and not the delivery-loss reserve, which is a reserve and not a
+/// payment.
+fn hand_capital_lockup(plan: &CommercePlan, assessed: &AssessedCandidate) -> Decimal {
+    let terms = &plan.terms;
+    let q = plan.quantity;
+    let goods = assessed.declared_value;
+    let freight: Decimal = terms
+        .route
+        .iter()
+        .map(|leg| q * leg.freight_per_unit + leg.freight_per_shipment)
+        .sum();
+    goods
+        + freight
+        + goods * terms.customs.duty_rate
+        + terms.customs.clearance_fee
+        + goods * plan.purchase_tax_rate
+        + assessed.insurance_premium
+}
+
+fn assert_hand_terms(plan: &CommercePlan) -> Result<()> {
+    assert_eq!(
+        plan.terms.spoilage,
+        qip_financial::physical::Spoilage::none("durable goods, stated by the desk")?,
+        "premise: nothing spoils"
+    );
+    assert_eq!(plan.terms.storage_per_unit_per_day, Decimal::ZERO);
+    assert_eq!(plan.terms.storage_days, 0);
+    assert_eq!(
+        plan.terms.returns.rate,
+        Decimal::ZERO,
+        "premise: no returns"
+    );
+    Ok(())
+}
+
+/// R12-COMMERCE-1171, the "insure" clause, through the deep brain's own
+/// `breadth::install` on the committed dev plan. Every assessment is drawn on
+/// the purchase's own cover: its declared value is the purchase's notional,
+/// its premium is one per cent of that value (owner decision 38), the
+/// delivery risk reserves nothing because the cover reaches the whole value,
+/// and the premium is inside the all-in cost the purchase is judged and
+/// costed on. Before this the plan's insurance was a string on each unit:
+/// no premium entered any cost and the delivery risk was read by nothing.
+///
+/// Mutations: drop `insurance_premium` from `all_in_cost` in `assess`, and
+/// the hand computation disagrees; draw the cover at a fixed value rather
+/// than the declared value, and the reserve or the premium disagrees.
+#[test]
+fn every_assessment_under_the_committed_dev_plan_pays_a_one_per_cent_premium_on_its_full_declared_value()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    assert_hand_terms(&plan)?;
+    let rate = plan
+        .logistics
+        .insurance_premium_rate
+        .expect("premise: the committed plan insures at a rate");
+    assert!(
+        plan.logistics.delivery_risk.is_positive(),
+        "premise: a delivery risk the cover has something to cover"
+    );
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let runs = simulated(&platform)?;
+    let mut assessed = 0;
+    let mut bought = 0;
+    for run in &runs {
+        for a in &run.assessed {
+            assessed += 1;
+            assert!(a.declared_value.is_positive(), "{a:?}");
+            assert_eq!(a.insurance_premium, a.declared_value * rate, "{a:?}");
+            assert_eq!(
+                a.delivery_loss_reserve,
+                Decimal::ZERO,
+                "full cover leaves nothing to reserve: {a:?}"
+            );
+            assert_eq!(a.all_in_cost, hand_all_in_cost(&plan, a), "{a:?}");
+            assert_eq!(
+                a.capital_lockup,
+                hand_capital_lockup(&plan, a),
+                "the premium is paid when the goods are bought, so it is capital locked up: {a:?}"
+            );
+        }
+        for purchase in &run.purchases {
+            let a = run
+                .assessed
+                .iter()
+                .find(|a| a.product == purchase.sku && a.venue == purchase.merchant)
+                .expect("a purchase was assessed first");
+            assert_eq!(a.declared_value, purchase.notional, "{purchase:?}");
+            bought += 1;
+        }
+    }
+    assert!(
+        assessed > 0 && bought > 0,
+        "premise: assessments and purchases"
+    );
+    Ok(())
+}
+
+/// R12-COMMERCE-1171: the insurance decision changes the figures. The same
+/// candidates, under a plan that declines cover and one that insures at the
+/// full declared value for one per cent, cost exactly the premium less the
+/// delivery-loss reserve apart: declined goods carry the delivery risk on
+/// their whole declared value, insured goods carry the premium instead.
+/// Compared only where neither plane has learned anything yet, so the two
+/// plans assess the same inputs.
+///
+/// Mutations: drop the reserve from `all_in_cost`, or reserve on the whole
+/// value whatever the cover, and an assertion fails.
+#[test]
+fn declining_cover_reserves_the_delivery_risk_on_the_whole_value_and_insuring_pays_the_premium_instead()
+-> Result<()> {
+    let declined_plan = commerce_plan()?;
+    assert_hand_terms(&declined_plan)?;
+    assert!(declined_plan.logistics.decline_reason.is_some(), "premise");
+    let risk = declined_plan.logistics.delivery_risk;
+    assert!(risk.is_positive(), "premise: a delivery risk");
+    let mut insured_plan = declined_plan.clone();
+    insured_plan.logistics.decline_reason = None;
+    insured_plan.logistics.insurance_premium_rate = Some(dec!("0.01"));
+
+    let declined = simulated(&run("declined-cover", declined_plan.clone(), 3)?)?;
+    let insured = simulated(&run("insured-cover", insured_plan.clone(), 3)?)?;
+    let key = |a: &AssessedCandidate| (a.product.clone(), a.venue.clone(), a.declared_value);
+    let mut compared = 0;
+    for (d_run, i_run) in declined.iter().zip(&insured) {
+        assert_eq!(d_run.day, i_run.day);
+        for d in d_run.assessed.iter().filter(|a| a.learned_cycles == 0) {
+            assert_eq!(d.insurance_premium, Decimal::ZERO, "{d:?}");
+            assert_eq!(d.delivery_loss_reserve, d.declared_value * risk, "{d:?}");
+            assert!(d.delivery_loss_reserve.is_positive(), "{d:?}");
+            assert_eq!(d.all_in_cost, hand_all_in_cost(&declined_plan, d), "{d:?}");
+            let Some(i) = i_run
+                .assessed
+                .iter()
+                .find(|i| i.learned_cycles == 0 && key(i) == key(d))
+            else {
+                continue;
+            };
+            assert_eq!(i.delivery_loss_reserve, Decimal::ZERO, "{i:?}");
+            assert_eq!(
+                i.insurance_premium,
+                i.declared_value * dec!("0.01"),
+                "{i:?}"
+            );
+            assert_eq!(
+                i.all_in_cost - d.all_in_cost,
+                i.insurance_premium - d.delivery_loss_reserve,
+                "{d:?} against {i:?}"
+            );
+            compared += 1;
+        }
+    }
+    assert!(
+        compared > 0,
+        "premise: the same candidate was assessed under both plans"
+    );
+    Ok(())
+}
+
+/// Every journalled cycle's resale price is the gross price its unit last
+/// stood at, before the venue's fee: feasibility charges the fee itself, so
+/// a net figure learned there pays it twice. Matched per SKU as a multiset
+/// of the last journalled listing or repricing of each unit the ledger sold.
+fn assert_cycles_are_gross_sale_prices(platform: &Platform, runs: &[CommerceSimulated]) {
+    let research = platform.commerce_research().expect("installed");
+    let sku_of: BTreeMap<String, String> = runs
+        .iter()
+        .flat_map(|run| run.purchases.iter())
+        .flat_map(|p| p.units.iter().map(|u| (u.clone(), p.sku.clone())))
+        .collect();
+    let mut last_price: BTreeMap<String, Decimal> = BTreeMap::new();
+    for run in runs {
+        for priced in run.repriced.iter().chain(&run.listed) {
+            last_price.insert(priced.unit.clone(), priced.price);
+        }
+    }
+    let mut expected: BTreeMap<String, Vec<Decimal>> = BTreeMap::new();
+    for event in research.ledger().events() {
+        if let LedgerEvent::Sold { unit, .. } = event {
+            expected
+                .entry(sku_of[unit].clone())
+                .or_default()
+                .push(last_price[unit]);
+        }
+    }
+    let mut journalled: BTreeMap<String, Vec<Decimal>> = BTreeMap::new();
+    for cycle in runs.iter().flat_map(|run| run.sold.iter()) {
+        journalled
+            .entry(cycle.sku.clone())
+            .or_default()
+            .push(cycle.resale_price);
+    }
+    for prices in expected.values_mut().chain(journalled.values_mut()) {
+        prices.sort();
+    }
+    assert!(!expected.is_empty(), "premise: the ledger sold a unit");
+    assert_eq!(
+        journalled, expected,
+        "a cycle's resale price is not the gross price its unit sold at"
+    );
+}
+
+/// The invariant of the learning clause over `runs` in log order: every
+/// assessment learned from exactly the sales of its SKU journalled in its
+/// own pass or before it, and where it learned, its return risk is the
+/// realised return rate of those sales. Returns how many learned, and how
+/// many of those learned a return rate other than `stated`.
+fn assert_learned_from_journalled_sales(runs: &[CommerceSimulated], stated: Decimal) -> (u32, u32) {
+    let mut learned = 0;
+    let mut moved = 0;
+    for (index, run) in runs.iter().enumerate() {
+        for assessed in &run.assessed {
+            let sold: Vec<_> = runs[..=index]
+                .iter()
+                .flat_map(|earlier| earlier.sold.iter())
+                .filter(|cycle| cycle.sku == assessed.product)
+                .collect();
+            let cycles = u32::try_from(sold.len()).expect("a small count");
+            assert_eq!(
+                assessed.learned_cycles, cycles,
+                "{} in pass {index} learned from a count other than its journalled sales",
+                assessed.product
+            );
+            if cycles == 0 {
+                assert_eq!(assessed.return_risk, stated, "{assessed:?}");
+                continue;
+            }
+            learned += 1;
+            let returned = sold.iter().filter(|cycle| cycle.returned).count();
+            let realised = Decimal::from(i64::try_from(returned).expect("small"))
+                / Decimal::from(i64::from(cycles));
+            assert_eq!(
+                assessed.return_risk, realised,
+                "{} in pass {index}: return risk is not its realised return rate",
+                assessed.product
+            );
+            moved += u32::from(realised != stated);
+        }
+    }
+    (learned, moved)
+}
+
+/// R12-COMMERCE-1171, the return-rate arm of learning. Under a plan with a
+/// stated return rate of one quarter, returns are counted across all sales, so
+/// a SKU's own realised rate departs from the stated one; every assessment
+/// of a SKU already sold carries that SKU's realised rate. The committed
+/// plan's rate is zero, and so is its realised rate, so the committed-plan
+/// test cannot see this arm deleted; this one can.
+///
+/// Mutation: drop the return-rate assignment in `with_learned`, and a
+/// learned assessment carries the stated quarter.
+#[test]
+fn every_assessment_of_a_sku_already_sold_carries_its_own_realised_return_rate() -> Result<()> {
+    let mut plan = commerce_plan()?;
+    // A quarter, not a half: a purchase sells its two units in one pass, so
+    // under a half every SKU takes exactly one return in two and its
+    // realised rate equals the stated one, which would hide the arm.
+    let stated = dec!("0.25");
+    plan.terms.returns.rate = stated;
+    let platform = run("learned-returns", plan, 12)?;
+    let runs = simulated(&platform)?;
+    let (learned, moved) = assert_learned_from_journalled_sales(&runs, stated);
+    assert!(
+        learned > 0,
+        "premise: a SKU was assessed again after it sold"
+    );
+    assert!(
+        moved > 0,
+        "premise: a learned return rate differs from the stated one, so the arm is visible"
+    );
+    Ok(())
+}
+
+/// R12-COMMERCE-1171 across a restart. A deep brain restarted on the same
+/// log resumes the completed cycles the first process journalled, so its
+/// first assessments of a SKU already sold learn from those sales rather
+/// than journalling `learned_cycles = 0` against them. Before this the
+/// restart resumed the ledger and not the cycles.
+///
+/// Mutation: drop the `resume_cycles` call in `resume_commerce_ledger`, and
+/// the resumed cycles are empty and the learned counts disagree with the log.
+#[test]
+fn a_restarted_deep_brain_learns_from_the_cycles_the_previous_process_journalled() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-deepbrain-commerce-cycles-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let log = directory.join("events.jsonl");
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), committed_plan_path())]);
+    let boot = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&log);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        install(
+            &mut platform,
+            &|name| environment.get(name).cloned(),
+            start(),
+        )?
+        .expect("a plan was set");
+        Ok(platform)
+    };
+    let mut at = start();
+    let first = {
+        let mut platform = boot()?;
+        for _ in 0..12 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        platform
+            .commerce_research()
+            .expect("installed")
+            .cycles()
+            .to_vec()
+    };
+    assert!(
+        !first.is_empty(),
+        "premise: the first process sold something"
+    );
+    let mut restarted = boot()?;
+    assert_eq!(
+        restarted.commerce_research().expect("installed").cycles(),
+        first.as_slice(),
+        "the restarted plane did not resume the cycles in the log"
+    );
+    for _ in 0..12 {
+        restarted.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let runs = simulated(&restarted)?;
+    let plan = committed_commerce_plan()?;
+    let (learned, _) = assert_learned_from_journalled_sales(&runs, plan.terms.returns.rate);
+    let before = runs.iter().filter(|run| !run.sold.is_empty()).count();
+    assert!(
+        before > 0 && learned > 0,
+        "premise: sales and learned assessments"
+    );
+    let resumed_first_pass = runs
+        .iter()
+        .position(|run| run.day == 1 && !std::ptr::eq(run, &runs[0]))
+        .expect("premise: the log holds the restarted process's first pass");
+    assert!(
+        runs[resumed_first_pass]
+            .assessed
+            .iter()
+            .any(|a| a.learned_cycles > 0),
+        "the restarted process's first pass learned nothing from the earlier sales"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
+/// R12-COMMERCE-1171, the "learn SKU-level economics" clause, through the
+/// deep brain's own `breadth::install` on the committed dev plan. Once a SKU
+/// has completed a purchase-and-resale cycle, every later assessment of it
+/// is drawn on what its cycles realised: the journalled assessment names how
+/// many cycles it learned from, its expected resale is the mean realised
+/// resale under the plan's fees and chargeback reserve, and its time to sale
+/// carries the mean realised days to sale. Before this,
+/// `replay_economics` and `FeasibilityInput::with_learned` had no caller
+/// outside library tests, so the plane journalled every realised cycle and
+/// priced the next purchase of the same SKU exactly as the first.
+///
+/// The expected figures are computed here from the journalled sales and the
+/// plan's terms, not through `replay_economics` or `with_learned`.
+///
+/// Mutations: drop the `with_learned` arm in `work_candidate` and no
+/// assessment learns, so the learned-assessment premise fails; replay only
+/// the cycles before the pass and the cycle count disagrees with the
+/// journal.
+#[test]
+fn every_assessment_of_a_sku_already_sold_under_the_committed_dev_plan_is_drawn_on_its_realised_cycles()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    // Premise: the committed terms the expected figures are computed from.
+    // Nothing is spoiled or returned, so every unit shipped is a unit sold,
+    // and the marketplace fee is charged into the all-in cost rather than
+    // out of the resale, so only the chargeback reserve comes off it.
+    assert_eq!(
+        plan.terms.spoilage,
+        qip_financial::physical::Spoilage::none("durable goods, stated by the desk")?
+    );
+    assert_eq!(plan.terms.returns.rate, Decimal::ZERO);
+    assert!(plan.chargeback_rate.is_positive());
+    let keep = Decimal::ONE - plan.chargeback_rate;
+
+    let platform = install_plan_file(&committed_plan_path(), 12)?;
+    let runs = simulated(&platform)?;
+    assert_cycles_are_gross_sale_prices(&platform, &runs);
+    let stated_extra: BTreeSet<u32> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|a| a.learned_cycles == 0)
+        .map(|a| a.time_to_sale_days - plan.days_on_market)
+        .collect();
+    assert_eq!(
+        stated_extra.len(),
+        1,
+        "premise: every unlearned assessment adds one fixed transit to the plan's days on market"
+    );
+    let transit = *stated_extra.first().expect("one value");
+
+    let mut learned = 0_u32;
+    for run in &runs {
+        for assessed in &run.assessed {
+            let sold: Vec<_> = runs
+                .iter()
+                .filter(|earlier| earlier.day <= run.day)
+                .flat_map(|earlier| earlier.sold.iter())
+                .filter(|cycle| cycle.sku == assessed.product)
+                .collect();
+            let cycles = u32::try_from(sold.len()).expect("a small count");
+            assert_eq!(
+                assessed.learned_cycles, cycles,
+                "{} on day {} learned from a count other than its journalled sales",
+                assessed.product, run.day
+            );
+            if cycles == 0 {
+                continue;
+            }
+            learned += 1;
+            let n = Decimal::from(i64::from(cycles));
+            let mean = sold.iter().map(|cycle| cycle.resale_price).sum::<Decimal>() / n;
+            let days: u32 = sold.iter().map(|cycle| cycle.days_to_sale).sum::<u32>() / cycles;
+            assert_eq!(
+                assessed.expected_resale,
+                plan.quantity * mean * keep,
+                "{} on day {}: expected resale is not its realised mean",
+                assessed.product,
+                run.day
+            );
+            assert_eq!(
+                assessed.time_to_sale_days,
+                transit + days,
+                "{} on day {}: time to sale is not its realised days",
+                assessed.product,
+                run.day
+            );
+        }
+    }
+    assert!(
+        learned > 0,
+        "premise: no SKU was assessed again after it sold"
+    );
+    Ok(())
+}
+
+// ------------------------------------------- a consignment lost in delivery
+
+/// `run`, but until the plane has made `purchases` purchases, at most 400
+/// cycles.
+fn run_until_purchases(name: &str, plan: CommercePlan, purchases: u32) -> Result<Platform> {
+    let mut platform = run(name, plan, 0)?;
+    let mut at = start();
+    let mut cycles = 0;
+    while platform.commerce_research().expect("installed").purchases() < purchases {
+        assert!(cycles < 400, "premise: {name} made {purchases} purchases");
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+        cycles += 1;
+    }
+    Ok(platform)
+}
+
+/// Every purchase journalled under `runs`, in the order it was made, with
+/// the pass it was made on: the n-th is consignment n.
+fn journalled_purchases(runs: &[CommerceSimulated]) -> Vec<(u32, PaperPurchase)> {
+    runs.iter()
+        .flat_map(|run| run.purchases.iter().map(|p| (run.day, p.clone())))
+        .collect()
+}
+
+/// R12-COMMERCE-1171, the "insure" clause's claim, through the deep brain's
+/// own `breadth::install` on the committed dev plan. The plan states a
+/// delivery risk of one in a hundred and insures every purchase at its full
+/// declared value; so the hundredth consignment is lost, nothing of it is
+/// received, listed or held, and its cover pays the whole declared value,
+/// leaving nothing unrecovered. Every other consignment is received whole.
+/// Before this no consignment was ever lost, and the cover the plan paid a
+/// premium for could never pay anything.
+///
+/// Mutations: drop the loss arm in `work_candidate` and no consignment is
+/// lost; make `claim_for_loss` pay nothing on an insured consignment and the
+/// claim assertion fails.
+#[test]
+fn the_hundredth_consignment_under_the_committed_dev_plan_is_lost_in_delivery_and_its_cover_pays_its_whole_declared_value()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    assert_eq!(
+        plan.logistics.delivery_risk,
+        dec!("0.01"),
+        "premise: the committed plan loses one consignment in a hundred"
+    );
+    assert!(
+        plan.logistics.insurance_premium_rate.is_some() && plan.logistics.insurance.is_none(),
+        "premise: the committed plan covers each purchase at its own declared value"
+    );
+    let environment = BTreeMap::from([(PLAN_VARIABLE.to_string(), committed_plan_path())]);
+    let mut platform = platform()?;
+    install(
+        &mut platform,
+        &|name| environment.get(name).cloned(),
+        start(),
+    )?
+    .expect("a plan was set");
+    let mut at = start();
+    let mut cycles = 0;
+    while platform.commerce_research().expect("installed").purchases() < 101 {
+        assert!(
+            cycles < 400,
+            "premise: the committed plan made 101 purchases"
+        );
+        platform.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+        cycles += 1;
+    }
+    let runs = simulated(&platform)?;
+    let purchases = journalled_purchases(&runs);
+    assert!(
+        purchases.len() >= 101,
+        "premise: {} purchases",
+        purchases.len()
+    );
+    let lost: Vec<&LostConsignment> = runs.iter().flat_map(|run| run.lost.iter()).collect();
+    assert_eq!(
+        lost.iter().map(|l| l.consignment).collect::<Vec<_>>(),
+        vec![100],
+        "exactly the hundredth consignment is lost at one in a hundred"
+    );
+    let research = platform.commerce_research().expect("installed");
+    for (index, (day, purchase)) in purchases.iter().enumerate() {
+        let consignment = u32::try_from(index + 1).expect("a small count");
+        if consignment == 100 {
+            let loss = lost[0];
+            assert_eq!(
+                (&loss.sku, &loss.merchant, loss.quantity),
+                (&purchase.sku, &purchase.merchant, purchase.quantity),
+                "the loss is the hundredth purchase"
+            );
+            let lost_on = runs
+                .iter()
+                .find(|run| run.lost.iter().any(|l| l.consignment == 100))
+                .expect("journalled")
+                .day;
+            assert_eq!(lost_on, *day, "lost on the pass it was bought");
+            assert!(
+                purchase.units.is_empty(),
+                "a lost consignment received units"
+            );
+            let prefix = format!("{}-100-", purchase.sku);
+            assert!(
+                !research
+                    .ledger()
+                    .units()
+                    .keys()
+                    .any(|u| u.starts_with(&prefix)),
+                "the ledger holds a unit of the lost consignment"
+            );
+            assert_eq!(loss.claim.declared_value, purchase.notional);
+            assert!(loss.claim.declared_value.is_positive(), "premise: {loss:?}");
+            assert_eq!(
+                loss.claim.paid, purchase.notional,
+                "the cover did not pay the declared value of the lost consignment"
+            );
+            assert_eq!(loss.claim.unrecovered, Decimal::ZERO, "{loss:?}");
+        } else {
+            assert_eq!(
+                Decimal::from(i64::try_from(purchase.units.len()).expect("small")),
+                plan.quantity,
+                "consignment {consignment} was not received whole"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The same loss uninsured: a plan that declines cover and states a delivery
+/// risk of one in fifty loses the fiftieth and hundredth consignments, and
+/// the claim pays nothing, leaving the whole declared value unrecovered. The
+/// insured twin of the same plan loses the same consignments and recovers
+/// them whole. One in fifty because a declined plan reserves the risk on the
+/// whole value, and at a much higher rate nothing it is offered is viable.
+///
+/// Mutations: make `claim_for_loss` pay the declared value whatever the
+/// decision and the declined plan recovers it; lose every consignment and
+/// the schedule assertion fails.
+#[test]
+fn a_declined_cover_pays_nothing_on_a_lost_consignment_and_full_cover_pays_its_declared_value()
+-> Result<()> {
+    let mut declined_plan = commerce_plan()?;
+    declined_plan.logistics.delivery_risk = dec!("0.02");
+    assert!(declined_plan.logistics.decline_reason.is_some(), "premise");
+    let mut insured_plan = declined_plan.clone();
+    insured_plan.logistics.decline_reason = None;
+    insured_plan.logistics.insurance_premium_rate = Some(dec!("0.01"));
+    for (name, plan, insured) in [
+        ("lost-declined", declined_plan, false),
+        ("lost-insured", insured_plan, true),
+    ] {
+        let runs = simulated(&run_until_purchases(name, plan.clone(), 101)?)?;
+        let purchases = journalled_purchases(&runs);
+        assert!(
+            purchases.len() >= 101,
+            "premise: {name} made {} purchases",
+            purchases.len()
+        );
+        let lost: BTreeMap<u32, &LostConsignment> = runs
+            .iter()
+            .flat_map(|run| run.lost.iter())
+            .map(|l| (l.consignment, l))
+            .collect();
+        for (index, (_, purchase)) in purchases.iter().enumerate() {
+            let consignment = u32::try_from(index + 1).expect("a small count");
+            if consignment % 50 == 0 {
+                let loss = lost
+                    .get(&consignment)
+                    .unwrap_or_else(|| panic!("{name}: consignment {consignment} was not lost"));
+                assert!(purchase.units.is_empty(), "{name}: {purchase:?}");
+                assert_eq!(loss.claim.declared_value, purchase.notional, "{name}");
+                assert!(purchase.notional.is_positive(), "premise");
+                let (paid, unrecovered) = if insured {
+                    (purchase.notional, Decimal::ZERO)
+                } else {
+                    (Decimal::ZERO, purchase.notional)
+                };
+                assert_eq!(loss.claim.paid, paid, "{name}: {loss:?}");
+                assert_eq!(loss.claim.unrecovered, unrecovered, "{name}: {loss:?}");
+            } else {
+                assert!(
+                    !lost.contains_key(&consignment),
+                    "{name}: consignment {consignment} was lost at one in fifty"
+                );
+                assert!(!purchase.units.is_empty(), "{name}: {purchase:?}");
+            }
+        }
+        assert_eq!(lost.len(), purchases.len() / 50, "{name}");
+    }
+    Ok(())
+}
+
+/// A consignment lost in delivery puts nothing on the ledger, so a pass that
+/// only lost consignments journals no purchase count. A restarted deep brain
+/// resumes its purchase counter from the losses it journalled, so the next
+/// consignment is numbered after them, and the loss schedule does not start
+/// again from one. An insured plan that loses every consignment is the case
+/// where the ledger journal holds no count at all (insured, because a
+/// declined plan certain to lose its goods reserves their whole value and
+/// buys nothing).
+///
+/// Mutation: drop the lost-consignment arm in `resume_commerce_ledger` and
+/// the restarted plane numbers its first consignment one.
+#[test]
+fn a_restarted_deep_brain_numbers_its_consignments_after_the_ones_it_lost_before_the_restart()
+-> Result<()> {
+    let mut plan = commerce_plan()?;
+    plan.logistics.delivery_risk = Decimal::ONE;
+    plan.logistics.decline_reason = None;
+    plan.logistics.insurance_premium_rate = Some(dec!("0.01"));
+    let directory = std::env::temp_dir().join(format!(
+        "qip-deepbrain-commerce-lost-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a scratch directory");
+    let plan_path = directory.join("plan.json");
+    std::fs::write(
+        &plan_path,
+        serde_json::to_string(&BreadthPlan {
+            commerce: Some(plan),
+            ..BreadthPlan::default()
+        })
+        .expect("a plan serialises"),
+    )
+    .expect("the plan file is writable");
+    let log = directory.join("events.jsonl");
+    let environment = BTreeMap::from([(
+        PLAN_VARIABLE.to_string(),
+        plan_path.to_string_lossy().into_owned(),
+    )]);
+    let boot = || -> Result<Platform> {
+        let config = PlatformConfig::default().with_event_log_file(&log);
+        let (context, _clock) = Context::deterministic(start(), config.seed);
+        let mut platform = Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            Universe::new(),
+            LimitSet::conservative_default(),
+        )?;
+        install(
+            &mut platform,
+            &|name| environment.get(name).cloned(),
+            start(),
+        )?
+        .expect("a plan was set");
+        Ok(platform)
+    };
+    let mut at = start();
+    let before = {
+        let mut platform = boot()?;
+        for _ in 0..3 {
+            platform.run_cycle(at);
+            at = at.saturating_add(Duration::from_hours(1));
+        }
+        let research = platform.commerce_research().expect("installed");
+        assert!(
+            research.ledger().events().is_empty(),
+            "premise: every consignment was lost, so the ledger holds nothing"
+        );
+        research.purchases()
+    };
+    assert!(before > 0, "premise: the first process bought something");
+    let mut restarted = boot()?;
+    assert_eq!(
+        restarted
+            .commerce_research()
+            .expect("installed")
+            .purchases(),
+        before,
+        "the restarted plane did not resume the consignments it lost"
+    );
+    for _ in 0..3 {
+        restarted.run_cycle(at);
+        at = at.saturating_add(Duration::from_hours(1));
+    }
+    let numbers: Vec<u32> = simulated(&restarted)?
+        .iter()
+        .flat_map(|run| run.lost.iter().map(|l| l.consignment))
+        .collect();
+    let expected: Vec<u32> = (1..=u32::try_from(numbers.len()).expect("small")).collect();
+    assert_eq!(numbers, expected, "the log numbers every consignment once");
+    assert!(
+        numbers.len() > usize::try_from(before).expect("small"),
+        "premise: the restarted process lost consignments of its own"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }

@@ -39,6 +39,7 @@ pub mod attribution;
 pub mod blueprint_objectives;
 pub mod breadth;
 pub mod bus_bridge;
+pub mod campaign_results;
 pub mod capacity_review;
 pub mod causal_review;
 pub mod cell_cycle_scores;

@@ -951,6 +951,7 @@ fn commerce_plan() -> Result<CommercePlan> {
             warehouse: "paper-warehouse".to_string(),
             consolidate_with: None,
             insurance: None,
+            insurance_premium_rate: None,
             decline_reason: Some("goods under the insured threshold".to_string()),
             delivery_risk: dec!("0.01"),
         },
@@ -2066,6 +2067,50 @@ fn every_received_unit_carries_its_sku_shipping_insurance_duty_and_tax_from_the_
         assert_eq!(text("customs_duties"), "duty rate 0.02");
         assert_eq!(text("tax"), "purchase tax 0.1");
     }
+    Ok(())
+}
+
+/// R12-COMMERCE-5095: a plan that states insurance cover and a reason to
+/// decline it is refused at install. Before this the reason was dropped
+/// silently and the plane ran insured, so a reviewer reading the declined
+/// reason in the file was told the opposite of what ran.
+///
+/// Mutation: make the `(Some(_), Some(reason))` arm in
+/// `commerce_research.rs` build the insured plan and `expect_err` fails.
+#[test]
+fn a_plan_that_both_insures_and_declines_insurance_is_refused() -> Result<()> {
+    let mut plan = commerce_plan()?;
+    assert!(
+        plan.logistics.decline_reason.is_some(),
+        "premise: the base plan declines with a reason"
+    );
+    plan.logistics.insurance = Some((dec!("100"), dec!("1")));
+    let mut refusing = platform()?;
+    let refusal = refusing
+        .install_breadth(
+            &BreadthPlan {
+                commerce: Some(plan.clone()),
+                ..BreadthPlan::default()
+            },
+            start(),
+        )
+        .expect_err("a plan both insured and declined installed");
+    assert!(
+        refusal
+            .message()
+            .starts_with("configuration: the commerce plan both insures its goods and declines"),
+        "refused for another reason: {}",
+        refusal.message()
+    );
+    plan.logistics.decline_reason = None;
+    let mut platform = platform()?;
+    platform.install_breadth(
+        &BreadthPlan {
+            commerce: Some(plan),
+            ..BreadthPlan::default()
+        },
+        start(),
+    )?;
     Ok(())
 }
 

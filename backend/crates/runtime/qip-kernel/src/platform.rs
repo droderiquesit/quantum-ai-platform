@@ -7558,6 +7558,14 @@ impl Platform {
             "compute units charged since the process started",
         );
         metrics.describe(
+            names::MODEL_COST_PER_CORRECT,
+            "compute units each model rung was billed per call LEARN graded correct",
+        );
+        metrics.describe(
+            names::MODEL_LATENCY_PER_CORRECT,
+            "billed seconds each model rung took per call LEARN graded correct",
+        );
+        metrics.describe(
             names::KILL_SWITCH_TRIPPED,
             "1 while the kill switch is globally tripped and nothing may trade",
         );
@@ -15449,6 +15457,26 @@ impl Platform {
         );
 
         self.model_spend.absorb(&ledger);
+        // Benefit per dollar and per second of latency, exported once the
+        // cycle's bill is in (R12-FINOPS-10139). `Decimal` to `f64` here, at
+        // the metric, for the reason given above for the compute gauges.
+        for benefit in self.model_spend.report(&self.routing_reputation) {
+            let rung = labels([("model", benefit.model.as_str())]);
+            if let Some(cost) = benefit.cost_per_correct {
+                self.telemetry.metrics.gauge(
+                    names::MODEL_COST_PER_CORRECT,
+                    rung.clone(),
+                    cost.to_f64(),
+                );
+            }
+            if let Some(latency) = benefit.latency_per_correct {
+                self.telemetry.metrics.gauge(
+                    names::MODEL_LATENCY_PER_CORRECT,
+                    rung,
+                    latency.as_secs_f64(),
+                );
+            }
+        }
         self.cycle_ledger = Some(ledger);
         problems
     }

@@ -59,7 +59,7 @@ use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
     AcquisitionCriteria, AcquisitionKind, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
-    Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
+    Pathway, ProducerQuarantine, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{
     CapabilityEntry, GapClass, OntologyPatch, OntologyTypeFamily, OntologyTypeSpec,
@@ -150,138 +150,180 @@ pub fn proposition_subject(proposition: &str) -> &str {
     }
 }
 
-/// The subjects whose latest resolution among `resolutions` went against the
-/// federation's arbitrated probability, each with the propositions that
-/// did, in order (ADR 0346). Against means the federation put the
-/// proposition above one half and it resolved false, or below one half and
-/// it resolved true. A resolution with no arbitrated number, or one at
-/// exactly one half, took no side and says nothing; a later resolution on
-/// the federation's side clears the subject.
-///
-/// "Latest" is by the proposition's `@<cycle>`, not by the order given: a
-/// review lists its resolutions in proposition order, so `x@10` comes
-/// before `x@9`, and reading that order would let the older question decide.
-pub fn belief_discrepancies<'a>(
-    resolutions: impl IntoIterator<Item = &'a Resolution>,
-) -> BTreeMap<String, Vec<String>> {
-    let cycle_of = |proposition: &str| {
-        proposition
-            .rsplit_once('@')
-            .and_then(|(_, cycle)| cycle.parse::<u64>().ok())
-    };
-    let mut ordered: Vec<&Resolution> = resolutions.into_iter().collect();
-    // Stable, so resolutions of one cycle keep the order they were given.
-    ordered.sort_by_key(|resolution| cycle_of(&resolution.proposition));
-    let mut latest: BTreeMap<String, (bool, Vec<String>)> = BTreeMap::new();
-    for resolution in ordered {
-        let Some(p) = resolution
-            .ensemble
-            .filter(|p| p.is_finite() && p.total_cmp(&0.5).is_ne())
-        else {
-            continue;
-        };
-        let against = (p > 0.5) != resolution.outcome;
-        let entry = latest
-            .entry(proposition_subject(&resolution.proposition).to_string())
-            .or_default();
-        if against {
-            if !entry.0 {
-                entry.1.clear();
-            }
-            entry.1.push(resolution.proposition.clone());
-        } else {
-            entry.1.clear();
-        }
-        entry.0 = against;
-    }
-    latest
-        .into_iter()
-        .filter(|(_, (against, _))| *against)
-        .map(|(subject, (_, propositions))| (subject, propositions))
-        .collect()
+/// The federation's side on one resolution (ADR 0346): `Some(true)` when the
+/// resolution went against the arbitrated probability — above one half and
+/// it resolved false, or below and it resolved true — `Some(false)` when it
+/// went the federation's way, and `None` when no number was merged or the
+/// number was exactly one half, because a forecast that took no side says
+/// nothing about whether the federation is wrong.
+pub fn resolved_against(resolution: &Resolution) -> Option<bool> {
+    let p = resolution
+        .ensemble
+        .filter(|p| p.is_finite() && p.total_cmp(&0.5).is_ne())?;
+    Some((p > 0.5) != resolution.outcome)
 }
 
-/// The price/belief discrepancy detector (ADR 0346, R12-EXPAND-6067): the
-/// second [`PersistenceTracker`], fed from the federation's resolutions
-/// rather than from the price detectors. A subject is flagged in a sweep
-/// when a resolution new since the last sweep went against the federation
-/// and none after it went its way; flagged on [`PERSIST_SWEEPS`]
-/// consecutive sweeps, it raises one research item citing the resolved
-/// propositions. It moves nothing: the item asks a specialist whether the
-/// federation is wrong about that subject.
+/// The cycle a federation proposition was asked in, from its `@<cycle>`.
+fn proposition_cycle(proposition: &str) -> Option<u64> {
+    proposition
+        .rsplit_once('@')
+        .and_then(|(_, cycle)| cycle.parse::<u64>().ok())
+}
+
+/// Live belief-discrepancy runs the watch holds at most. A run is one
+/// federation subject whose latest sided resolution went against it; the
+/// subjects are the NOW brain's own propositions, so this is the same guard
+/// as [`MAX_WORLD_STATE_PARTITIONS`] against a log naming more than the
+/// brain could hold, and the run read longest ago is the one let go.
+pub const MAX_BELIEF_RUNS: usize = MAX_WORLD_STATE_PARTITIONS;
+
+/// One subject's standing run of resolutions against the federation.
+#[derive(Debug, Clone)]
+struct BeliefRun {
+    /// Counts the run's resolutions, not sweeps: it is shown the subject
+    /// once per resolution against the federation, so it raises once, on
+    /// the [`PERSIST_SWEEPS`]-th consecutive one, and never again in the run.
+    tracker: PersistenceTracker,
+    /// The run's propositions, newest [`BELIEF_RUN_CITATIONS`] kept.
+    cited: Vec<String>,
+    /// Log position of the review that last extended the run.
+    last_review: usize,
+}
+
+/// The price/belief discrepancy detector (ADR 0346, R12-EXPAND-6067): a
+/// second [`PersistenceTracker`] per subject, fed from the federation's
+/// resolutions rather than from the price detectors.
+///
+/// Persistence is counted in **resolutions**, as the owner's ruling names
+/// it: the federation's arbitrated probability landing on the wrong side of
+/// what the market then did, for the same subject, on [`PERSIST_SWEEPS`]
+/// consecutive resolutions. It was counted in sweeps until 2026-11-23, so
+/// three resolutions read in one sweep counted once and a subject the
+/// federation resolves less often than the deep brain sweeps never persisted
+/// at all — a sweep with no resolution of the subject reset it. Now a sweep
+/// that resolves nothing about a subject leaves its run where it stands, and
+/// only a resolution on the federation's side ends it.
+///
+/// Resolutions are read in log order and, inside one review, by the
+/// proposition's `@<cycle>`: a review lists its resolutions in proposition
+/// order, so `x@10` comes before `x@9`, and reading that order would let the
+/// older question decide. Log order and not the cycle across reviews,
+/// because a restarted platform numbers its cycles from one again over the
+/// same journal. The raised item moves nothing: it asks a specialist whether
+/// the federation is wrong about that subject.
 #[derive(Debug, Clone)]
 pub struct BeliefWatch {
-    tracker: PersistenceTracker,
     /// How many reviews, in log order, have already been read. A count and
-    /// not a cycle number, because a restarted platform numbers its cycles
-    /// from zero again over the same journal, and a cycle cursor would then
-    /// skip every new review until the old maximum was passed.
+    /// not a cycle number, for the same restart.
     seen: usize,
-    /// The propositions resolved against the federation during each
-    /// flagged subject's current run, newest kept.
-    runs: BTreeMap<String, Vec<String>>,
+    runs: BTreeMap<String, BeliefRun>,
 }
 
 impl BeliefWatch {
     pub fn new() -> Result<Self> {
+        // Refused here, not on the first resolution: a persistence of one
+        // resolution is a detection.
+        PersistenceTracker::new(PERSIST_SWEEPS)?;
         Ok(Self {
-            tracker: PersistenceTracker::new(PERSIST_SWEEPS)?,
             seen: 0,
             runs: BTreeMap::new(),
         })
     }
 
     /// One sweep over every review the log holds, oldest first, as each
-    /// review's resolutions: those past the count already read are new.
+    /// review's resolutions: those past the count already read are new. A
+    /// review the replay refused is passed as no resolutions, in its own
+    /// position, so the count still moves past it.
     pub fn feed(&mut self, reviews: &[&[Resolution]]) -> Vec<Observation> {
-        let fresh = reviews
-            .get(self.seen..)
+        let base = self.seen;
+        let mut fresh: Vec<(usize, Option<u64>, &Resolution)> = reviews
+            .get(base..)
             .unwrap_or_default()
             .iter()
-            .flat_map(|resolved| resolved.iter());
-        let against = belief_discrepancies(fresh);
-        self.seen = reviews.len();
-        self.runs.retain(|subject, _| against.contains_key(subject));
-        for (subject, propositions) in &against {
-            let run = self.runs.entry(subject.clone()).or_default();
-            run.extend(propositions.iter().cloned());
-            let excess = run.len().saturating_sub(BELIEF_RUN_CITATIONS);
-            run.drain(..excess);
-        }
-        let flagged: BTreeSet<String> = against.into_keys().collect();
-        self.tracker
-            .observe(&flagged)
-            .into_iter()
-            .map(|mut observation| {
-                let subject = observation
-                    .evidence
-                    .iter()
-                    .find_map(|e| e.strip_prefix("persistent:"))
-                    .unwrap_or_default()
-                    .to_string();
+            .enumerate()
+            .flat_map(|(offset, resolved)| {
+                resolved.iter().map(move |resolution| {
+                    (
+                        base + offset,
+                        proposition_cycle(&resolution.proposition),
+                        resolution,
+                    )
+                })
+            })
+            .collect();
+        // Stable, so resolutions of one cycle keep the order they were given.
+        fresh.sort_by_key(|(review, cycle, _)| (*review, *cycle));
+        self.seen = self.seen.max(reviews.len());
+        let mut raised = Vec::new();
+        for (review, _, resolution) in fresh {
+            let Some(against) = resolved_against(resolution) else {
+                continue;
+            };
+            let subject = proposition_subject(&resolution.proposition).to_string();
+            if !against {
+                self.runs.remove(&subject);
+                continue;
+            }
+            if !self.runs.contains_key(&subject) {
+                let Ok(tracker) = PersistenceTracker::new(PERSIST_SWEEPS) else {
+                    continue;
+                };
+                self.runs.insert(
+                    subject.clone(),
+                    BeliefRun {
+                        tracker,
+                        cited: Vec::new(),
+                        last_review: review,
+                    },
+                );
+            }
+            let Some(run) = self.runs.get_mut(&subject) else {
+                continue;
+            };
+            run.last_review = review;
+            run.cited.push(resolution.proposition.clone());
+            let excess = run.cited.len().saturating_sub(BELIEF_RUN_CITATIONS);
+            run.cited.drain(..excess);
+            let shown = BTreeSet::from([subject.clone()]);
+            for mut observation in run.tracker.observe(&shown) {
                 observation.observation = format!(
                     "the federation's forecast on `{subject}` was resolved against on \
-                     {PERSIST_SWEEPS} consecutive sweeps"
+                     {PERSIST_SWEEPS} consecutive resolutions"
                 );
                 observation.evidence = ["belief-discrepancy".to_string()]
                     .into_iter()
                     .chain(observation.evidence)
                     .chain(
-                        self.runs
-                            .get(&subject)
-                            .into_iter()
-                            .flatten()
+                        run.cited
+                            .iter()
                             .map(|proposition| format!("resolved:{proposition}")),
                     )
                     .collect();
-                observation
-            })
-            .collect()
+                raised.push(observation);
+            }
+            while self.runs.len() > MAX_BELIEF_RUNS {
+                let Some(oldest) = self
+                    .runs
+                    .iter()
+                    .min_by_key(|(_, run)| run.last_review)
+                    .map(|(subject, _)| subject.clone())
+                else {
+                    break;
+                };
+                self.runs.remove(&oldest);
+            }
+        }
+        raised
     }
 
-    /// Subjects being tracked; bounded by those flagged in the last sweep.
+    /// Subjects in a run against the federation; at most [`MAX_BELIEF_RUNS`].
     pub fn tracked(&self) -> usize {
-        self.tracker.tracked()
+        self.runs.len()
+    }
+
+    /// Reviews read so far, in log order, refused ones included.
+    pub fn read(&self) -> usize {
+        self.seen
     }
 }
 /// Hosted-model replies counted before their error rate is judged, and the
@@ -602,6 +644,21 @@ pub struct ResearchConfig {
     /// [`AMBIENT_MODELS_VARIABLE`]. With it off the sweep runs none and
     /// [`ResearchRound::ambient_models`] is `None`, not an empty report.
     pub ambient_models: bool,
+    /// How many signals a producer must have raised before the attention
+    /// router judges it by its record (R12-RES-7107). Default 100: more than
+    /// the sweeps one signal's life spans at the shortest cadence a
+    /// deployment states, so a detector re-asserting one standing
+    /// deviation is judged on more than that deviation's own repeats.
+    /// Provisional, stated under the owner's 2026-11-23 instruction.
+    pub producer_quarantine_min_signals: u32,
+    /// The reputation, in basis points of signals that were neither repeats
+    /// of a live signal nor shed, below which the router quarantines a
+    /// producer (R12-RES-7107). Default 100 (1%): below the share a standing
+    /// deviation re-raised every sweep keeps at a five-minute cadence and a
+    /// one-hour signal life, so only a producer whose attention is almost
+    /// all repeats or shed is stopped. Advisory routing, not a risk limit;
+    /// provisional, stated under the owner's 2026-11-23 instruction.
+    pub producer_quarantine_floor_bp: u32,
 }
 
 /// The variable switching the always-on ambient models: `on` or `off`, on
@@ -678,6 +735,8 @@ impl Default for ResearchConfig {
             attention_budget_per_hour: 256,
             attention_held_capacity: 256,
             ambient_models: true,
+            producer_quarantine_min_signals: 100,
+            producer_quarantine_floor_bp: 100,
         }
     }
 }
@@ -1097,6 +1156,9 @@ pub struct ResearchRound {
     /// federation's reviews could not be read, where they could not.
     pub belief_discrepancies: usize,
     pub belief_reviews_refused: Option<String>,
+    /// Reviews in the log the replay did not trust, read as no resolutions
+    /// rather than stopping the watch (R12-EXPAND-6067).
+    pub belief_reviews_untrusted: usize,
     /// Every ambient signal this sweep routed, in routing order, for the
     /// ambient journal (`ambient_journal.rs`): a count on a cycle line is
     /// not a record anybody can replay.
@@ -1762,7 +1824,8 @@ impl ResearchRound {
              acquisitions {:?}; campaigns {:?} ({} pack(s), {} refused); capability register \
              refused {:?}; reflex \
              packages {:?}; promotion lanes {:?}; contested claims {} ({} unexplained), knowledge deltas {} ({} \
-             conflicts), theory deltas {}, cross-domain chains {} ({} raised); outputs \
+             conflicts), theory deltas {}, cross-domain chains {} ({} raised); belief \
+             discrepancies {} ({} untrusted review(s)); outputs \
              advisory, none promoted; capabilities are paper and shadow only",
             self.anomalies,
             self.raised,
@@ -1799,6 +1862,8 @@ impl ResearchRound {
             self.theory_deltas,
             self.cross_domain_hypotheses,
             self.cross_domain_raised,
+            self.belief_discrepancies,
+            self.belief_reviews_untrusted,
         )
     }
 }
@@ -2069,12 +2134,24 @@ impl ResearchLoop {
         // from the configuration (R12-AMBIENT-7202), defaulting far above
         // what a sweep raises today, so the budget binds only in a storm,
         // which is when it is meant to.
+        //
+        // A storm is also repeats and noise, not only volume (R12-RES-7107):
+        // a repeat of a live deviation is clustered and spends no budget,
+        // and a producer whose record is almost all repeats or shed is
+        // quarantined, so one detector cannot spend the hour saying one
+        // thing. Until 2026-11-23 both were contract code no deployed router
+        // turned on.
         let policy = RoutingPolicy::standard(
             1_000,
             config.attention_budget_per_hour,
             Duration::from_hours(1),
             config.attention_held_capacity,
-        )?;
+        )?
+        .clustering_duplicates()
+        .quarantining_producers(ProducerQuarantine::new(
+            config.producer_quarantine_min_signals,
+            config.producer_quarantine_floor_bp,
+        )?);
         // Every specialist a surprise can wake is a registered brain whose
         // tools this node actually has. Refused at start-up rather than at
         // the first wake: a spec naming a tool nobody registered is a brain
@@ -2182,6 +2259,22 @@ impl ResearchLoop {
     /// refused when it lacks a type the sweep's detectors read. Whether it
     /// names every asset class in the coverage map is checked at each sweep,
     /// by [`Self::check_coverage_registered`].
+    /// The attention router's record of `producer` (a trigger name): its
+    /// reputation in basis points, `None` before it raised a signal or
+    /// with no router.
+    pub fn producer_reputation_bp(&self, producer: &str) -> Option<u32> {
+        self.router
+            .as_ref()
+            .and_then(|r| r.producer_reputation_bp(producer))
+    }
+
+    /// Whether the attention router has quarantined `producer`.
+    pub fn is_producer_quarantined(&self, producer: &str) -> bool {
+        self.router
+            .as_ref()
+            .is_some_and(|r| r.is_quarantined(producer))
+    }
+
     /// This loop with its attention router removed (R12-AMBIENT-3027).
     ///
     /// No binary calls it: every deployed loop keeps the router its
@@ -2454,6 +2547,11 @@ impl ResearchLoop {
         &self.brains
     }
 
+    /// The price/belief discrepancy watch (ADR 0346), as the sweeps left it.
+    pub const fn belief_watch(&self) -> &BeliefWatch {
+        &self.beliefs
+    }
+
     pub const fn desk(&self) -> &ExpansionDesk {
         &self.desk
     }
@@ -2523,17 +2621,24 @@ impl ResearchLoop {
     }
 
     /// The sweep's belief-discrepancy step (ADR 0346), taking what the
-    /// replay returned so the wiring is testable without a journal. A refused
-    /// read is reported on the round and the watch is not fed, so a refusal
-    /// does not reset a run in progress.
+    /// replay returned so the wiring is testable without a journal. A review
+    /// the replay refused is counted on the round and read as no
+    /// resolutions in its own position, so one untrusted record neither
+    /// blinds the watch nor shifts its count of reviews read. A journal that
+    /// could not be read at all is reported on the round and the watch is
+    /// not fed, so a refused read does not reset a run in progress.
     fn read_beliefs(
         &mut self,
-        replayed: Result<Vec<Vec<Resolution>>>,
+        replayed: Result<Vec<Result<Vec<Resolution>>>>,
         round: &mut ResearchRound,
     ) -> Vec<Observation> {
         match replayed {
             Ok(reviews) => {
-                let read: Vec<&[Resolution]> = reviews.iter().map(Vec::as_slice).collect();
+                round.belief_reviews_untrusted = reviews.iter().filter(|r| r.is_err()).count();
+                let read: Vec<&[Resolution]> = reviews
+                    .iter()
+                    .map(|review| review.as_ref().map_or(&[][..], Vec::as_slice))
+                    .collect();
                 let raised = self.beliefs.feed(&read);
                 round.belief_discrepancies = raised.len();
                 raised
@@ -2557,6 +2662,39 @@ impl ResearchLoop {
         now: Timestamp,
         licensed_sources: &BTreeSet<String>,
         eligible_jurisdictions: &BTreeSet<String>,
+    ) -> Result<ResearchRound> {
+        // The federation's resolutions, off the log, each review checked on
+        // its own (ADR 0346, R12-EXPAND-6067).
+        let beliefs = federation_stage::replay_each(platform).map(|reviews| {
+            reviews
+                .into_iter()
+                .map(|review| review.map(|review| review.resolved))
+                .collect::<Vec<_>>()
+        });
+        self.sweep_with_beliefs(
+            platform,
+            fills,
+            slippage,
+            now,
+            licensed_sources,
+            eligible_jurisdictions,
+            beliefs,
+        )
+    }
+
+    /// [`Self::sweep_over`] with the federation's resolutions already read,
+    /// so a test can hand the sweep reviews no cycle it could run would
+    /// produce on demand, through the identical path to the desk.
+    #[allow(clippy::too_many_arguments)]
+    fn sweep_with_beliefs(
+        &mut self,
+        platform: &Platform,
+        fills: &[FillObservation],
+        slippage: &[SlippageObservation],
+        now: Timestamp,
+        licensed_sources: &BTreeSet<String>,
+        eligible_jurisdictions: &BTreeSet<String>,
+        beliefs: Result<Vec<Result<Vec<Resolution>>>>,
     ) -> Result<ResearchRound> {
         let metrics = platform.telemetry().metrics.clone();
         let mut round = ResearchRound::default();
@@ -2647,17 +2785,10 @@ impl ResearchLoop {
         observations.extend(contradictions(&readings));
         observations.extend(self.persistence.observe(&flagged));
         // The price/belief discrepancy (ADR 0346): the federation's
-        // resolutions, off the log. A review the replay refuses is reported
-        // and the watch is not fed, so a refused read does not reset a run.
-        observations.extend(self.read_beliefs(
-            federation_stage::replay(platform).map(|reviews| {
-                reviews
-                    .into_iter()
-                    .map(|review| review.resolved)
-                    .collect::<Vec<_>>()
-            }),
-            &mut round,
-        ));
+        // resolutions, off the log, each review checked on its own. An
+        // untrusted review is counted and skipped in place; a journal that
+        // cannot be read is reported and the watch is not fed.
+        observations.extend(self.read_beliefs(beliefs, &mut round));
 
         // --- calibration, declines, refusals, fills, coverage -------------
         if let Some(calibration) = platform.calibration() {
@@ -3295,10 +3426,37 @@ impl ResearchLoop {
                 );
                 match event.disposition {
                     Disposition::Deferred => {}
-                    Disposition::Shed
-                    | Disposition::Expired
-                    | Disposition::Clustered
-                    | Disposition::Quarantined => {
+                    // A clustered gap is a re-raise of one the router already
+                    // routed. It spends no attention, but the desk still
+                    // hears it: the desk is what declines a retired question
+                    // raised again and refreshes a queued one's deadline,
+                    // and a re-raise it never heard would leave both to the
+                    // router, which knows neither. Nothing else a clustered
+                    // signal carries — a specialist wake, a capital move —
+                    // is acted on twice.
+                    Disposition::Clustered => {
+                        self.pending_wakes.remove(&event.signal_id);
+                        self.pending_capital.remove(&event.signal_id);
+                        self.unknown_questions.remove(&event.signal_id);
+                        if let Some((gap, deadline, stated_urgency)) =
+                            self.pending.remove(&event.signal_id)
+                        {
+                            let AuthorityBoundary::AdvisoryOnly = event.authority;
+                            self.admit(
+                                gap,
+                                deadline,
+                                stated_urgency,
+                                event.pathway,
+                                &event.feedback_link,
+                                now,
+                                &metrics,
+                                &mut round,
+                                licensed_sources,
+                                eligible_jurisdictions,
+                            )?;
+                        }
+                    }
+                    Disposition::Shed | Disposition::Expired | Disposition::Quarantined => {
                         self.pending.remove(&event.signal_id);
                         self.unknown_questions.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
@@ -5784,7 +5942,7 @@ mod tests {
                 );
                 round = ResearchRound::default();
             }
-            let out = research.read_beliefs(Ok(log.clone()), &mut round);
+            let out = research.read_beliefs(Ok(log.iter().cloned().map(Ok).collect()), &mut round);
             assert_eq!(round.belief_discrepancies, out.len());
             assert!(round.belief_reviews_refused.is_none());
             raised += out.len();
@@ -5792,6 +5950,153 @@ mod tests {
         assert_eq!(
             raised, 1,
             "one item after {PERSIST_SWEEPS} flagged sweeps, a refusal between them notwithstanding"
+        );
+    }
+
+    /// R12-EXPAND-6067: one untrusted review in the log no longer disables
+    /// the belief watch. The replay refuses the second review in its own
+    /// position; the sweep counts it on the round, reads it as nothing, and
+    /// the three resolutions against the federation around it still raise
+    /// exactly one item. Until 2026-11-23 the whole read was refused on that
+    /// one record, every sweep afterwards, and the detector never raised
+    /// again.
+    ///
+    /// Mutation: refuse the whole read when any review is untrusted (collect
+    /// the reviews into one `Result` in `read_beliefs`) and nothing raises.
+    #[test]
+    fn an_untrusted_review_is_counted_and_skipped_and_the_watch_still_raises() {
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let subject = "macro:rates:move-persists";
+        let mut log: Vec<Result<Vec<Resolution>>> = Vec::new();
+        let mut raised = Vec::new();
+        for n in 1..=u64::from(PERSIST_SWEEPS) + 1 {
+            log.push(if n == 2 {
+                Err(qip_core::error::Error::invalid("not trusted as a replay"))
+            } else {
+                Ok(vec![against(subject, n)])
+            });
+            let mut round = ResearchRound::default();
+            let out = research.read_beliefs(Ok(log.clone()), &mut round);
+            assert!(round.belief_reviews_refused.is_none(), "{round:?}");
+            assert_eq!(
+                round.belief_reviews_untrusted,
+                usize::from(n >= 2),
+                "the untrusted review is counted on every sweep that reads it"
+            );
+            assert_eq!(round.belief_discrepancies, out.len());
+            raised.extend(out);
+        }
+        assert_eq!(raised.len(), 1, "{raised:#?}");
+        assert_eq!(
+            raised[0].evidence,
+            [
+                "belief-discrepancy".to_string(),
+                "detector:persistent_discrepancy".to_string(),
+                format!("persistent:{subject}"),
+                format!("resolved:{subject}@1"),
+                format!("resolved:{subject}@3"),
+                format!("resolved:{subject}@4"),
+            ]
+        );
+    }
+
+    /// R12-EXPAND-6067's verification, through the sweep and onto the desk:
+    /// a persistent price/belief discrepancy yields exactly one queued item
+    /// naming its origin. The sweep is the one `sweep_over` runs after it
+    /// reads the journal, over a real platform, handed the federation's
+    /// reviews: the federation put `obj-AAA:next-close-up` above one half
+    /// on four cycles and the market closed down after each. Nothing is
+    /// queued from the belief watch before the third resolution; after it
+    /// the desk holds exactly one item whose origin is the
+    /// `persistent_discrepancy` detector on that subject, citing the three
+    /// resolved propositions; a fourth resolution against queues nothing
+    /// more. Until this test the closure's tests drove `BeliefWatch::feed`
+    /// and `raise` directly, so nothing proved the sweep queued anything.
+    ///
+    /// Mutation (the closure's): feed the watch what the anomaly path
+    /// flagged — on this quiet platform, nothing — in `read_beliefs`, and
+    /// the queue never holds the item.
+    #[test]
+    fn a_persistent_belief_discrepancy_swept_from_the_log_queues_exactly_one_item_naming_its_origin()
+     {
+        use qip_core::Context;
+        let start = Timestamp::from_secs(1_800_000_000);
+        let config = qip_kernel::PlatformConfig::default();
+        let (context, _clock) = Context::deterministic(start, config.seed);
+        let platform = qip_kernel::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        let subject = "obj-AAA:next-close-up";
+        // Every entry the belief watch's gaps put on the desk, by kind. A
+        // specialist item the factory cannot yet serve is queued with the
+        // tool build it is blocked on, under the same origin; the research
+        // item is the one the verification counts.
+        let ours = |research: &ResearchLoop| -> Vec<(TaskKind, Vec<String>)> {
+            research
+                .desk()
+                .queue()
+                .ranked()
+                .into_iter()
+                .filter_map(|entry| entry.origin().map(|gap| (entry.kind(), gap)))
+                .filter(|(_, gap)| {
+                    gap.signal.evidence.first().map(String::as_str) == Some("belief-discrepancy")
+                })
+                .map(|(kind, gap)| (kind, gap.signal.evidence.clone()))
+                .collect()
+        };
+        let mut research =
+            ResearchLoop::new(ResearchConfig::default(), BTreeMap::new()).expect("assembles");
+        let mut log: Vec<Result<Vec<Resolution>>> = Vec::new();
+        for n in 1..=u64::from(PERSIST_SWEEPS) + 1 {
+            log.push(Ok(vec![against(subject, n)]));
+            let now = start.saturating_add(Duration::from_days(n as i64));
+            let round = research
+                .sweep_with_beliefs(
+                    &platform,
+                    &[],
+                    &[],
+                    now,
+                    &BTreeSet::new(),
+                    &BTreeSet::from(["US".to_string()]),
+                    Ok(log.clone()),
+                )
+                .unwrap_or_else(|e| panic!("sweep {n}: {e}"));
+            assert!(round.belief_reviews_refused.is_none(), "{round:?}");
+            assert_eq!(research.beliefs.read(), log.len(), "every review read");
+            if n < u64::from(PERSIST_SWEEPS) {
+                assert_eq!(round.belief_discrepancies, 0, "sweep {n}");
+                assert!(ours(&research).is_empty(), "queued early at sweep {n}");
+            }
+            if n == u64::from(PERSIST_SWEEPS) {
+                assert_eq!(round.belief_discrepancies, 1, "sweep {n}: {round:?}");
+            }
+        }
+        let queued = ours(&research);
+        let (research_items, other): (Vec<_>, Vec<_>) = queued
+            .into_iter()
+            .partition(|(kind, _)| *kind != TaskKind::ToolBuild);
+        assert!(
+            other.len() == 1 && other.iter().all(|(kind, _)| *kind == TaskKind::ToolBuild),
+            "only the one tool build the item waits on may share its origin: {other:?}"
+        );
+        let queued: Vec<Vec<String>> = research_items.into_iter().map(|(_, e)| e).collect();
+        assert_eq!(
+            queued,
+            [[
+                "belief-discrepancy".to_string(),
+                "detector:persistent_discrepancy".to_string(),
+                format!("persistent:{subject}"),
+                format!("resolved:{subject}@1"),
+                format!("resolved:{subject}@2"),
+                format!("resolved:{subject}@3"),
+            ]],
+            "exactly one queued item, naming the detector and the subject it came from"
         );
     }
 

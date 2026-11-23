@@ -60,7 +60,7 @@ use qip_edge_node::arbitrage::{
 use qip_edge_node::control::{Handoff as ControlHandoff, PlanCompiler, Poller};
 use qip_edge_node::cross_region::{CrossRegionMirror, MIRROR_VARIABLE, no_declaration_line};
 use qip_edge_node::dark::DarkRegionWire;
-use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeSink, Sink};
+use qip_edge_node::event_fabric::drain::{Drain, DrainConfig, LakeBatching, LakeSink, Sink};
 use qip_edge_node::event_fabric::inputs::RecordedInputs;
 use qip_edge_node::event_fabric::mirror::FabricMirror;
 use qip_edge_node::event_fabric::placement::{
@@ -1392,7 +1392,11 @@ fn run() -> Result<()> {
             retention,
             lake_codec,
         )?
-        .with_metrics(Arc::clone(metrics)),
+        .with_metrics(Arc::clone(metrics))
+        // ADR 0181 decision 3 (R12-DATA-9187): lake segments are sized at
+        // the seal, one per partition per size or age bound, not one per
+        // spool offset.
+        .with_batching(LakeBatching::deployed()),
     )];
     // The fabric link's issued certificate under `cas`, held for the life
     // of `run` — which never returns while the node runs — because dropping

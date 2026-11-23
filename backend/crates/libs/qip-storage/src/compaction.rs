@@ -19,8 +19,11 @@
 //! refusal is on the keys listed, not on the prefix asked for, so an empty or
 //! a broad prefix cannot reach the archive either.
 //!
-//! Nothing outside this module's tests calls the compactor yet; it is kept
-//! with its refusal until the lake needs a pass.
+//! Nothing outside this module's tests calls the compactor, by decision:
+//! ADR 0181 decision 3 sizes lake segments where they are sealed
+//! (`qip-edge-node`'s `LakeSink` batching) rather than by merging sealed
+//! ones, which a pinned manifest could not name. It is kept, with its
+//! refusal, for a non-lake prefix that ever needs a pass.
 
 use crate::blob::BlobStore;
 use crate::segment::archive::is_archive_key;
@@ -29,16 +32,19 @@ use qip_core::error::{Error, Result};
 /// Configuration for a compaction job.
 #[derive(Clone, Debug)]
 pub struct CompactionConfig {
-    /// Minimum size in bytes for the input objects to compact: an object
-    /// smaller than this is left alone and is not reported as merged.
+    /// The size in bytes below which an object is tiny and is compacted: an
+    /// object of this size or larger is already reasonably sized, is left
+    /// alone and is not reported as merged (ADR 0181 decision 3 corrected
+    /// this; it once left the small objects alone and merged the large
+    /// ones, the opposite of what the job is for).
     pub min_object_size: usize,
     /// Maximum size in bytes for a single compacted segment.
     pub max_segment_size: usize,
 }
 
 impl CompactionConfig {
-    /// The default: leave objects under 64KB alone, and merge into segments of
-    /// at most 4MB.
+    /// The default: compact objects under 64KB, and merge them into segments
+    /// of at most 4MB.
     pub fn new() -> Self {
         Self {
             min_object_size: 64 * 1024,
@@ -122,12 +128,12 @@ impl<'a> Compactor<'a> {
             });
         }
 
-        // Read and filter: keep only objects at least `min_object_size` and
-        // smaller than the max compaction size.
+        // Read and filter: keep only the tiny objects, those below
+        // `min_object_size` and below the max compaction size.
         let mut objects = Vec::new();
         for key in &keys {
             if let Ok(Some(bytes)) = self.store.get(key)
-                && bytes.len() >= self.config.min_object_size
+                && bytes.len() < self.config.min_object_size
                 && bytes.len() < self.config.max_segment_size
             {
                 objects.push((key.clone(), bytes));
@@ -215,7 +221,8 @@ mod tests {
     fn many_small_objects_are_compacted_into_larger_segments() {
         let store = MemoryBlobStore::new();
         let config = CompactionConfig::new()
-            .with_min_object_size(1024)
+            // 1KB objects sit below a 2KB line, so every one is tiny.
+            .with_min_object_size(2048)
             .with_max_segment_size(10 * 1024);
 
         // Create 20 small objects (each 1KB) under the test prefix.
@@ -247,7 +254,7 @@ mod tests {
     fn compacted_objects_cover_originals_by_hash() {
         let store = MemoryBlobStore::new();
         let config = CompactionConfig::new()
-            .with_min_object_size(512)
+            .with_min_object_size(2048)
             .with_max_segment_size(5 * 1024);
 
         let prefix = "test/hash-verify/";
@@ -314,7 +321,7 @@ mod tests {
         // This mutation test verifies that hash checking works by breaking the hash.
         let store = MemoryBlobStore::new();
         let config = CompactionConfig::new()
-            .with_min_object_size(512)
+            .with_min_object_size(2048)
             .with_max_segment_size(5 * 1024);
 
         let prefix = "test/mutation/";

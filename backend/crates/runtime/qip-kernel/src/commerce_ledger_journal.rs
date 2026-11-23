@@ -14,6 +14,10 @@
 //! into the plane's ledger and resumes the counter, so a replay of the log
 //! alone reconstructs the ledger and no unit id is issued twice.
 //!
+//! The completed purchase-and-resale cycles are resumed too, from the
+//! journalled `CommerceSimulated` passes, so SKU economics learned before a
+//! restart are learned after it (R12-COMMERCE-1171).
+//!
 //! What is not resumed: the plane's sales, settlements, listings and held
 //! units. They are not ledger facts; a unit received before the restart stays
 //! in the ledger and is not re-listed.
@@ -24,13 +28,17 @@ use qip_events::{EventBody, Topic};
 use qip_financial::commerce::LedgerEvent;
 use serde::{Deserialize, Serialize};
 
-use crate::commerce_research::CommerceResearch;
+use crate::commerce_research::{CommerceResearch, CommerceSimulated};
 use crate::platform::Platform;
 use qip_streaming::envelope::StreamEnvelope;
 
 /// The producer of [`CommerceLedgerJournalled`], its own origin so a reader
 /// of the other `ScenarioEvaluated` producers never meets this body.
 pub const COMMERCE_LEDGER_ORIGIN: &str = "kernel/commerce-ledger";
+
+/// The producer of the plane's own pass records, `CommerceDiscovered` and
+/// `CommerceSimulated`, on two topics.
+pub const COMMERCE_ORIGIN: &str = "kernel/commerce";
 
 /// The ledger events one SIMULATE pass applied, in the order applied.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,9 +102,34 @@ impl Platform {
                 purchases = purchases.max(body.purchases);
             }
         }
-        if events.is_empty() {
-            return Ok(());
+        // The completed cycles, from every journalled SIMULATE pass, so a
+        // restarted plane learns from the sales it made before the restart
+        // (R12-COMMERCE-1171).
+        let mut cycles = Vec::new();
+        for record in self.event_log().records() {
+            if record.event.lineage.producer == COMMERCE_ORIGIN
+                && record.event.topic == CommerceSimulated::TOPIC
+            {
+                let body = StreamEnvelope::from_frame(&record.event)?
+                    .decode::<CommerceSimulated>()?
+                    .body;
+                cycles.extend(body.sold);
+                // A consignment lost in delivery puts no event on the ledger,
+                // so a pass that only lost one journals no purchase count;
+                // its number is read here instead, or a restart would count
+                // that purchase again and lose a second consignment for the
+                // first (R12-COMMERCE-1171).
+                for lost in &body.lost {
+                    purchases = purchases.max(lost.consignment);
+                }
+            }
         }
-        research.resume_ledger(events, purchases)
+        if !events.is_empty() || purchases != 0 {
+            research.resume_ledger(events, purchases)?;
+        }
+        if !cycles.is_empty() {
+            research.resume_cycles(cycles)?;
+        }
+        Ok(())
     }
 }
