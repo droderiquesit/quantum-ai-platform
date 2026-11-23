@@ -13,15 +13,6 @@
 //! router decides what wakes, it holds no view on a market. It is composed
 //! by the deep brain rather than emitted by an organisation agent because the
 //! router has no seat on the Desk's roster and reads no brief.
-//!
-//! One finding per round, as the owner's ruling of 2026-10-31 says, quiet
-//! rounds included. A round whose router returned nothing composes a finding
-//! that says so, with its counts observed from the router at that round; it
-//! is what a loop without a router cannot compose, so the gauge reads 1 on a
-//! quiet round and 0 only when the router is gone. An earlier version
-//! composed nothing on a quiet round, which made a quiet router and a removed
-//! one read the same and departed from the ruling; two readers refuted it on
-//! that ground on 2026-11-23.
 
 use qip_agents::finding::{AgentFinding, NumericFact};
 use qip_contracts::ambient::{AttentionEvent, Disposition, Pathway};
@@ -49,15 +40,19 @@ pub const fn woke_fact(pathway: Pathway) -> &'static str {
     }
 }
 
-/// The one finding a round's router composes from the attention events it
-/// returned.
+/// The one finding a sweep's attention events compose, or `None` where the
+/// router returned none.
 ///
-/// The caller composes it only for a loop that holds a router (see
-/// `ResearchLoop::sweep_over`), so a zero under the scope's label never stands
-/// for an absent router: an absent router composes no finding at all.
-pub fn attention_finding(events: &[AttentionEvent], now: Timestamp) -> Result<AgentFinding> {
+/// `None` rather than a finding stating zero: a sweep in which the router
+/// decided nothing evidences no routing, and a zero under the scope's label
+/// would cover the scope on a sweep where the router was absent just as well
+/// as on one where it was quiet.
+pub fn attention_finding(
+    events: &[AttentionEvent],
+    now: Timestamp,
+) -> Result<Option<AgentFinding>> {
     let Some(first) = events.first() else {
-        return quiet_finding(now);
+        return Ok(None);
     };
     let ids: Vec<String> = events.iter().map(|event| event.id.clone()).collect();
     let mut woke: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -109,37 +104,5 @@ pub fn attention_finding(events: &[AttentionEvent], now: Timestamp) -> Result<Ag
             .to_string(),
     );
     finding.validate()?;
-    Ok(finding)
-}
-
-/// The finding of a round in which the router was consulted and returned no
-/// decision. Its two counts are observed from the router at the round, since
-/// there is no event to compute them from and a computed fact with no inputs
-/// is refused by `NumericFact::validate`.
-fn quiet_finding(now: Timestamp) -> Result<AgentFinding> {
-    let round = format!("{AMBIENT_ATTENTION}/quiet/{}", now.as_nanos());
-    let mut finding = AgentFinding::new(
-        AgentRunId::from_string(round.clone()),
-        AMBIENT_ATTENTION,
-        now,
-        now,
-        "the attention router returned no routing decision this sweep".to_string(),
-    );
-    for label in [ATTENTION_ROUTING_FACT, ATTENTION_ACTIVATED_FACT] {
-        finding.facts.push(NumericFact::observed(
-            label,
-            0.0,
-            "events",
-            AMBIENT_ATTENTION,
-            now,
-            round.clone(),
-        ));
-    }
-    finding.falsifiers.push(
-        "the ambient journal holds an Attention record for this sweep, so the router did return \
-         a decision"
-            .to_string(),
-    );
-    finding.validate()?;
-    Ok(finding)
+    Ok(Some(finding))
 }

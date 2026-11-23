@@ -3559,17 +3559,11 @@ impl ResearchLoop {
         }
         // The attention router's scope is covered by what it returned this
         // sweep and by nothing else (R12-AMBIENT-3027, ADR 0725): one finding
-        // per round from a loop that holds a router, quiet rounds included,
-        // read back by whole fact label. A loop without a router composes
-        // none. Every ambient scope is written, 1 or 0, so a removed router is
-        // a 0 on the series and not the last sweep's 1.
-        round.attention_finding = match self.router {
-            Some(_) => Some(crate::ambient_coverage::attention_finding(
-                &round.attention_events,
-                now,
-            )?),
-            None => None,
-        };
+        // composed from the events, read back by whole fact label. Every
+        // ambient scope is written, 1 or 0, so a sweep with no router or no
+        // decision is a 0 on the series and not the last sweep's 1.
+        round.attention_finding =
+            crate::ambient_coverage::attention_finding(&round.attention_events, now)?;
         round.ambient_scopes = ambient_covered_by(round.attention_finding.iter());
         for scope in AmbientScope::ALL {
             metrics.gauge(

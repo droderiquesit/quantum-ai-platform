@@ -178,9 +178,15 @@ fn the_deep_brain_opens_its_ambient_agency_unconditionally_so_planning_and_tool_
 /// hand and cannot see `main.rs`; an independent reader found on 2026-11-23
 /// that deleting either hand-off failed nothing.
 ///
+/// A second reader found the text scan alone too weak: `main.rs` could take
+/// the router back out with `research.without_attention_router()` after
+/// building the loop, and every check above would still pass. So the test
+/// also holds that no source file of any deployed binary calls that
+/// constructor; its only callers are tests.
+///
 /// Mutations, each fired and restored: hand the run loop `research: None`;
 /// hand it `ambient: None`; put the research loop's construction behind an
-/// `if`.
+/// `if`; call `research.without_attention_router()` in `main.rs`.
 #[test]
 fn the_deep_brain_builds_its_attention_router_and_ambient_journal_unconditionally_and_hands_both_to_the_run_loop()
  {
@@ -232,6 +238,39 @@ fn the_deep_brain_builds_its_attention_router_and_ambient_journal_unconditionall
             "the run loop is not handed `{handed}`"
         );
     }
+
+    // The router-removal constructor is for tests. Its definition is the only
+    // mention a deployed source file may hold, and it is in research.rs.
+    let definition = "pub fn without_attention_router(";
+    assert!(
+        research.contains(definition),
+        "premise: the research loop still defines the constructor this test guards against"
+    );
+    let apps = backend().join("crates/apps");
+    let mut callers = Vec::new();
+    for app in fs::read_dir(&apps).expect("the apps directory") {
+        let src = app.expect("an app").path().join("src");
+        let Ok(files) = fs::read_dir(&src) else {
+            continue;
+        };
+        for file in files {
+            let path = file.expect("a source file").path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("a readable source file");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if code.contains("without_attention_router") && !code.contains(definition) {
+                    callers.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        callers.is_empty(),
+        "a deployed binary removes the attention router: {callers:?}"
+    );
 }
 
 /// R12-REFLEX-1165: the reflex node's scope items, each held to the file

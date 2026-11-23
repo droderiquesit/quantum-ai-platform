@@ -47,18 +47,31 @@ has no seat in the desk's standard roster. The owner was shown two choices:
 accept that the deployed deep brain counts as the production organisation for
 an ambient brain, or say a roster seat was meant. The owner took the first.
 
-**A correction to this file.** As first written on 2026-11-23 this paragraph
-said the owner had also accepted ADR 0725's rule that a sweep whose router
-returned nothing composes no finding. That was wrong. The pull request the
-owner merged said the opposite in its own words: that rule was "still to fix
-when the decision lands", because the owner's ruling of 2026-10-31 asks for
-"one AgentFinding per ResearchRound". Two independent readers caught the
-discrepancy the same day. What the owner accepted is ADR 0725 with that point
-to be brought into line with the ruling, and it has been: a loop that holds a
-router now composes one finding every round, stating zero decisions on a
-quiet one, and a loop without a router composes none. Where ADR 0725's own
-text says a quiet sweep composes nothing, the owner's ruling and this file
-govern.
+**The quiet sweep, and two corrections to this file.** ADR 0725 decision 4
+says a sweep whose router returned nothing composes no finding. The pull
+request the owner merged offered "Accept ADR 0725 as written", and in the
+same description listed the quiet sweep as "still to fix" because the
+2026-10-31 ruling on the row asks for "one AgentFinding per ResearchRound".
+Those two sentences cannot both hold, and the pull request should not have
+put them side by side.
+
+As first written, this file said the owner had accepted the quiet-sweep rule
+outright; readers pointed out the pull request's "still to fix" note, and the
+file was corrected to say the ruling governed, and the code was changed to
+compose a finding on every round. Readers then refuted that change too: on a
+quiet round the router is not consulted at all, so the finding's zeros were
+written by the code, not read from the router, and coverage came from holding
+a router rather than from what it routed, which is the registration-style
+coverage the ruling itself rejects. That is decision 4's own reasoning.
+
+So the order of authority is settled this way, and the owner should say if it
+is wrong. The 2026-10-31 rulings were made by the orchestrator under the
+owner's delegation of that day. ADR 0725 was accepted by the owner directly,
+later, by merging the pull request that offered it "as written", and it
+decides the quiet sweep explicitly and for a stated reason. The owner's direct
+and later acceptance governs: **a quiet sweep composes no finding**, and the
+code is back to doing exactly that. The ruling's "one per round" is read as one
+per round in which the router routed something.
 
 ## What this file does not do
 
