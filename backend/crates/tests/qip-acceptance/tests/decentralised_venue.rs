@@ -200,6 +200,9 @@ fn a_mev_estimate_a_decentralised_venue_computes_is_the_number_the_feasibility_g
     let mut admitted_manager = OrderManager::new(PreTradeChecker::new(limits()))
         .with_venue_feasibility(tight_broker.name(), tight_model);
     let accepted = admitted_manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("ord-tight", dec!("10"), dec!("6")),
         &mut tight_broker,
         &autonomy,
@@ -218,6 +221,9 @@ fn a_mev_estimate_a_decentralised_venue_computes_is_the_number_the_feasibility_g
     let mut refusing_manager = OrderManager::new(PreTradeChecker::new(limits()))
         .with_venue_feasibility(wide_broker.name(), wide_model);
     let refused = refusing_manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("ord-wide", dec!("10"), dec!("6")),
         &mut wide_broker,
         &autonomy,
@@ -353,6 +359,9 @@ fn a_venue_promoted_to_the_simulator_still_cannot_receive_an_order_at_a_live_cla
     );
     let mut manager = OrderManager::new(PreTradeChecker::new(limits()));
     let result = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("ord-live", dec!("10"), dec!("100")),
         &mut live,
         &autonomy,
@@ -416,6 +425,9 @@ fn a_decentralised_venues_contract_risk_is_its_own_exposure_axis_and_not_the_cou
     let mut manager = OrderManager::new(PreTradeChecker::new(limits()));
     let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 13);
     let accepted = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("ord-axis", dec!("10"), dec!("100")),
         &mut broker,
         &autonomy,
@@ -858,6 +870,9 @@ fn a_venue_whose_recorded_sessions_replay_clean_reaches_the_simulator_and_stops(
             ),
         ] {
             let result = manager.submit(
+                &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                    "a test of the order manager",
+                ),
                 measured_order(&label, order_type),
                 &mut exchange,
                 &autonomy,

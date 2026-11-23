@@ -100,3 +100,38 @@ fn a_refused_order_was_still_routed_deterministically_before_the_limits_spoke() 
     assert_eq!(routing.charge().tier, IntelligenceTier::DeterministicCode);
     Ok(())
 }
+
+/// The routing is not only obtained before the limits: its gate is what the
+/// order manager ran the pre-trade check under. `OrderManager::submit`
+/// demands the gate by signature and copies its rationale onto the result,
+/// so a refusal the desk records names the determined decision it came
+/// from. Fails if `submit_order` hands the manager a gate from any routing
+/// other than the one it kept, or if the manager drops the rationale.
+#[test]
+fn the_order_manager_ran_the_pre_trade_check_under_the_routing_the_platform_kept() -> Result<()> {
+    let mut platform = platform()?;
+    assert!(
+        platform.orders().refusals().is_empty(),
+        "premise: nothing refused yet"
+    );
+    let order = order(&mut platform, dec!("1000000000"));
+    assert!(
+        platform.submit_order(order, start()).is_err(),
+        "premise: the limits must refuse this order"
+    );
+    let routing = platform
+        .pretrade_routing()
+        .expect("routing precedes the limits");
+    assert!(
+        !routing.rationale().is_empty(),
+        "premise: a rationale was given"
+    );
+    let refusals = platform.orders().refusals();
+    assert_eq!(
+        refusals.len(),
+        1,
+        "premise: the manager recorded the refusal"
+    );
+    assert_eq!(refusals[0].routed, routing.rationale());
+    Ok(())
+}

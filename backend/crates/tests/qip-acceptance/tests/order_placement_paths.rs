@@ -587,6 +587,9 @@ fn the_order_manager_never_calls_the_broker_for_a_breach_or_a_halt() {
         ..RiskState::default()
     };
     let inside = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         desk_order("5", "ord-inside"),
         &mut broker,
         &autonomy,
@@ -603,6 +606,9 @@ fn the_order_manager_never_calls_the_broker_for_a_breach_or_a_halt() {
     );
 
     let breach = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         desk_order("50", "ord-breach"),
         &mut broker,
         &autonomy,
@@ -625,6 +631,9 @@ fn the_order_manager_never_calls_the_broker_for_a_breach_or_a_halt() {
         .kill_switch_mut()
         .trip_global(t(0), "acceptance", "an operator halted the desk");
     let halted = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         desk_order("5", "ord-halted"),
         &mut broker,
         &autonomy,
@@ -811,6 +820,9 @@ fn a_ladder_past_the_desks_limits_cannot_be_admitted_so_cannot_be_seeded() -> Re
     };
     // Premise: the same ladder over a million of equity is admitted.
     orders.admit_ladder(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         PRODUCT,
         "simulated-venue",
         &rule,
@@ -822,6 +834,9 @@ fn a_ladder_past_the_desks_limits_cannot_be_admitted_so_cannot_be_seeded() -> Re
     // Over a hundred of equity it is some twenty times levered and is not.
     let refused = orders
         .admit_ladder(
+            &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                "a test of the order manager",
+            ),
             PRODUCT,
             "simulated-venue",
             &rule,

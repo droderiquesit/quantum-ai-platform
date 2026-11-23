@@ -597,6 +597,9 @@ fn a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_
     };
 
     let dark = orders.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order_in("region:europe-west2", "ord-dark"),
         &mut broker,
         &autonomy,
@@ -640,6 +643,9 @@ fn a_region_that_goes_completely_offline_is_halted_by_scope_and_the_others_keep_
     );
     assert!(autonomy.may_execute("region:us-east1"));
     let live = orders.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order_in("region:us-east1", "ord-live"),
         &mut broker,
         &autonomy,
@@ -1148,6 +1154,9 @@ fn cash_below_its_buffer_refuses_the_order_instead_of_borrowing_silently() -> Re
     ));
     let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 11);
     let submitted = orders.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         Order::new(
             qip_core::ids::OrderId::from_string("ord-cash"),
             object("ACME"),

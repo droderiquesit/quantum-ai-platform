@@ -1489,6 +1489,9 @@ fn the_platform_completes_a_cycle_observed_from_sockets_and_acted_on_over_one() 
     let order_id = order.order_id.clone();
     let mut manager = OrderManager::new(PreTradeChecker::new(risk_limits()));
     let result = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order,
         &mut gateway as &mut dyn Broker,
         platform.autonomy(),

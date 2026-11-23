@@ -1062,7 +1062,12 @@ impl LiveDemo {
         );
         let order_id = order.order_id.as_str().to_string();
         let requested = order.quantity;
+        let gate = self
+            .platform
+            .determine_pretrade(order.object_id.as_str())?
+            .gate();
         let result = self.orders.submit(
+            &gate,
             order,
             &mut self.venue as &mut dyn Broker,
             self.platform.autonomy(),

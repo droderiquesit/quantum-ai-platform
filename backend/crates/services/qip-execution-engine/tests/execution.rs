@@ -114,6 +114,9 @@ fn submit(
     autonomy: &AutonomyController,
 ) -> qip_execution_engine::oms::SubmissionResult {
     manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order,
         broker,
         autonomy,
@@ -1791,6 +1794,9 @@ fn a_second_order_inside_the_headroom_alone_is_refused_when_a_working_order_alre
     // refuses it below is the first order's remainder and not its own size.
     let (mut alone, state) = survival_gated();
     let solo = alone.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         resting_buy("BBB", "6000"),
         &mut venue,
         &autonomy,
@@ -1807,6 +1813,9 @@ fn a_second_order_inside_the_headroom_alone_is_refused_when_a_working_order_alre
 
     let (mut manager, state) = survival_gated();
     let first = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         resting_buy("AAA", "6000"),
         &mut venue,
         &autonomy,
@@ -1831,6 +1840,9 @@ fn a_second_order_inside_the_headroom_alone_is_refused_when_a_working_order_alre
 
     // The caller hands the same fill-built book — nothing has filled.
     let second = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         resting_buy("BBB", "6000"),
         &mut venue,
         &autonomy,
@@ -2437,6 +2449,9 @@ fn requote(
     controller: &AutonomyController,
 ) -> Result<qip_execution_engine::oms::SubmissionResult> {
     manager.replace(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         &OrderId::from_string(original.to_string()),
         replacement,
         touch,
@@ -2653,4 +2668,57 @@ fn a_desk_requote_for_another_side_is_refused_before_the_original_is_withdrawn()
         "the refused replacement reached the venue"
     );
     Ok(())
+}
+
+/// R12-RISK-3022: `OrderManager::submit` demands the deterministic gate the
+/// cost router mints, and every result it returns — accepted or refused by
+/// the limits — carries that gate's rationale. Before the gate was demanded
+/// the desk kept its routing beside the call, so a submission written
+/// without asking the router ran the pre-trade check just as well and no
+/// record said which determined decision a check belonged to.
+#[test]
+fn every_submission_records_the_routing_its_gate_carried() {
+    let mut broker = simulator();
+    let autonomy = AutonomyController::new();
+    let gate =
+        qip_risk::gate::DeterministicGate::minted_by_router_determination("pre-trade for obj-AAA");
+
+    let mut accepting = manager();
+    let accepted = accepting.submit(
+        &gate,
+        order("AAA", Side::Buy, "4"),
+        &mut broker,
+        &autonomy,
+        &risk_state(),
+        BTreeMap::new(),
+        None,
+        now(),
+    );
+    // Premise: the first order passes the limits and the second does not, so
+    // both arms of `submit` are exercised.
+    assert!(accepted.accepted, "{:?}", accepted.refusal);
+    assert_eq!(accepted.routed, gate.rationale());
+
+    let mut refusing = manager();
+    // Ten million of equity and a 10% weight cap: a million-share order at
+    // 100 is ten times the book and breaches it.
+    let refused = refusing.submit(
+        &gate,
+        order("BBB", Side::Buy, "1000000"),
+        &mut broker,
+        &autonomy,
+        &risk_state(),
+        BTreeMap::new(),
+        None,
+        now(),
+    );
+    assert!(!refused.accepted, "premise: the limits refuse this order");
+    assert!(
+        matches!(refused.refusal, Some(RefusalReason::RiskRejected { .. })),
+        "premise: refused by the limits, not by something earlier: {:?}",
+        refused.refusal
+    );
+    assert_eq!(refused.routed, gate.rationale());
+    assert_eq!(refusing.refusals().len(), 1);
+    assert_eq!(refusing.refusals()[0].routed, gate.rationale());
 }

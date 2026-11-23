@@ -490,6 +490,9 @@ fn a_desk_order_that_breaches_a_limit_never_reaches_the_broker() {
     };
     // Premise: an order inside the bound reaches the broker.
     let inside = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("5", "ord-inside"),
         &mut broker,
         &autonomy,
@@ -506,6 +509,9 @@ fn a_desk_order_that_breaches_a_limit_never_reaches_the_broker() {
     );
 
     let breach = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order("50", "ord-breach"),
         &mut broker,
         &autonomy,
@@ -901,4 +907,94 @@ fn permit_seeding(gateway: &mut SimulatedGateway, objects: &[&ObjectId]) -> Resu
         }
     }
     gateway.permit_listings(permissions, "paper")
+}
+
+/// Whether `signature` declares a parameter named exactly `gate` of type
+/// `&DeterministicGate` — delimited, so `_gate`, `pregate` or an
+/// `Option<&DeterministicGate>` do not count.
+fn demands_the_gate(signature: &str) -> bool {
+    signature
+        .split(['(', ','])
+        .any(|parameter| parameter.trim() == "gate: &DeterministicGate")
+}
+
+/// R12-RISK-3022 on the desk path: every function in the order manager that
+/// runs the pre-trade limit check demands, by signature, the deterministic
+/// gate only the cost router mints (ADR 0430), and every submission result it
+/// builds carries that gate's rationale.
+///
+/// The failure this prevents: the kernel asked the router before
+/// `OrderManager::submit` and kept the routing as a record beside the call,
+/// so a second path into the limit check written without asking the router
+/// compiled and ran exactly as well. A function added to the manager that
+/// reaches `check_with_working` without the gate fails here, as does a
+/// result that drops the rationale.
+#[test]
+fn every_order_manager_limit_check_demands_the_deterministic_gate() {
+    let source = qip_acceptance::read("backend/crates/services/qip-execution-engine/src/oms.rs");
+    let production = source
+        .find("#[cfg(test)]")
+        .map_or(source.as_str(), |at| &source[..at]);
+
+    // Each function: from one `fn ` item start to the next.
+    let starts: Vec<usize> = production
+        .match_indices("    pub fn ")
+        .chain(production.match_indices("    fn "))
+        .map(|(at, _)| at)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut checking = Vec::new();
+    let mut ungated = Vec::new();
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(production.len());
+        let item = &production[*start..end];
+        if !item.contains(".check_with_working(") {
+            continue;
+        }
+        let name = item
+            .trim_start()
+            .trim_start_matches("pub ")
+            .trim_start_matches("fn ")
+            .split('(')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        let signature = &item[..item.find('{').unwrap_or(item.len())];
+        if !demands_the_gate(signature) {
+            ungated.push(name.clone());
+        }
+        checking.push(name);
+    }
+    // Premise: the scan found the two functions that run the check, or it
+    // asserts something of nothing.
+    assert!(
+        checking.iter().any(|name| name == "submit")
+            && checking.iter().any(|name| name == "admit_ladder"),
+        "premise: submit and admit_ladder run the limit check; found {checking:?}"
+    );
+    assert!(
+        ungated.is_empty(),
+        "these order-manager functions run the pre-trade limit check without demanding \
+         `gate: &DeterministicGate`: {ungated:?}. Take the gate from \
+         `Platform::determine_pretrade(..)?.gate()` (R12-RISK-3022, ADR 0430)"
+    );
+
+    // A literal is the struct name after `=` or a closure's `|`; the
+    // declaration, the `impl` and a `-> SubmissionResult {` return type are
+    // not results.
+    let literals = production.matches("= SubmissionResult {").count()
+        + production.matches("| SubmissionResult {").count();
+    assert!(
+        literals > 0,
+        "premise: the manager builds submission results"
+    );
+    assert_eq!(
+        production
+            .matches("routed: gate.rationale().to_string(),")
+            .count(),
+        literals + 1,
+        "every SubmissionResult the manager builds, and the ladder admission, must carry the \
+         gate's rationale"
+    );
 }

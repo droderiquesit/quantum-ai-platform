@@ -188,6 +188,9 @@ fn a_seeded_market_rests_its_rule_at_the_simulated_venue() -> Result<()> {
         ),
     );
     let ladder = orders.admit_ladder(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         PRODUCT,
         VENUE,
         &rule()?,

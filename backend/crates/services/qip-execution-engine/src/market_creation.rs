@@ -90,11 +90,22 @@ pub struct LadderAdmission {
     pub(crate) product: String,
     pub(crate) venue: String,
     pub(crate) rule: PricingRule,
+    /// Why the cost router determined the limit check this ladder met,
+    /// copied from the gate `OrderManager::admit_ladder` demanded
+    /// (R12-RISK-3022): a ladder is orders at a venue, and its limit check is
+    /// a hard limit like any other.
+    pub(crate) routed: String,
 }
 
 impl LadderAdmission {
     pub fn product(&self) -> &str {
         &self.product
+    }
+
+    /// The rationale of the deterministic routing the ladder's limit check
+    /// was admitted under.
+    pub fn routed(&self) -> &str {
+        &self.routed
     }
 
     pub fn venue(&self) -> &str {
@@ -793,8 +804,28 @@ fn references(admission: &CreationAdmission) -> Vec<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic_in_result_fn)]
 mod tests {
+    // An inner attribute, so the module opens directly under `#[cfg(test)]`:
+    // the architecture suite's production/test boundary is that pair, and the
+    // ladder helper below mints a test gate (R12-RISK-3022).
+    #![allow(clippy::panic_in_result_fn)]
+
+    /// R12-RISK-3022: a ladder's limit check is admitted only under the
+    /// deterministic gate `admit_ladder` demands, and the admission carries
+    /// that gate's rationale, so the record of a rested ladder names the
+    /// determined decision its limits were read under.
+    #[test]
+    fn a_ladder_admission_records_the_routing_its_gate_carried() -> Result<()> {
+        let admission = ladder_under(notional_cap("5000"), &rule()?)?;
+        assert_eq!(
+            admission.product(),
+            PRODUCT,
+            "premise: the ladder was admitted"
+        );
+        assert_eq!(admission.routed(), "ladder test");
+        Ok(())
+    }
+
     use super::*;
     use crate::broker::{SimulatedBroker, SimulationSettings};
     use crate::creation::CreationAuthority;
@@ -841,6 +872,7 @@ mod tests {
             ..qip_risk::limits::RiskState::default()
         };
         manager.admit_ladder(
+            &qip_risk::gate::DeterministicGate::minted_by_router_determination("ladder test"),
             product,
             venue,
             rule,
