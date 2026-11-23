@@ -921,6 +921,18 @@ pub struct Platform {
     /// reconciliation halt. Each function that makes one demands the gate the
     /// routing mints; this is the record of which routing that was.
     hard_limit_routings: BTreeMap<HardLimitDecision, String>,
+    /// The book-decision subjects [`Self::determine_book_decision`] refuses,
+    /// in this crate's unit tests and nowhere else (round-81 review).
+    ///
+    /// `Router::determine` refuses only a blank subject or an invalid policy,
+    /// and the platform's router is `Router::default` with no setter, so every
+    /// arm that answers a refused routing was unreachable — written, reviewed,
+    /// and run by nothing. `#[cfg(test)]` is the whole of the seam's reach: an
+    /// integration test, a composition root and a deployed binary compile a
+    /// `Platform` without the field, so no configuration can make a production
+    /// routing refuse, and none can make one succeed that would not.
+    #[cfg(test)]
+    refused_book_decisions: BTreeSet<String>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -7108,6 +7120,8 @@ impl Platform {
             pretrade_routing: None,
             monitor_routing: None,
             hard_limit_routings: BTreeMap::new(),
+            #[cfg(test)]
+            refused_book_decisions: BTreeSet::new(),
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
             routing_reputation: routing_reputation_resumed,
@@ -18135,7 +18149,22 @@ impl Platform {
     /// label the record and choose nothing, because the `Required` arm consults
     /// no ladder.
     pub fn determine_book_decision(&self, subject: &str) -> Result<DeterministicRouting> {
+        #[cfg(test)]
+        if self.refused_book_decisions.contains(subject) {
+            return Err(Error::denied(format!(
+                "the unit test's router refuses '{subject}'; this refusal exists only under \
+                 #[cfg(test)]"
+            )));
+        }
         self.cost_router.determine(subject, self.book_conditions())
+    }
+
+    /// Make [`Self::determine_book_decision`] refuse `subject` from now on, so
+    /// a unit test can drive the arm that answers a refused routing. Test-only;
+    /// see the field.
+    #[cfg(test)]
+    fn refuse_book_decision(&mut self, subject: impl Into<String>) {
+        self.refused_book_decisions.insert(subject.into());
     }
 
     /// The rationale of the gate the last decision of `kind` was made under,
@@ -36137,6 +36166,212 @@ mod decide_tests {
         }
     }
 
+    /// The small-book platform with two justified theses queued over enough
+    /// history to size them: the state in which DECIDE sizes legs and ACT
+    /// signs and releases them when nothing refuses.
+    fn two_sizeable_theses() -> Platform {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
+        platform
+    }
+
+    /// Round-81 review, R12-RISK-3022: a survival sizing the router refuses
+    /// sizes nothing, and the ceiling the survival limit reads falls to what
+    /// the book already stands in. The arm was unreachable until the
+    /// `#[cfg(test)]` refusal seam, because `Router::default` refuses nothing
+    /// a kernel subject can be — so nothing showed that a refused routing was
+    /// not quietly sized past. Fails if sizing proceeds without the routing,
+    /// or if the refusal keeps the assembly seed's release at the gate.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_sizes_nothing_and_the_ceiling_falls_to_the_book() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        // Premise: the same book sizes legs when the routing is not refused,
+        // so an empty proposal below is the refusal's doing.
+        let mut control = two_sizeable_theses();
+        control.stage_decide(now);
+        assert!(
+            !control
+                .proposals
+                .last()
+                .expect("the control records a proposal")
+                .is_empty(),
+            "premise: an unrefused routing sizes legs on this book"
+        );
+
+        let mut platform = two_sizeable_theses();
+        let seeded = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: assembly seeded a ceiling");
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        let outcome = platform.stage_decide(now);
+
+        assert!(
+            platform
+                .proposals
+                .last()
+                .expect("a refused construction still records its proposal")
+                .is_empty(),
+            "legs were sized under a survival routing the router refused"
+        );
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::SurvivalSizing),
+            None,
+            "a gate was recorded for a sizing the router refused"
+        );
+        let standing = RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(now))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable");
+        assert!(
+            standing < seeded,
+            "premise: the seed released something above the book ({standing} against {seeded})"
+        );
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(standing),
+            "the ceiling kept a release no construction holds"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| {
+                problem.contains(&format!(
+                "could not be sized: the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+            ))
+            }),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
+        );
+    }
+
+    /// Round-81 review, R12-RISK-3022: a sign-off the router refuses signs
+    /// nothing, so nothing is releasable and no order exists. Unreachable and
+    /// untested until the `#[cfg(test)]` seam. Fails if the refused arm takes
+    /// the two signatures anyway, which would put a risk and a compliance
+    /// approval on a decision no deterministic routing stood behind.
+    #[test]
+    fn a_sign_off_the_router_refuses_signs_nothing_and_releases_nothing() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-refused-sign-off");
+        // Premise: without the refusal this book is signed and released.
+        let mut control = two_sizeable_theses();
+        control.stage_decide(now);
+        control.stage_act(now, &correlation);
+        assert!(
+            control
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "premise: an unrefused sign-off signs and releases this book"
+        );
+
+        let mut platform = two_sizeable_theses();
+        platform.stage_decide(now);
+        let drafted = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!drafted.is_empty(), "premise: legs were sized");
+        assert!(
+            matches!(drafted.status(), ProposalStatus::Draft),
+            "premise: the sized proposal is a draft"
+        );
+        platform.refuse_book_decision(SIGN_OFF_SUBJECT);
+        let outcome = platform.stage_act(now, &correlation);
+
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .all(|proposal| matches!(proposal.status(), ProposalStatus::Draft)),
+            "a proposal left draft under a sign-off the router refused: {:?}",
+            platform
+                .proposals
+                .iter()
+                .map(|proposal| proposal.status().as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(platform.orders.orders().count(), 0, "an order exists");
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::SignOff),
+            None,
+            "a gate was recorded for a sign-off the router refused"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| problem.starts_with(
+                "no proposal was signed off: the sign-off could not be routed as a deterministic \
+                 decision ("
+            )),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
+        );
+    }
+
+    /// Round-81 review, R12-RISK-3022: a release the router refuses releases
+    /// nothing. The proposals stay approved, no order is built from them, and
+    /// the reason reaches the report. Unreachable and untested until the
+    /// `#[cfg(test)]` seam. Fails if the refused arm advances a proposal or
+    /// submits an order.
+    #[test]
+    fn a_release_the_router_refuses_releases_nothing_and_leaves_the_signed_proposal_approved() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        platform.stage_decide(now);
+        assert!(
+            !platform
+                .proposals
+                .last()
+                .expect("a proposal is recorded")
+                .is_empty(),
+            "premise: legs were sized"
+        );
+        platform.refuse_book_decision(RELEASE_SUBJECT);
+        let outcome = platform.stage_act(now, &CorrelationId::from_string("corr-refused-release"));
+
+        assert!(
+            platform
+                .hard_limit_routing(HardLimitDecision::SignOff)
+                .is_some(),
+            "premise: the sign-off ran under a gate: {:?}",
+            outcome.problems
+        );
+        assert!(
+            !platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "a proposal was released under a routing the router refused"
+        );
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Approved { .. })),
+            "the signed proposal did not stay approved: {:?}",
+            outcome.problems
+        );
+        assert_eq!(platform.orders.orders().count(), 0, "an order exists");
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::Release),
+            None,
+            "a gate was recorded for a release the router refused"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| problem
+                .starts_with("the release could not be routed as a deterministic decision (")),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
+        );
+    }
+
     #[test]
     fn a_sized_proposal_is_signed_by_two_controls_and_released_as_orders() {
         // The trading spine's last seam. Until this passed, `stage_act`
@@ -38344,14 +38579,14 @@ mod user_ledger_tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
-    const CELL: &str = "cell-lon-1";
+    pub(super) const CELL: &str = "cell-lon-1";
     const INSTRUMENT: &str = "obj-AAA";
 
-    fn start() -> Timestamp {
+    pub(super) fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
     }
 
-    fn platform() -> Platform {
+    pub(super) fn platform() -> Platform {
         let mut universe = Universe::new();
         universe
             .insert(
@@ -38382,7 +38617,12 @@ mod user_ledger_tests {
     /// One order sent and filled whole for a single strategy, as the cell
     /// reports it: the order registered as sent and the venue's fill beside
     /// it, attributed entirely to `strategy`.
-    fn report(order_id: &str, side: BookSide, quantity: Decimal, price: Decimal) -> CellReport {
+    pub(super) fn report(
+        order_id: &str,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> CellReport {
         let strategy = StrategyId::new("alpha");
         let order = DeltaOrder {
             order_id: order_id.to_string(),
@@ -38497,6 +38737,186 @@ mod user_ledger_tests {
             platform.capture_problems.is_empty(),
             "nothing was left unjournalled: {:?}",
             platform.capture_problems
+        );
+    }
+}
+
+#[cfg(test)]
+mod book_decision_refusal_tests {
+    //! Round-81 review, R12-RISK-3022: the arms that answer a book decision
+    //! the cost router refuses, for the survival reseed and the
+    //! reconciliation halt. Unit tests because the refusal can only be
+    //! provoked through `Platform::refuse_book_decision`, which is
+    //! `#[cfg(test)]` on purpose: `Router::default` refuses nothing a kernel
+    //! subject can be, so these arms ran in no test and no deployment before
+    //! the seam existed. The DECIDE and ACT arms are in `decide_tests`, beside
+    //! the fixtures that size and release a book.
+
+    use super::user_ledger_tests::{CELL, platform, report, start};
+    use super::*;
+    use qip_core::dec;
+
+    /// The figure a refused reseed may lower the ceiling to: the book's
+    /// gross and what is held against it, as the arm computes it.
+    fn standing(platform: &Platform) -> Decimal {
+        RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(start()))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable")
+    }
+
+    /// A platform standing in a settled cell fill, so the book has a gross a
+    /// refused reseed would otherwise have stood behind.
+    fn holding_a_book() -> Platform {
+        let mut platform = platform();
+        platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("premise: the fill is ingested");
+        assert!(
+            standing(&platform) > Decimal::ZERO,
+            "premise: the book stands in something"
+        );
+        platform
+    }
+
+    /// At assembly the governor holds no ceiling, which the survival limit
+    /// refuses every gross-raising order on. A refused routing at the reseed
+    /// `Platform::new` ends with must leave it so. Until the round-81 fix the
+    /// arm called `release_nothing` unconditionally and turned "nothing
+    /// seeded" into "stand behind the whole book" — a router refusal that
+    /// loosened the one control it was refusing to derive. Also through
+    /// `set_survival_policy`, the public road to the same fresh governor.
+    #[test]
+    fn a_reseed_the_router_refuses_leaves_a_ceiling_that_was_never_seeded_unseeded() {
+        let mut platform = holding_a_book();
+        // The governor exactly as `Platform::new` holds it before its last
+        // line, `reseed_survival_ceiling(now)`.
+        platform.governor =
+            crate::survival::SurvivalGovernor::with_policy(*platform.governor.policy());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "premise: nothing has been seeded"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a refused reseed seeded a ceiling where there was none"
+        );
+
+        let policy = *platform.governor.policy();
+        platform.set_survival_policy(policy);
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a policy change under a refused routing seeded a ceiling"
+        );
+    }
+
+    /// A standing ceiling may only fall on a refused reseed. One below the
+    /// book — what a construction leaves when the book grew after it — stays
+    /// where it is, and one above the book falls to it. Fails if the arm
+    /// raises the lower ceiling to the book, which is what the unconditional
+    /// `release_nothing` did, or stops lowering the higher one.
+    #[test]
+    fn a_reseed_the_router_refuses_never_raises_a_standing_ceiling_and_lowers_one_above_the_book() {
+        let mut platform = holding_a_book();
+        let book = standing(&platform);
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+
+        platform
+            .governor
+            .release_nothing(Decimal::ZERO, dec!("1000"));
+        let below = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: a ceiling stands");
+        assert!(
+            below < book,
+            "premise: the ceiling ({below}) sits below the book ({book})"
+        );
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(below),
+            "a refused reseed raised the ceiling"
+        );
+
+        let raised = book.checked_mul(dec!("10")).expect("representable");
+        platform.governor.release_nothing(Decimal::ZERO, raised);
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(raised),
+            "premise: the ceiling sits above the book"
+        );
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(book),
+            "a refused reseed left a ceiling above what the book stands in"
+        );
+    }
+
+    /// A cell report whose reconciliation halt the router refuses to route is
+    /// not read unhalted: the platform halts globally through the monitor,
+    /// and the report is refused before anything settles. Unreachable and
+    /// untested until the `#[cfg(test)]` seam. Fails if the arm returns
+    /// without halting, or reads the report under a routing it never got.
+    #[test]
+    fn a_cell_report_whose_halt_cannot_be_routed_halts_the_platform_and_is_refused() {
+        // Premise: the report itself is admissible when nothing refuses.
+        let mut control = platform();
+        control
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("premise: the same report is ingested when the halt is routed");
+
+        let mut platform = platform();
+        assert!(
+            !platform.autonomy.kill_switch().is_globally_tripped(),
+            "premise: the platform is not halted"
+        );
+        platform.refuse_book_decision(format!("reconciliation halt for {CELL}"));
+        let error = platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect_err("a report was read under a halt the router refused to route");
+        assert!(
+            error
+                .message()
+                .contains(&format!("refuses 'reconciliation halt for {CELL}'")),
+            "refused for another reason: {}",
+            error.message()
+        );
+        assert!(
+            platform.autonomy.kill_switch().is_globally_tripped(),
+            "the platform was not halted when the halt could not be routed"
+        );
+        assert_eq!(
+            platform.user_ledger().fills_journalled(),
+            0,
+            "the refused report's fill was settled"
+        );
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::ReconciliationHalt),
+            None,
+            "a gate was recorded for a halt the router refused"
         );
     }
 }
