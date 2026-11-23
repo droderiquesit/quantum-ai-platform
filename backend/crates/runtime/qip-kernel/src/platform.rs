@@ -13815,14 +13815,11 @@ impl Platform {
     /// Route the survival ceiling as a deterministic decision and seed it
     /// under the gate the routing mints (R12-RISK-3022).
     ///
-    /// A routing the router refuses loosens nothing, and that is two rules,
-    /// not one. A ceiling that was never seeded stays unseeded: `None` is what
-    /// the survival limit refuses every gross-raising order on, so it is
-    /// already the tightest state there is. A standing ceiling may only fall
-    /// — to what the book stands in when that is lower, or to none when that
-    /// figure overflows — and is otherwise left where it stood. This arm
-    /// called `release_nothing` unconditionally until the round-81 review:
-    /// at assembly that turned "nothing seeded, refuse all new gross" into
+    /// A routing the router refuses loosens nothing: the ceiling goes through
+    /// [`Self::lower_survival_ceiling_to_the_book`], which leaves an unseeded
+    /// ceiling unseeded and only ever lowers a standing one. This arm called
+    /// `release_nothing` unconditionally until the round-81 review: at
+    /// assembly that turned "nothing seeded, refuse all new gross" into
     /// "stand behind everything already held", and over a ceiling a
     /// construction had set below the book it raised the ceiling to the book.
     /// A ceiling that could not be shown to be derived deterministically is
@@ -13830,25 +13827,44 @@ impl Platform {
     fn reseed_survival_ceiling(&mut self, now: Timestamp) {
         match self.determine_book_decision(SURVIVAL_CEILING_SUBJECT) {
             Ok(routing) => self.seed_survival_ceiling(&routing.gate(), now),
-            Err(_) => {
-                let gross = RiskState::from_figures(&self.aggregates).gross_exposure;
-                let held = self
-                    .reservations
-                    .reserved_total()
-                    .checked_sub(self.yield_parked(now))
-                    .unwrap_or(Decimal::ZERO);
-                // The same sum `release_nothing` writes, taken first only to
-                // decide whether writing it would lower anything. An overflow
-                // is a fall to no ceiling, which `release_nothing` performs.
-                let lowers = match (self.governor.gross_ceiling(), gross.abs().checked_add(held)) {
-                    (None, _) => false,
-                    (Some(_), None) => true,
-                    (Some(ceiling), Some(standing)) => standing < ceiling,
-                };
-                if lowers {
-                    self.governor.release_nothing(gross, held);
-                }
-            }
+            Err(_) => self.lower_survival_ceiling_to_the_book(now),
+        }
+    }
+
+    /// Lower the survival ceiling to what the book already stands in — its
+    /// gross plus the capital still held for it — and never raise it
+    /// (R12-RISK-3022). The one place the kernel calls
+    /// `SurvivalGovernor::release_nothing`, for both arms that answer a
+    /// sizing that did not happen: a reseed the router refused, and a DECIDE
+    /// construction that sized nothing. Two copies of this rule drifted once
+    /// already — the second review found DECIDE still raising after the
+    /// reseed arm had been fixed — so there is one.
+    ///
+    /// Two rules, not one. A ceiling that was never seeded stays unseeded:
+    /// `None` is what the survival limit refuses every gross-raising order
+    /// on, so it is already the tightest state there is. A standing ceiling
+    /// may only fall — to the book's figure when that is lower, or to none
+    /// when that figure overflows, which `release_nothing` turns into `None`
+    /// — and is otherwise left where it stood. The result is therefore never
+    /// above what the unconditional `release_nothing` wrote, and is below it
+    /// exactly where that call would have raised the ceiling.
+    fn lower_survival_ceiling_to_the_book(&mut self, now: Timestamp) {
+        let gross = RiskState::from_figures(&self.aggregates).gross_exposure;
+        let held = self
+            .reservations
+            .reserved_total()
+            .checked_sub(self.yield_parked(now))
+            .unwrap_or(Decimal::ZERO);
+        // The same sum `release_nothing` writes, taken first only to decide
+        // whether writing it would lower anything. An overflow is a fall to
+        // no ceiling, which `release_nothing` performs.
+        let lowers = match (self.governor.gross_ceiling(), gross.abs().checked_add(held)) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(ceiling), Some(standing)) => standing < ceiling,
+        };
+        if lowers {
+            self.governor.release_nothing(gross, held);
         }
     }
 
@@ -23228,14 +23244,27 @@ impl Platform {
                     // whichever step refused — before the waterfall ran, in
                     // it, or after it, when its release was never held. The
                     // survival ceiling falls to what the book already stands
-                    // in, rather than keeping a release no proposal holds.
-                    self.governor.release_nothing(
-                        RiskState::from_figures(&self.aggregates).gross_exposure,
-                        self.reservations
-                            .reserved_total()
-                            .checked_sub(self.yield_parked(now))
-                            .unwrap_or(Decimal::ZERO),
-                    );
+                    // in, rather than keeping a release no proposal holds,
+                    // and never rises to it.
+                    //
+                    // One arm answers every refusal, the router's included:
+                    // `construct_from` returns the survival routing's refusal
+                    // through the same `?` as the governor's, so a router
+                    // refusal and a sizing the router routed and the governor
+                    // refused are one path here. Until the second round-81
+                    // review this arm called `release_nothing`
+                    // unconditionally, so a routing refused after a policy
+                    // change had left no ceiling turned `None` into the whole
+                    // book, and a standing ceiling below the book was raised
+                    // to it. Lowers-only is never looser than that call for
+                    // any refusal. Where the governor refused, `size` has
+                    // already set the ceiling to the same figure (or to none,
+                    // where the held capital less the parked overflows), so
+                    // the helper finds nothing to lower and the outcome is as
+                    // it was; where a step after `size` refused, the release
+                    // `size` set falls to the book as before wherever it
+                    // stands above it.
+                    self.lower_survival_ceiling_to_the_book(now);
                     self.constructor.nothing_to_do(
                         ProposalId::from_string(format!("prop-{}", self.cycle)),
                         Money::new(self.capital.equity(), Currency::USD),
@@ -36518,6 +36547,164 @@ mod decide_tests {
             }),
             "the refusal did not reach the stage's record: {:?}",
             outcome.problems
+        );
+    }
+
+    /// The figure the DECIDE refusal arm may lower the ceiling to: the book's
+    /// gross and what is held against it, as the arm computes it.
+    fn book_standing(platform: &Platform, now: Timestamp) -> Decimal {
+        RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(now))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable")
+    }
+
+    /// Second round-81 review, R12-RISK-3022: after a policy change under a
+    /// refused routing has left no survival ceiling, a DECIDE whose survival
+    /// sizing the router also refuses must leave none, and no gross-raising
+    /// order may pass. The DECIDE refusal arm called `release_nothing`
+    /// unconditionally after the reseed arm had been fixed, so this exact
+    /// sequence turned "refuse all new gross" into "stand behind the book and
+    /// everything held for it": with a hold on the book, an order inside the
+    /// hold was admitted against a ceiling no routing derived.
+    ///
+    /// Mutation: restore the unconditional `release_nothing` in DECIDE's
+    /// refusal arm — the ceiling assertion fires, and so would the order.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_after_a_policy_change_seeds_no_ceiling_and_admits_no_gross()
+     {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        // Capital held on the book, so the figure the unconditional call
+        // wrote stands behind an order: gross plus this hold admits a buy
+        // inside it, where no ceiling admits none.
+        platform
+            .reservations
+            .reserve(
+                "standing-hold",
+                Decimal::from_int(20_000),
+                Timestamp::from_secs(1_760_000_000),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        let policy = *platform.governor.policy();
+        platform.set_survival_policy(policy);
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            None,
+            "premise: the policy change under a refused routing seeded nothing"
+        );
+        assert!(
+            book_standing(&platform, now) > Decimal::ZERO,
+            "premise: the book stands in something the unconditional call would have stood behind"
+        );
+
+        let outcome = platform.stage_decide(now);
+        assert!(
+            platform
+                .proposals
+                .last()
+                .expect("a refused construction still records its proposal")
+                .is_empty(),
+            "legs were sized under a survival routing the router refused"
+        );
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains(&format!(
+                    "the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+                ))),
+            "premise: the arm ran on the router's refusal: {:?}",
+            outcome.problems
+        );
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            None,
+            "a refused survival sizing seeded a ceiling where the policy change had left none"
+        );
+
+        let order = platform.order_from(
+            qip_core::ObjectId::from_string("AAPL"),
+            Side::Buy,
+            Decimal::from_int(10),
+            Decimal::from_int(100),
+            "prop-unrouted",
+            vec!["HYP-AAPL".to_string()],
+            now,
+        );
+        let refusal = platform
+            .submit_order(order, now)
+            .expect_err("a gross-raising order passed a survival ceiling no routing derived");
+        assert!(
+            refusal
+                .message()
+                .contains(crate::survival::SURVIVAL_LIMIT_NAME),
+            "refused for another reason: {}",
+            refusal.message()
+        );
+    }
+
+    /// Second round-81 review, R12-RISK-3022: a standing ceiling below what
+    /// the book stands in is not raised by a DECIDE whose survival sizing the
+    /// router refuses. A ceiling below the book is what a construction
+    /// leaves when the book grew after it; the unconditional `release_nothing`
+    /// raised it to the book, so the refusal of the routing loosened the
+    /// control it refused to derive.
+    ///
+    /// Mutation: restore the unconditional `release_nothing` in DECIDE's
+    /// refusal arm — the ceiling is raised to the book and the assertion
+    /// fires.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_never_raises_a_standing_ceiling_below_the_book() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        platform
+            .reservations
+            .reserve(
+                "standing-hold",
+                Decimal::from_int(20_000),
+                Timestamp::from_secs(1_760_000_000),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        // A ceiling of a quarter of the hold, below the book's figure.
+        platform
+            .governor
+            .release_nothing(Decimal::ZERO, Decimal::from_int(5_000));
+        let below = platform
+            .survival_gross_ceiling()
+            .expect("premise: a ceiling stands");
+        let book = book_standing(&platform, now);
+        assert!(
+            below < book,
+            "premise: the ceiling ({below}) sits below the book ({book})"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+
+        let outcome = platform.stage_decide(now);
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains(&format!(
+                    "the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+                ))),
+            "premise: the arm ran on the router's refusal: {:?}",
+            outcome.problems
+        );
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            Some(below),
+            "a refused survival sizing raised a standing ceiling toward the book"
         );
     }
 
