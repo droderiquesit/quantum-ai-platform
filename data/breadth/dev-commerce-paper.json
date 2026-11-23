@@ -71,7 +71,7 @@
     },
     "resale": {
       "floor_per_unit": "1",
-      "markdown_after_days": 3,
+      "markdown_after_days": 1,
       "markdown_rate": "0.05"
     }
   }

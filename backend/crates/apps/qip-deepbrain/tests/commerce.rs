@@ -30,8 +30,8 @@ use qip_financial::physical::{
 use qip_financial::universe::Universe;
 use qip_kernel::breadth::BreadthPlan;
 use qip_kernel::commerce_research::{
-    AccountEntry, CommerceDiscovered, CommercePlan, CommerceSimulated, LogisticsEntry, ResaleEntry,
-    SYNTHETIC_COUNTERFEIT_SELLER, SyntheticCommerceFeed,
+    AccountEntry, CommerceDiscovered, CommercePlan, CommerceSimulated, LogisticsEntry, PricedUnit,
+    ResaleEntry, SYNTHETIC_COUNTERFEIT_SELLER, SyntheticCommerceFeed,
 };
 use qip_kernel::{Platform, PlatformConfig};
 use qip_observability::Telemetry;
@@ -1112,6 +1112,89 @@ fn every_unit_listed_under_the_committed_dev_plan_is_on_the_venue_with_the_highe
         assert_eq!(priced.venue, "simulated-marketplace", "{}", priced.unit);
         assert_eq!(priced.price, reference, "{}", priced.unit);
     }
+    Ok(())
+}
+
+/// R12-COMMERCE-5097, the reprice clause, through `breadth::install` on the
+/// committed dev plan: every unit listed under it is marked down by the
+/// plan's own rate on the pass after it was listed, at the venue it was
+/// listed on, and is then sold at that marked-down price. Until 2026-11-23
+/// the committed plan marked down only after three unsold days while its
+/// longest hold was two and the synthetic reference never moved, so
+/// `CommerceResearch::work_listed` called `reprice` every pass and it
+/// returned nothing for every unit; the clause was reached and vacuous.
+///
+/// Mutations, each run: disable `Resale::reprice`'s markdown arm, or stop
+/// `work_listed` pushing a repriced unit, and the repricing assertion fails
+/// (`left: None`); drop `l.price = new` from `reprice` and the settlement
+/// assertion fails (gross 120 against 114); set the committed plan's
+/// `markdown_after_days` back to 3 and the premise fails.
+#[test]
+fn every_unit_listed_under_the_committed_dev_plan_is_marked_down_the_day_after_and_sold_at_that_price()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    assert!(
+        plan.resale.markdown_after_days < plan.days_on_market,
+        "premise: the committed plan marks down before its marketplace hold ends"
+    );
+    let rate = plan.resale.markdown_rate;
+    assert!(
+        rate.is_positive(),
+        "premise: the committed plan states a markdown rate"
+    );
+    let platform = install_plan_file(&committed_plan_path(), 8)?;
+    let research = platform.commerce_research().expect("installed");
+    let runs = simulated(&platform)?;
+    let listed: Vec<(u32, PricedUnit)> = runs
+        .iter()
+        .flat_map(|run| run.listed.iter().map(|unit| (run.day, unit.clone())))
+        .collect();
+    assert!(!listed.is_empty(), "premise: nothing was listed");
+    let mut sold = 0;
+    for (day, unit) in &listed {
+        let marked = unit.price - unit.price * rate;
+        let repriced: Vec<(u32, &PricedUnit)> = runs
+            .iter()
+            .flat_map(|run| {
+                run.repriced
+                    .iter()
+                    .filter(|r| r.unit == unit.unit)
+                    .map(move |r| (run.day, r))
+            })
+            .collect();
+        let last_day = runs.iter().map(|run| run.day).max().unwrap_or(0);
+        if *day + plan.resale.markdown_after_days > last_day {
+            continue;
+        }
+        assert_eq!(
+            repriced
+                .first()
+                .map(|(d, r)| (*d, r.venue.as_str(), r.price)),
+            Some((
+                *day + plan.resale.markdown_after_days,
+                unit.venue.as_str(),
+                marked
+            )),
+            "{} listed on day {day} at {} was not marked down once its markdown interval passed",
+            unit.unit,
+            unit.price
+        );
+        if let Some(UnitState::Sold { sale }) =
+            research.ledger().units().get(&unit.unit).map(|u| &u.state)
+        {
+            let settlement = research
+                .plane()
+                .settlement(sale)
+                .unwrap_or_else(|| panic!("{}'s sale {sale} was never settled", unit.unit));
+            assert_eq!(
+                settlement.gross, marked,
+                "{} sold at a price other than its marked-down listing",
+                unit.unit
+            );
+            sold += 1;
+        }
+    }
+    assert!(sold > 0, "premise: no marked-down unit was sold");
     Ok(())
 }
 
