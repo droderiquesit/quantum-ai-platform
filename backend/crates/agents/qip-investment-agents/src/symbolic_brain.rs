@@ -52,10 +52,17 @@ fn reasoners(view: &SymbolicView) -> [(&'static str, &'static str, bool); 6] {
             "temporal_derived",
             view.timeline_links > view.timeline_links_refused,
         ),
+        // Causal reasoning derived only if it produced something: at least
+        // one abduced explanation, or at least one instrument an intervention
+        // reaches. `CausalGraph::abduce` and `::intervene` both answer `Ok`
+        // on a graph with no edge at the subject, so `Some(0)` is the graph
+        // having nothing to say, and reading it as derived let
+        // `Scope::SymbolicCausal` read covered with nothing in it.
         (
             "causal",
             "causal_derived",
-            view.causal_explanations.is_some() || view.causal_reach.is_some(),
+            view.causal_explanations.is_some_and(|n| n > 0)
+                || view.causal_reach.is_some_and(|n| n > 0),
         ),
         ("rule", "rule_derived", view.rules_eligible.is_some()),
         (

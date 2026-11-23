@@ -5263,6 +5263,84 @@ fn each_kind_of_symbolic_reasoning_is_covered_only_by_its_own_reasoner() -> Resu
     Ok(())
 }
 
+/// R12-REASON-3026. A causal graph with no edge at the subject answers both
+/// `CausalGraph::abduce` and `::intervene` with `Ok` and nothing in it — no
+/// explanation, no instrument reached. That is the graph having nothing to
+/// say, so `Scope::SymbolicCausal` stays uncovered while every other kind of
+/// reasoning that derived still covers its own scope; the same derivation
+/// with one edge (one explanation, or one instrument reached) covers it.
+///
+/// The failure this guards: causal reasoning was read as derived whenever
+/// either call returned `Ok`, so on an edgeless graph the platform reported
+/// causal coverage for a derivation holding no cause and no effect.
+///
+/// Mutation: in `symbolic_brain.rs::reasoners`, read the causal entry as
+/// `is_some()` again — the edgeless case covers `SymbolicCausal`.
+#[test]
+fn an_edgeless_causal_graph_leaves_causal_reasoning_uncovered_and_one_edge_covers_it() -> Result<()>
+{
+    use qip_investment_agents::desk::SymbolicView;
+    let every_other_kind = [
+        Scope::SymbolicReasoning,
+        Scope::SymbolicOntology,
+        Scope::SymbolicTemporal,
+        Scope::SymbolicRule,
+        Scope::SymbolicProbabilistic,
+        Scope::SymbolicConstraint,
+    ];
+    let edgeless = SymbolicView {
+        causal_explanations: Some(0),
+        causal_reach: Some(0),
+        ..a_symbolic_derivation()
+    };
+    let mut org = organisation(desk_with_a_symbolic_derivation(edgeless))?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = symbolic_finding(&report);
+    // Premise: both causal calls answered, with nothing in either answer, and
+    // the other five reasoners derived.
+    assert_eq!(fact_value(finding, "causal_explanations"), Some(0.0));
+    assert_eq!(fact_value(finding, "reasoners_derived"), Some(5.0));
+    assert!(fact_value(finding, "causal_derived").is_none());
+    let covered = symbolic_scopes_covered(&report);
+    assert!(!covered.contains(&Scope::SymbolicCausal), "{covered:?}");
+    let expected: BTreeSet<Scope> = every_other_kind.into_iter().collect();
+    assert_eq!(covered, expected);
+
+    for (what, view) in [
+        (
+            "one explanation",
+            SymbolicView {
+                causal_explanations: Some(1),
+                causal_reach: Some(0),
+                ..a_symbolic_derivation()
+            },
+        ),
+        (
+            "one instrument reached",
+            SymbolicView {
+                causal_explanations: Some(0),
+                causal_reach: Some(1),
+                ..a_symbolic_derivation()
+            },
+        ),
+    ] {
+        let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        assert_eq!(
+            fact_value(symbolic_finding(&report), "reasoners_derived"),
+            Some(6.0),
+            "{what}"
+        );
+        let covered = symbolic_scopes_covered(&report);
+        assert!(
+            covered.contains(&Scope::SymbolicCausal),
+            "{what}: {covered:?}"
+        );
+        assert_eq!(covered.len(), SYMBOLIC_SCOPES.len(), "{what}: {covered:?}");
+    }
+    Ok(())
+}
+
 /// No derivation is no data: the scope is not covered by an empty record.
 ///
 /// Mutation: drop the `!view.observed` early return — the brain reports a

@@ -829,6 +829,52 @@ fn journaled_derivation() -> Result<(Platform, symbolic_stage::SymbolicDerivatio
     Ok((platform, derivation))
 }
 
+/// [`journaled_derivation`] on a world model holding one causal claim out of
+/// the cycle's subject, `AAA -> BBB`, so an intervention on the subject
+/// reaches an instrument and causal reasoning has something to report.
+///
+/// The default cycle's graph holds no edge at `AAA`: `abduce` and
+/// `intervene` both answer `Ok` with nothing in either answer, which is not
+/// causal reasoning derived (R12-REASON-3026). A coverage test that wants the
+/// causal series to read 1 needs a real edge, not a reading of `Ok` as one.
+fn journaled_derivation_with_a_causal_edge()
+-> Result<(Platform, symbolic_stage::SymbolicDerivation)> {
+    let mut platform = platform()?;
+    platform.claim_causal(
+        qip_world_model::causal::CausalEdge::new(
+            object("AAA").as_str(),
+            object("BBB").as_str(),
+            qip_world_model::causal::Mechanism::DiscountRate,
+            0.5,
+            Duration::from_days(1),
+            start().saturating_sub(Duration::from_days(365)),
+        )?
+        .with_confidence(0.8)?,
+    )?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let mut derivations = symbolic_stage::replay(&platform)?;
+    assert_eq!(derivations.len(), 1, "one derivation per formed hypothesis");
+    let derivation = derivations.remove(0);
+    assert_eq!(derivation.subject, object("AAA").as_str());
+    assert!(
+        causal_produced(&derivation),
+        "premise: the claimed edge reached the derivation: {:?}",
+        derivation.intervention
+    );
+    symbolic_stage::verify(&derivation, platform.world().causal())?;
+    Ok((platform, derivation))
+}
+
+/// Whether causal reasoning produced anything in `derivation`, counted from
+/// the record: an abduction holding at least one candidate, or an
+/// intervention reaching at least one instrument. An `Ok` with nothing in it
+/// is the graph having nothing to say.
+fn causal_produced(derivation: &symbolic_stage::SymbolicDerivation) -> bool {
+    matches!(&derivation.abduction, Step::Derived(a) if !a.candidates.is_empty())
+        || matches!(&derivation.intervention, Step::Derived(i) if !i.affected.is_empty())
+}
+
 /// Refused, and refused for the part that was corrupted: the message names
 /// that part, so a checker refusing the record for some other reason does
 /// not pass for one that catches this corruption.
@@ -2340,7 +2386,7 @@ fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain
     use qip_investment_agents::symbolic_brain::SymbolicReasoningAnalyst;
     use qip_investment_agents::{ids, manifests};
 
-    let (platform, derivation) = journaled_derivation()?;
+    let (platform, derivation) = journaled_derivation_with_a_causal_edge()?;
     {
         let view = platform.desk_symbolic_view();
         assert!(view.observed, "REASON did not brief the desk");
@@ -2456,8 +2502,7 @@ fn reason_briefs_the_desk_from_the_derivation_it_journals_and_the_symbolic_brain
         held,
         matches!(derivation.posterior, symbolic_stage::Step::Derived(_)),
         matches!(derivation.acting, symbolic_stage::Step::Derived(_)),
-        matches!(derivation.abduction, symbolic_stage::Step::Derived(_))
-            || matches!(derivation.intervention, symbolic_stage::Step::Derived(_)),
+        causal_produced(&derivation),
         derivation
             .subject_type
             .as_ref()
@@ -2625,11 +2670,7 @@ fn kinds_derived(
             Scope::SymbolicTemporal,
             derivation.temporal.links.len() > refused_links,
         ),
-        (
-            Scope::SymbolicCausal,
-            matches!(derivation.abduction, symbolic_stage::Step::Derived(_))
-                || matches!(derivation.intervention, symbolic_stage::Step::Derived(_)),
-        ),
+        (Scope::SymbolicCausal, causal_produced(derivation)),
         (
             Scope::SymbolicRule,
             matches!(derivation.rules.verdict, symbolic_stage::Step::Derived(_)),
@@ -2670,7 +2711,7 @@ fn each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle() -> Res
     use qip_investment_agents::coverage::Scope;
     use qip_observability::metrics::names;
 
-    let (platform, derivation) = journaled_derivation()?;
+    let (platform, derivation) = journaled_derivation_with_a_causal_edge()?;
     let kinds = kinds_derived(&derivation);
     assert!(
         kinds.iter().any(|(_, derived)| *derived),
@@ -2718,6 +2759,58 @@ fn each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle() -> Res
             "{scope:?}"
         );
     }
+    Ok(())
+}
+
+/// R12-REASON-3026. On a `run_cycle` whose causal graph holds no edge at the
+/// subject, `abduce` and `intervene` both answer `Ok` with nothing in either
+/// answer, and the `symbolic_causal` series reads 0 while the aggregate still
+/// reads 1; the same cycle on a graph holding `AAA -> BBB` reads 1.
+///
+/// The failure this guards: the brain read either `Ok` as causal reasoning
+/// derived, so the default cycle charted causal coverage for a derivation
+/// that named no cause and reached no instrument.
+///
+/// Mutation: in `symbolic_brain.rs::reasoners`, read the causal entry as
+/// `is_some()` again — the edgeless series reads 1.
+#[test]
+fn a_cycle_over_an_edgeless_causal_graph_charts_no_causal_coverage() -> Result<()> {
+    use qip_investment_agents::coverage::Scope;
+    use qip_observability::metrics::names;
+
+    let causal_series = |platform: &Platform, series: &str| {
+        platform.telemetry().metrics.snapshot().gauge(
+            names::ORGANISATION_SCOPE_COVERED,
+            &qip_observability::metrics::labels([("scope", series)]),
+        )
+    };
+    let (edgeless, derivation) = journaled_derivation()?;
+    // Premise: both causal calls answered, and neither answer holds anything.
+    assert!(
+        matches!(&derivation.abduction, Step::Derived(a) if a.candidates.is_empty()),
+        "{:?}",
+        derivation.abduction
+    );
+    assert!(
+        matches!(&derivation.intervention, Step::Derived(i) if i.affected.is_empty()),
+        "{:?}",
+        derivation.intervention
+    );
+    assert_eq!(causal_series(&edgeless, "symbolic_reasoning"), Some(1.0));
+    assert_eq!(causal_series(&edgeless, "symbolic_causal"), Some(0.0));
+    assert!(
+        !edgeless
+            .scopes_reported_this_cycle()
+            .contains(&Scope::SymbolicCausal)
+    );
+
+    let (with_edge, _) = journaled_derivation_with_a_causal_edge()?;
+    assert_eq!(causal_series(&with_edge, "symbolic_causal"), Some(1.0));
+    assert!(
+        with_edge
+            .scopes_reported_this_cycle()
+            .contains(&Scope::SymbolicCausal)
+    );
     Ok(())
 }
 
