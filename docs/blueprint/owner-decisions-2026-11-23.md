@@ -64,21 +64,38 @@ written by the code, not read from the router, and coverage came from holding
 a router rather than from what it routed, which is the registration-style
 coverage the ruling itself rejects. That is decision 4's own reasoning.
 
-**This is not settled, and it is the owner's to settle.** A first reading
-here held that the owner's direct acceptance of ADR 0725 outranks the
-2026-10-31 ruling, because that ruling was written by the orchestrator under
-delegation. Two readers refuted that too, and they are right: the owner's
-words of 2026-10-31 were "You can make all my decisions go", ADR 0725 itself
-calls the ruling the owner's, and nothing in the repository ranks one owner
-act above the other. The code is at ADR 0725 decision 4 (a quiet sweep
-composes no finding), because that is what is on `main` and both attempts to
-change it were refuted. R12-AMBIENT-3027 stays PARTIAL until the owner says
-which governs:
+**Settled by the owner's instruction of 2026-11-23: ADR 0725 decision 4
+governs.** At 03:12 UTC on 2026-11-23, after being shown the two choices in
+pull request #289, the owner wrote in the orchestrator session
+(session_01DCyuGC9sjZ7o9nZDdT166K):
 
-| Choice | What follows |
-|---|---|
-| ADR 0725 decision 4 governs | A quiet sweep composes no finding, and its gauge reads 0 like a removed router. The row closes on the code as it stands |
-| The ruling governs: one finding per round | The router must be consulted on every round, so that a quiet round's finding reports something the router measured, not a zero the code wrote. That is a design change to the router and an amendment to ADR 0725, and both come back for acceptance |
+> Make decisions for me to complete this
+
+The orchestrator decided under that instruction, and this file records it as
+the owner's:
+
+- **A quiet sweep composes no finding** (ADR 0725 decision 4, as written).
+  The ruling of 2026-10-31 is read as one finding per research round in which
+  the router routed something. Where the two texts disagree, ADR 0725
+  governs.
+- **Why this way and not the other.** On a quiet round the router is never
+  consulted: it is called once per routable signal, and there are none. A
+  finding composed on such a round could only state zeros the code wrote,
+  and the scope would be covered by the loop holding a router rather than by
+  anything the router did. That is the registration-style coverage the
+  ruling itself refuses. The other choice would need a router design change
+  to give a quiet round something real to report, and no requirement asks
+  for one.
+- **What it costs.** `qip_ambient_scope_covered` reads 0 both on a quiet
+  sweep and on a sweep with no router, and neither journals an attention
+  record, so the deployed series cannot tell a quiet router from a missing
+  one. Removal is shown by test, and a deployed binary is held by
+  `scope_inspections.rs` to building the router and never removing it.
+
+The two earlier versions of this paragraph were wrong. The first said the
+owner had already accepted the quiet-sweep rule. The second settled it on the
+orchestrator's own reading of which owner act ranked higher. Readers caught
+both, and the history of this file keeps them.
 
 ## What this file does not do
 
