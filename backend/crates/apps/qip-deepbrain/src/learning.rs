@@ -3594,6 +3594,109 @@ mod tests {
         Ok(Some(last))
     }
 
+    /// R12-MODEL-4021, the reader's distilled-student finding: the promote
+    /// stage named its student to the cells on fidelity to the teacher
+    /// alone. It now runs the promotion tests with the student, so the
+    /// adversarial suite attacks the student's own outputs, and names a
+    /// student only when the clearance does. Premise first: the round
+    /// distilled a student, so a `None` below would be a finding, not an
+    /// absence.
+    ///
+    /// Mutation: pass `None` for the student to
+    /// `test_model_and_student_for_promotion` in `shadow_round` — the
+    /// clearance names no student, none is named, and the first
+    /// `assert_eq!` fires.
+    #[test]
+    fn the_promote_stage_names_a_distilled_student_only_after_the_attack_ran_on_it() -> Result<()> {
+        let mut platform = serving_platform()?;
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        // A student the fidelity policy admits, distilled from the round's
+        // own teacher with a vanishing ridge: the desk's fixture distils
+        // one the policy refuses, so without this the stage would name
+        // nothing and the test would prove nothing.
+        let (teacher, probe) = desk
+            .candidate
+            .as_ref()
+            .map(|candidate| (candidate.teacher.clone(), candidate.holdout.clone()))
+            .ok_or_else(|| Error::not_found("premise: a candidate"))?;
+        let faithful = distil(&teacher, &probe, StudentForm::Linear { ridge: 1e-12 }, 0.0)?;
+        assert!(
+            faithful.is_promotable(&FidelityPolicy::default()),
+            "premise: the student is faithful enough to be named: {:?}",
+            FidelityPolicy::default().shortfalls(faithful.fidelity())
+        );
+        let Some(PromotionOutcome::Shadowed { .. }) =
+            desk.promote_candidate(&mut platform, at())?
+        else {
+            return Err(Error::invalid("premise: the candidate entered shadow"));
+        };
+        if let Some(shadow) = desk.shadowing.get_mut(subject().as_str()) {
+            shadow.distillation = Some(faithful.clone());
+        }
+        let mut outcome = None;
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+            let moved = super::tests_support::learnable(400 + SHADOW_STEP * round as usize)
+                [SHADOW_STEP * round as usize..]
+                .to_vec();
+            desk.maybe_learn(&subject(), &moved, REGIME, 1 + round, later)?;
+            outcome = desk.promote_candidate(&mut platform, later)?;
+            if !matches!(outcome, Some(PromotionOutcome::Shadowed { .. })) {
+                break;
+            }
+        }
+        let outcome = outcome.ok_or_else(|| Error::not_found("a promotion outcome"))?;
+        let PromotionOutcome::Promoted {
+            reference,
+            distilled,
+            ..
+        } = &outcome
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the candidate was promoted: {}",
+                outcome.describe()
+            )));
+        };
+        let card = desk
+            .registry()
+            .get(reference)
+            .ok_or_else(|| Error::not_found("the promoted card"))?;
+        let attacked = card
+            .promotion_tests
+            .as_ref()
+            .and_then(|tests| {
+                tests
+                    .results
+                    .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+            })
+            .cloned();
+        let digest = faithful.student().digest();
+        assert_eq!(
+            attacked.as_ref().map(|test| test.passed),
+            Some(true),
+            "the student the stage would name was not attacked: {attacked:?}"
+        );
+        assert!(
+            attacked
+                .as_ref()
+                .is_some_and(|test| test.evidence.starts_with(&format!("student {digest}:"))),
+            "the attack ran on another student than the one named: {attacked:?}"
+        );
+        assert_eq!(distilled.as_deref(), Some(digest.as_str()));
+        assert_eq!(
+            platform
+                .model_promotions()
+                .get(reference)
+                .and_then(|record| record.distilled.as_ref())
+                .map(|entry| entry.digest.clone()),
+            Some(digest),
+            "the signed record names a different student"
+        );
+        Ok(())
+    }
+
     /// R12-EXPAND-6034: a challenger the learning desk promotes over the
     /// champion advances the platform's model pack. The new pack names the
     /// previous pack as its predecessor, lists the displaced champion as
