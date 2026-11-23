@@ -70,7 +70,7 @@ spec:
       # path. The gitops suite recomputes the hash from
       # data/breadth/dev-commerce-paper.json and refuses a stale literal.
       - name: QIP_DEEPBRAIN_BREADTH_PLAN_PATH
-        value: /etc/qip/307ad887bfdbb8cf/dev-commerce-paper.json
+        value: /etc/qip/0aa60991c7f71f98/dev-commerce-paper.json
       - name: QIP_DEEPBRAIN_HEALTH_ADDRESS
         value: 0.0.0.0:8080
       - name: QIP_DEPLOYMENT
@@ -91,7 +91,7 @@ spec:
       - name: config-files
         mountPath: /etc/qip/931c5fe44d20d1d9
       - name: config-deepbrain-breadth-plan
-        mountPath: /etc/qip/307ad887bfdbb8cf
+        mountPath: /etc/qip/0aa60991c7f71f98
       startupProbe:
         initialDelaySeconds: 2
         periodSeconds: 3

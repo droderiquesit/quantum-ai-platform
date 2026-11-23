@@ -1465,3 +1465,73 @@ fn a_returned_units_journalled_record_names_the_sale_it_reversed_and_reads_open_
     }
     Ok(())
 }
+
+/// R12-COMMERCE-5095. Under the committed dev plan every unit the deployed
+/// deep brain receives is journalled as consolidated with the plan's stated
+/// shipment count and insured at the plan's cover and premium. Until
+/// 2026-11-23 the committed plan shipped direct and declined insurance, so
+/// the consolidation and insurance clauses ran on no committed
+/// configuration, and the consolidation decision reached no record at all.
+///
+/// The cover is the account's per-purchase limit, which the purchase
+/// executor refuses to exceed, so every purchase this plan can make is
+/// insured at its full declared value; the premium is one per cent of it
+/// (owner decision 38, 2026-11-14). Both are paper figures, not payments.
+///
+/// Mutations: format the consolidation arm of the `shipping` attribute in
+/// `commerce_research.rs` as `direct`, or the `insurance` attribute as the
+/// declined arm, and the journalled-value assertion fails; set the
+/// committed `consolidate_with` or `insurance` back to null and a premise
+/// fails.
+#[test]
+fn every_unit_received_under_the_committed_dev_plan_is_journalled_consolidated_and_insured()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    let with_shipments = plan
+        .logistics
+        .consolidate_with
+        .expect("premise: the committed plan consolidates");
+    assert!(with_shipments > 0, "premise: a real consolidation count");
+    let (coverage, premium) = plan
+        .logistics
+        .insurance
+        .expect("premise: the committed plan insures its goods");
+    assert!(
+        plan.logistics.decline_reason.is_none(),
+        "premise: an insured plan states no decline reason"
+    );
+    assert!(
+        coverage >= plan.account.per_purchase_limit,
+        "premise: the cover is at least any purchase the account may make"
+    );
+    assert_eq!(premium, coverage * dec!("0.01"), "premise: a 1% premium");
+
+    let platform = install_plan_file(&committed_plan_path(), 6)?;
+    let research = platform.commerce_research().expect("installed");
+    let logged: BTreeMap<String, BTreeMap<String, String>> = simulated(&platform)?
+        .into_iter()
+        .flat_map(|run| run.tracked)
+        .map(|tracked| (tracked.unit, tracked.attributes))
+        .collect();
+    let units = research.ledger().units();
+    assert!(!units.is_empty(), "premise: a unit was received");
+    let legs = plan.terms.route.len();
+    let expected_shipping = format!(
+        "consolidated with {with_shipments} shipments, {legs} via {}",
+        plan.logistics.carrier
+    );
+    let expected_insurance = format!("insured for {coverage} at {premium}");
+    for (unit, record) in units {
+        let attributes = logged
+            .get(unit)
+            .unwrap_or_else(|| panic!("{unit} was received and never journalled"));
+        assert_eq!(attributes["shipping"], expected_shipping, "{unit}");
+        assert_eq!(attributes["insurance"], expected_insurance, "{unit}");
+        let purchase_value = record.cost_basis * plan.quantity;
+        assert!(
+            purchase_value <= coverage,
+            "{unit}'s purchase of {purchase_value} exceeds the cover {coverage}"
+        );
+    }
+    Ok(())
+}

@@ -581,7 +581,16 @@ impl CommerceResearch {
             warehouse: Some(plan.logistics.warehouse.clone()),
             customs: Some(plan.terms.customs.clone()),
             insurance: match (&plan.logistics.insurance, &plan.logistics.decline_reason) {
-                (Some((coverage, premium)), _) => Some(Insurance::Insured {
+                // Cover and a reason to decline it are two answers to one
+                // question; the reason used to be dropped silently, so a
+                // plan could read as declined to its reviewer and run
+                // insured, or the reverse.
+                (Some(_), Some(reason)) => {
+                    return Err(Error::invalid(format!(
+                        "configuration: the commerce plan both insures its goods and declines                          insurance ({reason}); state the cover or the reason, not both"
+                    )));
+                }
+                (Some((coverage, premium)), None) => Some(Insurance::Insured {
                     coverage: *coverage,
                     premium: *premium,
                 }),
@@ -1219,8 +1228,18 @@ impl CommerceResearch {
             ),
             (
                 "shipping",
+                // The consolidation decision is part of how the unit
+                // ships; before it was carried here the plan's
+                // consolidation was checked and then journalled nowhere,
+                // so a consolidated plan and a direct one left the same
+                // record (R12-COMMERCE-5095).
                 value(format!(
-                    "{} via {}",
+                    "{}, {} via {}",
+                    match &logistics.consolidation {
+                        Consolidation::Direct => "direct".to_string(),
+                        Consolidation::Consolidate { with_shipments } =>
+                            format!("consolidated with {with_shipments} shipments"),
+                    },
                     logistics.route.len(),
                     logistics.carrier
                 )),

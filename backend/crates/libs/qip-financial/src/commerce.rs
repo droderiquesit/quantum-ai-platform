@@ -684,6 +684,29 @@ impl LogisticsPlanDraft {
                 if delivery_risk.is_negative() || delivery_risk > Decimal::ONE {
                     return Err(Error::invalid("a delivery risk is a probability in [0, 1]"));
                 }
+                // Consolidating with no other shipment is shipping direct
+                // under another name; a plan that says so has a typo, not
+                // a decision, and the journal would record a consolidation
+                // that never happened.
+                if consolidation == (Consolidation::Consolidate { with_shipments: 0 }) {
+                    return Err(Error::invalid(
+                        "consolidation with zero shipments is not a consolidation; state the \
+                         number of shipments to consolidate with, or ship direct",
+                    ));
+                }
+                // A policy that covers nothing, or whose premium is the
+                // whole cover or more, insures nothing while reading as
+                // insured; refuse it rather than journal a protection that
+                // pays out less than it costs.
+                if let Insurance::Insured { coverage, premium } = &insurance
+                    && (!coverage.is_positive() || premium.is_negative() || *premium >= *coverage)
+                {
+                    return Err(Error::invalid(format!(
+                        "insurance for {coverage} at a premium of {premium} is not cover; state \
+                         a positive coverage and a premium in [0, coverage), or decline \
+                         insurance with a reason"
+                    )));
+                }
                 Ok(LogisticsPlan {
                     route: self.route,
                     carrier,
