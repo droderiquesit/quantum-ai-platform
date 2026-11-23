@@ -17984,6 +17984,22 @@ impl Platform {
         )
     }
 
+    /// Ask the cost router to determine the pre-trade limit check for
+    /// `subject` as a decision that must be deterministic (R12-RISK-3022).
+    ///
+    /// The routing it returns is the only production source of the
+    /// [`qip_risk::gate::DeterministicGate`] that `OrderManager::submit` and
+    /// `OrderManager::admit_ladder` demand, so an order path that never asked
+    /// the router has nothing to hand the order manager. Public because a
+    /// composition root holding its own order manager needs the same
+    /// witness the desk's path obtains here.
+    pub fn determine_pretrade(&self, subject: &str) -> Result<DeterministicRouting> {
+        self.cost_router.determine(
+            format!("pre-trade limits for {subject}"),
+            self.pretrade_conditions(subject),
+        )
+    }
+
     /// How the last submitted order's pre-trade check was routed.
     pub fn pretrade_routing(&self) -> Option<&DeterministicRouting> {
         self.pretrade_routing.as_ref()
@@ -26310,12 +26326,12 @@ impl Platform {
         // cannot name a model rung, so the limits below are structurally a
         // function of their inputs.
         self.begin_deliberate_close(&order, to_flat);
-        let subject = order.object_id.as_str().to_string();
-        let conditions = self.pretrade_conditions(&subject);
-        self.pretrade_routing = Some(
-            self.cost_router
-                .determine(format!("pre-trade limits for {subject}"), conditions)?,
-        );
+        // The gate is handed to the order manager, whose `submit` will not
+        // run the pre-trade check without one; the routing is kept beside it
+        // as the record of what was determined.
+        let routing = self.determine_pretrade(order.object_id.as_str())?;
+        let gate = routing.gate();
+        self.pretrade_routing = Some(routing);
         let risk_state = self.risk_state();
         let object_id = order.object_id.clone();
         let side = order.side;
@@ -26355,6 +26371,7 @@ impl Platform {
         // venue list, not anything an order carries.
         let counterparty = self.broker.name().to_string();
         let result = self.orders.submit(
+            &gate,
             order,
             self.broker.as_mut(),
             &self.autonomy,

@@ -18,6 +18,21 @@
 //! everywhere on a piecewise model, and the coordinate search finds exactly
 //! the threshold crossings a gradient would miss. It is deterministic, so a
 //! replay refuses the same models.
+//!
+//! A coordinate search alone misses a model that is fragile only when
+//! features move together — a fit leaning on the small difference between
+//! two collinear features, where each feature nudged alone moves the output
+//! by less than the bound and both nudged at once move it by more. An
+//! independent skeptic named that gap. So each row is also attacked at two
+//! corners of the same budget box: every feature moved, at once, in the
+//! direction its own nudge pushed the output furthest up, and again furthest
+//! down. The budget is unchanged — no feature moves by more than its
+//! `input_step_sd` — so this is the same attacker using its whole budget
+//! rather than one feature's share of it. On an additive model (a linear
+//! fit, boosted stumps, a distilled linear, and any weighted sum of them,
+//! which is every family the platform fits) those two corners are exactly
+//! the worst corners of the box; on any other model they are a lower bound
+//! on the worst, which can refuse a model and never excuse one.
 
 use qip_core::error::{Error, Result};
 
@@ -83,6 +98,10 @@ pub struct PerturbationReport {
     /// For each feature, the rows a nudge of that feature alone made
     /// fragile, in feature order.
     pub fragile_by_feature: Vec<usize>,
+    /// Rows no single-feature nudge made fragile and the joint nudge — every
+    /// feature moved at once within its own budget — did. Counted in
+    /// `fragile_rows` too.
+    pub fragile_jointly: usize,
     /// The worst movement found anywhere, as a fraction of the output's
     /// standard deviation.
     pub worst_movement_sd: f64,
@@ -127,14 +146,16 @@ impl PerturbationReport {
         }
         if self.fragile_share() > policy.max_fragile_share {
             return Some(format!(
-                "{} of {} probe row(s) move by more than {:.2} of the output's spread when a \
-                 feature is nudged by {:.2} of its own (worst {:.2}), above the {:.0}% tolerated",
+                "{} of {} probe row(s) move by more than {:.2} of the output's spread when \
+                 features are nudged by {:.2} of their own (worst {:.2}), above the {:.0}% \
+                 tolerated; {} of them only when the features move together",
                 self.fragile_rows,
                 self.rows,
                 policy.max_movement_sd,
                 policy.input_step_sd,
                 self.worst_movement_sd,
-                policy.max_fragile_share * 100.0
+                policy.max_fragile_share * 100.0,
+                self.fragile_jointly
             ));
         }
         None
@@ -195,21 +216,39 @@ pub fn attack(
         .collect();
     let mut fragile_rows = 0;
     let mut fragile_by_feature = vec![0usize; arity];
+    let mut fragile_jointly = 0;
     let mut failures = 0;
     let mut worst = 0.0_f64;
     for (row, base) in rows.iter().zip(&baseline) {
         let mut row_worst = 0.0_f64;
+        // The two corners of the budget box this row is attacked at jointly:
+        // each feature at the end of its nudge that pushed the output
+        // furthest up (and, separately, down), or left where it is when
+        // neither end moved the output that way.
+        let mut up = row.clone();
+        let mut down = row.clone();
+        let mut up_moved = 0usize;
+        let mut down_moved = 0usize;
         for (column, step) in steps.iter().enumerate() {
             if *step <= 0.0 {
                 continue;
             }
             let mut feature_worst = 0.0_f64;
+            let mut rise = (0.0_f64, 0.0_f64);
+            let mut fall = (0.0_f64, 0.0_f64);
             for direction in [1.0, -1.0] {
                 let mut nudged = row.clone();
                 nudged[column] += direction * step;
                 match model(&nudged) {
                     Ok(value) if value.is_finite() => {
-                        feature_worst = feature_worst.max((value - base).abs() / output_sd);
+                        let moved = value - base;
+                        feature_worst = feature_worst.max(moved.abs() / output_sd);
+                        if moved > rise.0 {
+                            rise = (moved, direction);
+                        }
+                        if moved < fall.0 {
+                            fall = (moved, direction);
+                        }
                     }
                     _ => failures += 1,
                 }
@@ -218,7 +257,32 @@ pub fn attack(
                 fragile_by_feature[column] += 1;
             }
             row_worst = row_worst.max(feature_worst);
+            if rise.1 != 0.0 {
+                up[column] += rise.1 * step;
+                up_moved += 1;
+            }
+            if fall.1 != 0.0 {
+                down[column] += fall.1 * step;
+                down_moved += 1;
+            }
         }
+        // A corner that moved one feature is a nudge already measured above.
+        let mut joint_worst = 0.0_f64;
+        for (corner, moved) in [(&up, up_moved), (&down, down_moved)] {
+            if moved < 2 {
+                continue;
+            }
+            match model(corner) {
+                Ok(value) if value.is_finite() => {
+                    joint_worst = joint_worst.max((value - base).abs() / output_sd);
+                }
+                _ => failures += 1,
+            }
+        }
+        if joint_worst > policy.max_movement_sd && row_worst <= policy.max_movement_sd {
+            fragile_jointly += 1;
+        }
+        row_worst = row_worst.max(joint_worst);
         if row_worst > policy.max_movement_sd {
             fragile_rows += 1;
         }
@@ -228,6 +292,7 @@ pub fn attack(
         rows: rows.len(),
         fragile_rows,
         fragile_by_feature,
+        fragile_jointly,
         worst_movement_sd: worst,
         failures,
     })
@@ -320,6 +385,47 @@ mod tests {
                 .is_some_and(|why| why.contains("feature 0 alone")),
             "{report:?}"
         );
+        Ok(())
+    }
+
+    /// The gap an independent skeptic named in the coordinate-wise attack: a
+    /// fit leaning on the difference between two collinear features. Each
+    /// feature nudged alone moves the output by about 0.4 of its spread, under
+    /// the bound, so no row is fragile to any one feature; both nudged at
+    /// once, each within its own budget, move it by about 0.8, and every row
+    /// is fragile. Premise first: no single feature makes a row fragile, so
+    /// the refusal is the joint attack's. Mutation: skip the corner
+    /// evaluation in `attack` — no row is fragile and the refusal assertion
+    /// fails.
+    #[test]
+    fn a_model_fragile_only_when_features_move_together_is_refused() -> Result<()> {
+        let data: Vec<Vec<f64>> = (0..400)
+            .map(|i| {
+                let a = (i as f64 * 0.37).sin();
+                vec![a, a + 0.25 * (i as f64 * 0.11).cos()]
+            })
+            .collect();
+        let policy = PerturbationPolicy::default();
+        let report = attack(|r| Ok(r[0] - r[1]), &data, &policy)?;
+        assert_eq!(
+            report.fragile_by_feature,
+            vec![0, 0],
+            "premise: no feature alone makes a row fragile: {report:?}"
+        );
+        assert_eq!(report.fragile_jointly, 400, "{report:?}");
+        assert_eq!(report.fragile_rows, 400, "{report:?}");
+        assert!(
+            report
+                .refusal(&policy)
+                .is_some_and(|why| why.contains("400 of them only when the features move together")),
+            "{report:?}"
+        );
+        // The same features under a fit that does not lean on their
+        // difference survive the joint attack: it is the model, not the
+        // collinearity, that is refused.
+        let sound = attack(|r| Ok(r[0] + r[1]), &data, &policy)?;
+        assert_eq!(sound.fragile_rows, 0, "{sound:?}");
+        assert_eq!(sound.refusal(&policy), None);
         Ok(())
     }
 

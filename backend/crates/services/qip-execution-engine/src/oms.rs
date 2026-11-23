@@ -59,6 +59,7 @@ use qip_core::Decimal;
 use qip_core::error::{Error, Result};
 use qip_core::ids::OrderId;
 use qip_core::time::Timestamp;
+use qip_risk::gate::DeterministicGate;
 use qip_risk::limits::{LimitBreach, RiskState};
 use qip_risk_engine::autonomy::{AutonomyController, AutonomyLevel};
 use qip_risk_engine::pretrade::{PreTradeChecker, PreTradeDecision, ProposedOrder};
@@ -401,6 +402,15 @@ pub struct SubmissionResult {
     /// here and counted on the manager instead.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub reconciliation_breaks: Vec<String>,
+    /// Why the cost router determined the pre-trade check this order met,
+    /// copied from the [`DeterministicGate`] [`OrderManager::submit`]
+    /// demanded (R12-RISK-3022). Before the gate was demanded here the
+    /// kernel asked the router first and kept the routing beside the call,
+    /// so a second submission site written without asking it compiled and
+    /// ran the limits just as well, and nothing recorded which decision the
+    /// check belonged to. Empty only on a record written before the field.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub routed: String,
 }
 
 impl SubmissionResult {
@@ -680,6 +690,7 @@ impl OrderManager {
     #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &mut self,
+        gate: &DeterministicGate,
         mut order: Order,
         broker: &mut dyn Broker,
         autonomy: &AutonomyController,
@@ -698,6 +709,7 @@ impl OrderManager {
             simulated: broker.is_simulated(),
             reduced_to: None,
             reconciliation_breaks: Vec::new(),
+            routed: gate.rationale().to_string(),
         };
 
         // 0. An order id this manager already holds is a replay, not a new
@@ -1074,6 +1086,7 @@ impl OrderManager {
                     simulated: broker.is_simulated(),
                     reduced_to,
                     reconciliation_breaks: breaks,
+                    routed: gate.rationale().to_string(),
                 };
                 if order.state.is_open() {
                     self.working_axes
@@ -1116,6 +1129,7 @@ impl OrderManager {
                     simulated: broker.is_simulated(),
                     reduced_to,
                     reconciliation_breaks: breaks,
+                    routed: gate.rationale().to_string(),
                 };
                 self.orders
                     .insert(order.order_id.as_str().to_string(), order);
@@ -1273,6 +1287,7 @@ impl OrderManager {
     #[allow(clippy::too_many_arguments)]
     pub fn replace(
         &mut self,
+        gate: &DeterministicGate,
         order_id: &OrderId,
         replacement: Order,
         touch: Option<Decimal>,
@@ -1328,6 +1343,7 @@ impl OrderManager {
             );
         }
         Ok(self.submit(
+            gate,
             replacement,
             broker,
             autonomy,
@@ -1435,6 +1451,7 @@ impl OrderManager {
     #[allow(clippy::too_many_arguments)]
     pub fn admit_ladder(
         &mut self,
+        gate: &DeterministicGate,
         product: &str,
         venue: &str,
         rule: &PricingRule,
@@ -1488,6 +1505,7 @@ impl OrderManager {
             product: product.to_string(),
             venue: venue.to_string(),
             rule: rule.clone(),
+            routed: gate.rationale().to_string(),
         })
     }
 

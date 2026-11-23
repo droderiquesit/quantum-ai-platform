@@ -547,3 +547,110 @@ fn a_model_that_flips_inside_the_window_fails_its_adversarial_test_and_is_not_ad
     );
     Ok(())
 }
+
+/// Scores the difference of the two features: on a window where they are
+/// collinear, a fit leaning on the small gap between them.
+#[derive(Debug)]
+struct Differencing;
+
+#[derive(Debug)]
+struct DifferencingModel(String);
+
+impl ModelProvider for Differencing {
+    fn name(&self) -> &str {
+        "the differencing provider"
+    }
+    fn serves(&self) -> &[ModelFormat] {
+        &[ModelFormat::DistilledLinear]
+    }
+    fn serve(&self, artifact: &ModelArtifact) -> Result<Box<dyn ServedModel>> {
+        Ok(Box::new(DifferencingModel(artifact.reference.clone())))
+    }
+}
+
+impl ServedModel for DifferencingModel {
+    fn reference(&self) -> &str {
+        &self.0
+    }
+    fn format(&self) -> ModelFormat {
+        ModelFormat::DistilledLinear
+    }
+    fn arity(&self) -> usize {
+        2
+    }
+    fn cost(&self) -> usize {
+        1
+    }
+    fn score(&self, inputs: &[f64]) -> Result<f64> {
+        Ok(inputs[0] - inputs[1])
+    }
+}
+
+/// R12-MODEL-4021, the gap an independent skeptic named in the coordinate-wise
+/// attack: a model fragile only when features move together. On a recorded
+/// window where `b` is `a` plus a small independent term, a model scoring
+/// `a - b` moves by about 0.4 of its spread when either feature alone is
+/// nudged by a tenth of its own — under the bound — and by about 0.8 when
+/// both are, each within the same budget. The promotion test run on the
+/// production path (`run_promotion_tests`, which the deep brain's shadow
+/// round reaches through `Platform::test_model_for_promotion`) fails it, and
+/// the registry's gap names the failure, so `promote_artifact` refuses it.
+/// Premise first: the model passes every other test on the window, and the
+/// refusal names the joint nudge rather than one feature.
+///
+/// Mutation: skip the corner evaluation in `qip_training::adversarial::attack`
+/// — the model passes its adversarial test and the third assertion fails.
+#[test]
+fn a_model_fragile_only_to_a_joint_nudge_fails_its_adversarial_test() -> Result<()> {
+    let teacher = teacher("bar-linear-joint")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let mut rows = Vec::new();
+    let mut targets = Vec::new();
+    let mut times = Vec::new();
+    for i in 0..400_usize {
+        let a = (i as f64 * 0.37).sin();
+        let b = a + 0.25 * (i as f64 * 0.11).cos();
+        let residual = ((i * 7919) % 13) as f64 / 13.0 * 0.02 - 0.01;
+        rows.push(vec![a, b]);
+        targets.push(a - b + residual);
+        times.push(start().saturating_add(Duration::from_mins(i as i64)));
+    }
+    let recorded = TrainingDataset::new(
+        "joint-recorded",
+        vec!["a".to_string(), "b".to_string()],
+        rows,
+        targets,
+        times,
+    )?;
+    let mut registry = registry_with(&teacher)?;
+    let tests = run_promotion_tests(&Differencing, &mut registry, &artifact, &recorded, start())?;
+    for name in PROMOTION_TESTS
+        .iter()
+        .filter(|name| **name != ADVERSARIAL_TEST)
+    {
+        assert!(
+            passed(&tests, name),
+            "premise: the model passes {name}: {}",
+            evidence(&tests, name)
+        );
+    }
+    assert!(
+        !passed(&tests, ADVERSARIAL_TEST),
+        "a model fragile only to a joint nudge must fail: {}",
+        evidence(&tests, ADVERSARIAL_TEST)
+    );
+    assert!(
+        evidence(&tests, ADVERSARIAL_TEST)
+            .contains("400 of them only when the features move together"),
+        "{}",
+        evidence(&tests, ADVERSARIAL_TEST)
+    );
+    assert!(
+        tests
+            .gap(&artifact.digest)
+            .is_some_and(|gap| gap.starts_with("it failed its adversarial test")),
+        "{:?}",
+        tests.gap(&artifact.digest)
+    );
+    Ok(())
+}

@@ -432,6 +432,9 @@ fn a_plan_naming_a_product_that_already_rests_on_the_venue_is_refused_and_leaves
             ..qip_risk::limits::RiskState::default()
         };
         manager.admit_ladder(
+            &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                "a test of the order manager",
+            ),
             product,
             venue,
             rule,

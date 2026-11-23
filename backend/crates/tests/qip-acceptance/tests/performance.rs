@@ -1615,6 +1615,9 @@ fn central_order_submission_costs_what_the_execution_measurements_say() -> Resul
     for _ in 0..ORDERS {
         let order = central_order(&mut manager, "ACME", dec!("1000"));
         let result = manager.submit(
+            &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                "a test of the order manager",
+            ),
             order,
             &mut broker,
             &autonomy,
@@ -1687,6 +1690,9 @@ fn central_order_submission_costs_the_same_per_order_however_many_the_manager_al
         for _ in 0..orders {
             let order = central_order(&mut manager, "ACME", dec!("1000"));
             let result = manager.submit(
+                &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                    "a test of the order manager",
+                ),
                 order,
                 &mut broker,
                 &autonomy,
@@ -1749,6 +1755,9 @@ fn central_instrument_feasibility_costs_what_the_execution_measurements_say() ->
         };
         let order = central_order(&mut manager, "ACME", quantity);
         let result = manager.submit(
+            &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                "a test of the order manager",
+            ),
             order,
             &mut broker,
             &autonomy,

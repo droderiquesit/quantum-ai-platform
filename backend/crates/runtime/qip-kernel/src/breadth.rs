@@ -426,11 +426,16 @@ impl Platform {
                 // same order manager every desk order passes through. Taken
                 // before the venue is borrowed, because the book is the
                 // platform's and the venue is the broker's.
+                // R12-RISK-3022: the ladders' limit check is routed as a
+                // deterministic decision first, and `admit_ladder` will not
+                // run it without the gate that routing carries.
+                let gate = self.determine_pretrade(MARKET_FACTORY_SCOPE)?.gate();
                 let risk_state = self.risk_state();
                 let orders = &mut self.orders;
                 let autonomy = &self.autonomy;
                 let mut ladders = |product: &str, venue: &str, rule: &PricingRule| {
                     orders.admit_ladder(
+                        &gate,
                         product,
                         venue,
                         rule,

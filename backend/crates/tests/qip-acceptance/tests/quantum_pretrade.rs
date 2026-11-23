@@ -219,6 +219,9 @@ fn a_position_sized_from_a_winning_quantum_answer_is_still_refused_by_pre_trade_
     let mut broker = SimulatedBroker::new(SimulationSettings::frictionless(), 7);
     let mut manager = OrderManager::new(PreTradeChecker::new(limits));
     let result = manager.submit(
+        &qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "a test of the order manager",
+        ),
         order,
         &mut broker,
         &AutonomyController::new(),
