@@ -2562,8 +2562,24 @@ impl FederationStage {
 /// Every review the log holds, oldest first, read back from the journal
 /// alone — and each one checked: an arbitration whose recorded decision does
 /// not follow from its own recorded views is refused, because a record that
-/// cannot be re-derived from itself is not a replay of anything.
+/// cannot be re-derived from itself is not a replay of anything. One refused
+/// review refuses the whole read; [`replay_each`] is the per-review form.
 pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationReview>> {
+    replay_each(platform)?.into_iter().collect()
+}
+
+/// Every review the log holds, oldest first, each one decoded and checked on
+/// its own: a review that cannot be re-derived from itself is an `Err` in its
+/// own position and the reviews around it are still read. The outer `Err` is
+/// a journal that could not be read at all.
+///
+/// The failure this prevents (R12-EXPAND-6067): the deep brain's belief
+/// watch read [`replay`], so one untrusted review anywhere in the log
+/// refused every later sweep's read and the price/belief discrepancy
+/// detector went dark for good, reported only as a refusal on the round. A
+/// reader that keeps a cursor over the log needs the position of the refused
+/// review as well as the others, which is why it is kept in place.
+pub fn replay_each(platform: &crate::platform::Platform) -> Result<Vec<Result<FederationReview>>> {
     let envelopes = platform.replay_journal(
         &qip_events::EventFilter::new().topic(<FederationReview as EventBody>::TOPIC),
     )?;
@@ -2579,28 +2595,36 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationRevi
         if !ours {
             continue;
         }
-        let review = envelope.decode::<FederationReview>()?.body;
-        for a in &review.arbitrations {
-            let (decision, reason, merged) =
-                qip_world_model::federation::decide_on(&a.proposition, &a.disagreement);
-            if decision != a.decision || reason != a.reason || merged != a.arbitrated_probability {
-                return Err(qip_core::error::Error::invalid(format!(
-                    "the journaled arbitration of `{}` in cycle {} does not follow from its own \
-                     recorded views; the record is not trusted as a replay",
-                    a.proposition, review.cycle
-                )));
-            }
-        }
-        if review.contradictions != contradictions_in(&review.arbitrations) {
-            return Err(qip_core::error::Error::invalid(format!(
-                "the journaled contradictions of cycle {} are not the ones its own recorded \
-                 views contain; the record is not trusted as a replay",
-                review.cycle
-            )));
-        }
-        reviews.push(review);
+        reviews.push(
+            envelope
+                .decode::<FederationReview>()
+                .and_then(|decoded| trusted(decoded.body)),
+        );
     }
     Ok(reviews)
+}
+
+/// The review, if it re-derives from its own recorded views.
+fn trusted(review: FederationReview) -> Result<FederationReview> {
+    for a in &review.arbitrations {
+        let (decision, reason, merged) =
+            qip_world_model::federation::decide_on(&a.proposition, &a.disagreement);
+        if decision != a.decision || reason != a.reason || merged != a.arbitrated_probability {
+            return Err(qip_core::error::Error::invalid(format!(
+                "the journaled arbitration of `{}` in cycle {} does not follow from its own \
+                 recorded views; the record is not trusted as a replay",
+                a.proposition, review.cycle
+            )));
+        }
+    }
+    if review.contradictions != contradictions_in(&review.arbitrations) {
+        return Err(qip_core::error::Error::invalid(format!(
+            "the journaled contradictions of cycle {} are not the ones its own recorded \
+             views contain; the record is not trusted as a replay",
+            review.cycle
+        )));
+    }
+    Ok(review)
 }
 
 #[cfg(test)]
@@ -3931,6 +3955,67 @@ mod tests {
         assert_eq!(
             run(bridgeless).counterparty_unmodelled,
             vec!["bridge".to_string()]
+        );
+    }
+
+    /// R12-EXPAND-6067: one untrusted review in the log is refused in its
+    /// own position and the trusted reviews on either side of it are still
+    /// read, while [`replay`] still refuses the whole read. Before
+    /// `replay_each` the deep brain's belief watch read only [`replay`], so
+    /// the one bad record blinded the detector for every later sweep.
+    ///
+    /// Mutation: make `replay_each` return the first refusal as its outer
+    /// `Err` (`trusted(..)?` in the loop) and the per-position half fails.
+    #[test]
+    fn one_untrusted_review_is_refused_in_its_own_position_and_its_neighbours_are_still_read() {
+        let config = crate::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(day(0), config.seed);
+        let mut platform = crate::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        let mut stage = FederationStage::new();
+        for cycle in 1..=3u64 {
+            let mut review = stage.run(&inputs(cycle, 100.0, day(0), None), day(0));
+            review.cycle = cycle;
+            assert_eq!(
+                review.contradictions,
+                contradictions_in(&review.arbitrations),
+                "premise: the review as built is trusted"
+            );
+            if cycle == 2 {
+                review.contradictions.push(ViewContradiction {
+                    proposition: "macro:rates:move-persists@2".into(),
+                    for_model: "a".into(),
+                    for_probability: 0.9,
+                    against_model: "b".into(),
+                    against_probability: 0.1,
+                });
+            }
+            platform
+                .journal_record(review, "kernel/federation", day(0))
+                .unwrap_or_else(|e| panic!("journaled: {e}"));
+        }
+        let each = replay_each(&platform).unwrap_or_else(|e| panic!("the journal reads: {e}"));
+        let positions: Vec<Option<u64>> = each
+            .iter()
+            .map(|r| r.as_ref().ok().map(|review| review.cycle))
+            .collect();
+        assert_eq!(positions, [Some(1), None, Some(3)], "{each:?}");
+        let refusal = each[1].as_ref().err().map(|e| e.message().to_string());
+        assert!(
+            refusal
+                .as_deref()
+                .is_some_and(|m| m.contains("contradictions of cycle 2 ")),
+            "{refusal:?}"
+        );
+        assert!(
+            replay(&platform).is_err(),
+            "replay still refuses the whole read"
         );
     }
 }
