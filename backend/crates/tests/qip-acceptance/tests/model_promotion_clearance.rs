@@ -96,6 +96,32 @@ fn token_offsets(text: &str, token: &str) -> Vec<usize> {
         .collect()
 }
 
+/// Every mention of `name` in code that is not its definition: a call, a
+/// path handed on as a function value (`let mint = Type::name;`), a `use` of
+/// it — anything that is a route to it.
+///
+/// The minter scan once counted only `name` followed by `(` (round-81
+/// review), so `.map(PromotionClearance::minted_by_measured_promotion_tests)`
+/// or a `use` that renamed it minted a proof outside the one allowed file and
+/// passed. A proof's constructor has no business being named anywhere else.
+fn mentions(text: &str, name: &str) -> usize {
+    token_offsets(text, name)
+        .into_iter()
+        .filter(|at| !text[..*at].trim_end().ends_with("fn"))
+        .count()
+}
+
+/// Where `name` is mentioned in production code, by file, with the count.
+fn mention_sites(sources: &[(String, String)], name: &str) -> Vec<(String, usize)> {
+    sources
+        .iter()
+        .filter_map(|(path, text)| {
+            let count = mentions(text, name);
+            (count > 0).then(|| (path.clone(), count))
+        })
+        .collect()
+}
+
 /// Calls of `name` — the token followed by `(` — that are not its definition.
 fn calls(text: &str, name: &str) -> usize {
     token_offsets(text, name)
@@ -172,7 +198,9 @@ fn function_body<'a>(text: &'a str, name: &str) -> &'a str {
 /// in `qip-kernel/src/model_serving.rs` — that file is named as an offender;
 /// call `JournaledAdmission::minted_from_the_promotion_log` in the deep
 /// brain's `learning.rs` — the same; add a second mint in `central/models.rs`
-/// — the count fires.
+/// — the count fires; name a minter without calling it
+/// (`let mint = JournaledAdmission::minted_from_the_promotion_log;`) outside
+/// its file — named as an offender.
 #[test]
 fn each_promotion_proof_is_minted_at_one_production_site_and_nowhere_else() {
     let sources = production_sources();
@@ -180,19 +208,19 @@ fn each_promotion_proof_is_minted_at_one_production_site_and_nowhere_else() {
         ("minted_by_measured_promotion_tests", CLEARANCE_MINTER),
         ("minted_from_the_promotion_log", ADMISSION_MINTER),
     ] {
-        let sites = call_sites(&sources, name);
+        let sites = mention_sites(&sources, name);
         let offenders: Vec<&(String, usize)> =
             sites.iter().filter(|(path, _)| path != minter).collect();
         assert!(
             offenders.is_empty(),
-            "`{name}` is called in production code outside {minter}: {offenders:?}. Each \
+            "`{name}` is named in production code outside {minter}: {offenders:?}. Each \
              promotion proof is the measurement or the log record itself; obtain one through \
              the kernel (R12-MODEL-4021)"
         );
         assert_eq!(
             sites,
             vec![(minter.to_string(), 1)],
-            "`{name}` must be called exactly once in production, in {minter}; with none, \
+            "`{name}` must be named exactly once in production, by its call in {minter}; with none, \
              nothing could ever be promoted or restored"
         );
     }

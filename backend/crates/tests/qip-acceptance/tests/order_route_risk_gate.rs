@@ -1060,21 +1060,243 @@ fn the_function_splitter_reads_every_visibility_and_qualifier() {
 }
 
 /// The kernel functions that make a book-level hard-limit decision, and the
-/// call by which each one makes it (R12-RISK-3022).
+/// method by which each one makes it (R12-RISK-3022): the function, the type
+/// that owns the method, the method's name, and how many arguments a call of
+/// it takes after the receiver.
 ///
-/// Each is the only caller of its call in the kernel's production source, and
+/// Each is the only caller of its method in the kernel's production source, and
 /// each must demand `gate: &DeterministicGate` by signature and record the
 /// gate's rationale. The calls that only *restrict* — `Proposal::veto`,
 /// `SurvivalGovernor::release_nothing`, which lowers the survival ceiling to
 /// what the book stands in — are deliberately not here: a restriction needs
 /// no witness, and demanding one would let a router refusal stop a control
 /// from tightening.
-const KERNEL_HARD_LIMIT_CALLS: [(&str, &str); 4] = [
-    ("size_survival", "self.governor.size("),
-    ("seed_survival_ceiling", "self.governor.seed("),
-    ("sign_off_drafts", "proposal.approve("),
-    ("advance_released", "proposal.release("),
+///
+/// Matched by structure, not by receiver (round-81 review). The scan once
+/// looked for `self.governor.size(` and `proposal.approve(` as text, so
+/// `p.approve(..)` in a loop, a rebinding `g.size(..)`, or a path call
+/// `Proposal::release(p, now)` was a second caller it could not see. Now the
+/// method is matched as a delimited token on any receiver and in path form,
+/// and the argument count is what tells it from a same-named method of
+/// another type — `ReservationLedger::release(id, now)` takes two,
+/// `Proposal::release(now)` one — because the count is part of the
+/// signature and a receiver's name is not.
+const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 4] = [
+    ("size_survival", "SurvivalGovernor", "size", 5),
+    ("seed_survival_ceiling", "SurvivalGovernor", "seed", 4),
+    ("sign_off_drafts", "Proposal", "approve", 2),
+    ("advance_released", "Proposal", "release", 1),
 ];
+
+/// Production text with every comment and the contents of every string and
+/// character literal removed, line structure kept, so a method named in a
+/// doc comment or an error message neither satisfies nor trips a scan.
+/// String state is carried across lines, because a message continued with a
+/// trailing `\\` is still a string on the next line.
+fn code_only(source: &str) -> String {
+    let production = qip_acceptance::production_text(source);
+    let chars: Vec<char> = production.chars().collect();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(production.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if c == 'r' && (i == 0 || chars[i - 1] == 'b' || !ident(chars[i - 1])) {
+            let mut hashes = 0;
+            while chars.get(i + 1 + hashes) == Some(&'#') {
+                hashes += 1;
+            }
+            if chars.get(i + 1 + hashes) == Some(&'"') {
+                out.push_str("\"\"");
+                i += 2 + hashes;
+                while i < chars.len() {
+                    if chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if c == '"' {
+            out.push_str("\"\"");
+            i += 1;
+            while i < chars.len() {
+                match chars[i] {
+                    '\\' => {
+                        if chars.get(i + 1) == Some(&'\n') {
+                            out.push('\n');
+                        }
+                        i += 2;
+                    }
+                    '"' => {
+                        i += 1;
+                        break;
+                    }
+                    '\n' => {
+                        out.push('\n');
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        if c == '\'' {
+            // A character literal, `'x'` or an escape; a lifetime has no
+            // closing quote and is left as code.
+            let close = if next == Some('\\') {
+                chars
+                    .get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&ch| ch == '\''))
+                    .map(|at| i + 3 + at)
+            } else {
+                (chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
+            };
+            if let Some(close) = close {
+                out.push_str("' '");
+                i = close + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Every offset where `token` begins as a whole identifier, so `release`
+/// is not found inside `release_nothing` nor `approve` inside `approve_all`.
+fn token_offsets(text: &str, token: &str) -> Vec<usize> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(token)
+        .filter(|(at, _)| {
+            let before = text[..*at].chars().next_back();
+            let after = text[at + token.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// How many arguments the call whose parenthesis opens `text` passes: commas
+/// at the outermost depth of `()`, `[]` and `{}`, a trailing comma not
+/// counted. `None` if the parenthesis never closes. Closure parameters
+/// written directly as an argument would be miscounted; none of the methods
+/// held here takes a closure.
+fn call_arity(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut commas = 0usize;
+    let mut since_comma = false;
+    for c in text.chars() {
+        match c {
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > 1 {
+                    since_comma = true;
+                }
+            }
+            ')' | ']' | '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(commas + usize::from(since_comma));
+                }
+                since_comma = true;
+            }
+            ',' if depth == 1 => {
+                commas += 1;
+                since_comma = false;
+            }
+            c if depth >= 1 && !c.is_whitespace() => since_comma = true,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// How many times `code` reaches `method`: a call on any receiver
+/// (`x.method(..)` with `arity` arguments), a path call (`Type::method(..)`
+/// with the receiver as an extra first argument), or a path naming it
+/// without calling it (`Type::method` handed on as a function value, counted
+/// whatever it is later called with). A bare token — the definition, a
+/// binding, a field — is not a call.
+fn reaches(code: &str, method: &str, arity: usize) -> usize {
+    token_offsets(code, method)
+        .into_iter()
+        .filter(|at| {
+            let before = code[..*at].trim_end();
+            let after = code[at + method.len()..].trim_start();
+            if before.ends_with("::") {
+                !after.starts_with('(') || call_arity(after) == Some(arity + 1)
+            } else if before.ends_with('.') && !before.ends_with("..") {
+                after.starts_with('(') && call_arity(after) == Some(arity)
+            } else {
+                false
+            }
+        })
+        .count()
+}
+
+/// The matcher, on a fixture that holds each evasion the receiver-spelled
+/// scan let through and each neighbour it must not take for a caller.
+/// Mutations: match `self.governor.size(` as text again, or drop the
+/// path-call arm of `reaches`, or the arity filter — each fails here.
+#[test]
+fn the_hard_limit_matcher_finds_any_receiver_and_path_calls_and_nothing_else() {
+    let fixture = "fn a() {\n    for p in &mut self.proposals { p.approve(now, vec![x]); }\n}\n\
+                   fn b() {\n    let g = &mut self.governor;\n    g.size(f, s, t, v, now);\n}\n\
+                   fn c() {\n    Proposal::release(&mut p, now);\n}\n\
+                   fn d() {\n    let f = SurvivalGovernor::seed;\n}\n\
+                   fn e() {\n    x.approve_all(now, v);\n    self.reservations.release(id, now);\n    \
+                   self.governor.release_nothing(g, h);\n    let s = config.seed;\n    \
+                   context.seed();\n    // p.approve(now, v)\n    m(\"p.release(now)\");\n}\n";
+    let code = code_only(fixture);
+    let items = function_items(&code);
+    let reached = |method: &str, arity: usize| -> Vec<String> {
+        items
+            .iter()
+            .filter(|(_, item)| reaches(item, method, arity) > 0)
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    assert_eq!(items.len(), 5, "premise: the fixture's five functions");
+    assert_eq!(reached("approve", 2), ["a"]);
+    assert_eq!(reached("size", 5), ["b"]);
+    assert_eq!(reached("release", 1), ["c"]);
+    assert_eq!(reached("seed", 4), ["d"]);
+}
 
 /// R12-RISK-3022 beyond the order manager: the survival waterfall, the
 /// sign-off of a draft and the release of an approved proposal are each made
@@ -1102,16 +1324,14 @@ fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
     );
     for path in &kernel_files {
         let source = std::fs::read_to_string(path).expect("kernel source is readable");
-        let production = qip_acceptance::production_text(&source);
-        for (name, item) in function_items(&production) {
-            for (_, call) in KERNEL_HARD_LIMIT_CALLS {
-                if !item.contains(call) {
+        let code = code_only(&source);
+        for (name, item) in function_items(&code) {
+            for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
+                if reaches(item, method, arity) == 0 {
                     continue;
                 }
-                found
-                    .entry(call.to_string())
-                    .or_default()
-                    .push(name.clone());
+                let call = format!("{owner}::{method}");
+                found.entry(call.clone()).or_default().push(name.clone());
                 if !demands_the_gate(signature_of(item)) {
                     ungated.push(format!("{name} ({call})"));
                 }
@@ -1121,14 +1341,15 @@ fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
             }
         }
     }
-    // Premise, and the exact placement: each call is made by exactly the one
-    // function named for it, so a second caller is a failure here whether or
-    // not it took a gate.
-    for (function, call) in KERNEL_HARD_LIMIT_CALLS {
+    // Premise, and the exact placement: each method is reached by exactly the
+    // one function named for it, on any receiver and in path form, so a
+    // second caller is a failure here whether or not it took a gate.
+    for (function, owner, method, _) in KERNEL_HARD_LIMIT_CALLS {
+        let call = format!("{owner}::{method}");
         assert_eq!(
-            found.get(call).map(Vec::as_slice),
+            found.get(&call).map(Vec::as_slice),
             Some(&[function.to_string()][..]),
-            "`{call}` must be made by `{function}` alone in the kernel's production source"
+            "`{call}` must be reached by `{function}` alone in the kernel's production source"
         );
     }
     assert!(
@@ -1163,16 +1384,22 @@ fn every_kernel_kill_switch_trip_demands_the_deterministic_gate() {
     let mut ungated_trips = Vec::new();
     let mut gated = Vec::new();
     let mut ungated = Vec::new();
+    // Every mention of the ungated trips as a delimited token, on any
+    // receiver, in path form (`KillSwitch::trip_scope(&mut switch, ..)`) or
+    // handed on as a function value. The scan once matched `.trip_scope(` as
+    // text, which a path call does not contain (round-81 review). The kernel
+    // defines neither name, so any mention in its code is a route to one.
     for path in &kernel_files {
         let source = std::fs::read_to_string(path).expect("kernel source is readable");
-        let production = qip_acceptance::production_text(&source);
-        for call in [".trip_scope(", ".trip_global("] {
-            if production.contains(call) {
-                ungated_trips.push(format!("{} ({call})", path.display()));
+        let code = code_only(&source);
+        for method in ["trip_scope", "trip_global"] {
+            let mentions = token_offsets(&code, method).len();
+            if mentions > 0 {
+                ungated_trips.push(format!("{} ({method} x{mentions})", path.display()));
             }
         }
-        for (name, item) in function_items(&production) {
-            if item.contains(".trip_scope_under(") {
+        for (name, item) in function_items(&code) {
+            if !token_offsets(item, "trip_scope_under").is_empty() {
                 if !demands_the_gate(signature_of(item)) {
                     ungated.push(name.clone());
                 }
@@ -1213,6 +1440,13 @@ const MODEL_CRATES: [&str; 3] = ["qip-ai", "qip-language-providers", "qip-cost-r
 /// from its `Cargo.toml`. Dev-dependencies are left out: they never reach the
 /// binary a node runs.
 fn workspace_dependencies() -> BTreeMap<String, BTreeSet<String>> {
+    let root = std::fs::read_to_string(crates_root().join("../Cargo.toml"))
+        .expect("the workspace manifest is readable");
+    let inherited = workspace_packages(&root);
+    assert!(
+        inherited.get("qip-ai").map(String::as_str) == Some("qip-ai"),
+        "premise: the workspace manifest's dependency table was read"
+    );
     let mut manifests = BTreeMap::new();
     for group in std::fs::read_dir(crates_root()).expect("the crates root is readable") {
         let group = group.expect("a crate group").path();
@@ -1225,36 +1459,233 @@ fn workspace_dependencies() -> BTreeMap<String, BTreeSet<String>> {
                 continue;
             };
             let name = krate.file_name().to_string_lossy().to_string();
-            manifests.insert(name, normal_dependencies(&text));
+            manifests.insert(name, normal_dependencies(&text, &inherited));
         }
     }
     manifests
 }
 
-/// The `qip-*` names a manifest lists under `[dependencies]` or a
-/// `[target.*.dependencies]` table.
-fn normal_dependencies(manifest: &str) -> BTreeSet<String> {
-    let mut found = BTreeSet::new();
-    let mut in_dependencies = false;
-    for line in manifest.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_dependencies = line == "[dependencies]"
-                || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
-            continue;
-        }
-        if !in_dependencies {
-            continue;
-        }
-        let key: String = line
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-            .collect();
-        if key.starts_with("qip-") {
-            found.insert(key);
+/// One dependency as a manifest declares it: the key it is written under,
+/// the `package = "…"` it renames, and whether it inherits the workspace's
+/// entry for that key.
+#[derive(Default)]
+struct Declared {
+    key: String,
+    package: Option<String>,
+    workspace: bool,
+}
+
+impl Declared {
+    /// The package that links: a rename's `package`, else the workspace's
+    /// package for an inherited key, else the key itself.
+    fn package(&self, inherited: &BTreeMap<String, String>) -> String {
+        self.package.clone().unwrap_or_else(|| {
+            self.workspace
+                .then(|| inherited.get(&self.key).cloned())
+                .flatten()
+                .unwrap_or_else(|| self.key.clone())
+        })
+    }
+}
+
+/// The table a manifest header opens, for the dependency scan.
+enum Table {
+    /// Not a table this scan reads.
+    Other,
+    /// `[dependencies]`, `[target.*.dependencies]` or
+    /// `[workspace.dependencies]`: one dependency per key.
+    Entries,
+    /// `[dependencies.name]` (or a target's, or the workspace's): one
+    /// dependency, its fields one per line.
+    Entry(Declared),
+}
+
+/// The line with a trailing `#` comment removed, outside a quoted string.
+fn without_comment(line: &str) -> &str {
+    let mut quoted = false;
+    for (at, c) in line.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '#' if !quoted => return &line[..at],
+            _ => {}
         }
     }
-    found
+    line
+}
+
+/// The key a manifest line opens with — `qip-ai` in `qip-ai = …` and in
+/// `qip-ai.workspace = true` — quotes removed.
+fn leading_key(line: &str) -> String {
+    line.trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// The quoted value of `field = "…"` inside `text`, as a delimited field.
+fn quoted_field(text: &str, field: &str) -> Option<String> {
+    for (at, _) in text.match_indices(field) {
+        let before = text[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            continue;
+        }
+        let rest = text[at + field.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start().strip_prefix('"')?;
+        return rest.split_once('"').map(|(value, _)| value.to_string());
+    }
+    None
+}
+
+/// Whether `text` sets `workspace = true` (inline) or is `key.workspace = true`.
+fn inherits(text: &str) -> bool {
+    text.split([',', '{', '}'])
+        .map(|part| part.split_whitespace().collect::<String>())
+        .any(|part| part == "workspace=true" || part.ends_with(".workspace=true"))
+}
+
+/// What table `header` (between the brackets) opens.
+fn table_of(header: &str) -> Table {
+    let header = header.trim();
+    let rest = if let Some(target) = header.strip_prefix("target.") {
+        // A target spec is quoted (`'cfg(unix)'`, `"cfg(..)"`) or one bare
+        // segment (a triple, which holds no dot).
+        let after = match target.chars().next() {
+            Some(quote @ ('\'' | '"')) => target[1..]
+                .split_once(quote)
+                .map(|(_, after)| after.trim_start_matches('.')),
+            _ => target.split_once('.').map(|(_, after)| after),
+        };
+        let Some(after) = after else {
+            return Table::Other;
+        };
+        after
+    } else {
+        header.strip_prefix("workspace.").unwrap_or(header)
+    };
+    if rest == "dependencies" {
+        Table::Entries
+    } else if let Some(name) = rest.strip_prefix("dependencies.") {
+        Table::Entry(Declared {
+            key: name.trim_matches(['"', '\'']).to_string(),
+            ..Declared::default()
+        })
+    } else {
+        Table::Other
+    }
+}
+
+/// Every dependency `manifest` declares for its build, as declared: entries
+/// under `[dependencies]` and `[target.*.dependencies]`, each dependency
+/// given its own `[dependencies.name]` table, and the workspace's own
+/// `[workspace.dependencies]`.
+fn declared_dependencies(manifest: &str) -> Vec<Declared> {
+    let mut declared = Vec::new();
+    let mut table = Table::Other;
+    for line in manifest.lines() {
+        let line = without_comment(line).trim();
+        if line.starts_with('[') {
+            if let Table::Entry(entry) = std::mem::replace(&mut table, Table::Other) {
+                declared.push(entry);
+            }
+            table = table_of(line.trim_start_matches('[').trim_end_matches(']'));
+            continue;
+        }
+        match &mut table {
+            Table::Other => {}
+            Table::Entries => {
+                let key = leading_key(line);
+                if !key.is_empty() {
+                    declared.push(Declared {
+                        package: quoted_field(line, "package"),
+                        workspace: inherits(line),
+                        key,
+                    });
+                }
+            }
+            Table::Entry(entry) => {
+                if leading_key(line) == "package" {
+                    entry.package = quoted_field(line, "package");
+                }
+                if inherits(line) {
+                    entry.workspace = true;
+                }
+            }
+        }
+    }
+    if let Table::Entry(entry) = table {
+        declared.push(entry);
+    }
+    declared
+}
+
+/// The workspace manifest's `[workspace.dependencies]`, key to package, so a
+/// member's `key.workspace = true` resolves to what links even when the
+/// workspace renames it.
+fn workspace_packages(root: &str) -> BTreeMap<String, String> {
+    let mut packages = BTreeMap::new();
+    let mut in_workspace = false;
+    let mut kept = String::new();
+    for line in root.lines() {
+        let header = without_comment(line).trim();
+        if header.starts_with('[') {
+            in_workspace = header.starts_with("[workspace.dependencies");
+        }
+        if in_workspace {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    for entry in declared_dependencies(&kept) {
+        let package = entry.package.clone().unwrap_or_else(|| entry.key.clone());
+        packages.insert(entry.key, package);
+    }
+    packages
+}
+
+/// The `qip-*` packages a member manifest links for its build — by the
+/// package, not the key, so a rename (`models = { package = "qip-ai" }`) or a
+/// `[dependencies.qip-ai]` table is seen. The scan once read only keys under
+/// a `[dependencies]` header, and both forms passed it (round-81 review).
+fn normal_dependencies(manifest: &str, inherited: &BTreeMap<String, String>) -> BTreeSet<String> {
+    declared_dependencies(manifest)
+        .iter()
+        .map(|entry| entry.package(inherited))
+        .filter(|package| package.starts_with("qip-"))
+        .collect()
+}
+
+/// The manifest parser, on a fixture holding each form a key-only scan
+/// missed and each it must not take for a normal dependency. Mutations: read
+/// only `[dependencies]` headers again, or take the key over `package` —
+/// each fails here.
+#[test]
+fn the_dependency_scan_reads_tables_renames_and_inherited_renames() {
+    let inherited = BTreeMap::from([
+        ("qip-core".to_string(), "qip-core".to_string()),
+        ("lm".to_string(), "qip-language-providers".to_string()),
+    ]);
+    let manifest = "[package]\nname = \"x\"\n\n[dependencies]\nqip-core.workspace = true\n\
+                    router = { package = \"qip-cost-router\", path = \"../r\" } # renamed\n\
+                    lm = { workspace = true }\nserde = \"1\"\n\n\
+                    [dependencies.qip-ai]\npath = \"../qip-ai\"\n\n\
+                    [target.'cfg(unix)'.dependencies.models]\npackage = \"qip-models\"\n\n\
+                    [dev-dependencies]\nqip-dev-only = { path = \"../d\" }\n\n\
+                    [dev-dependencies.qip-dev-table]\npath = \"../e\"\n";
+    let found = normal_dependencies(manifest, &inherited);
+    let expected: BTreeSet<String> = [
+        "qip-ai",
+        "qip-core",
+        "qip-cost-router",
+        "qip-language-providers",
+        "qip-models",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
 }
 
 /// Every model crate reachable from `root`, with the path that reaches it.
