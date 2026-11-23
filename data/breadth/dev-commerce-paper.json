@@ -65,10 +65,8 @@
       "carrier": "paper-carrier",
       "warehouse": "paper-warehouse",
       "consolidate_with": 2,
-      "insurance": [
-        "10000",
-        "100"
-      ],
+      "insurance": null,
+      "insurance_premium_rate": "0.01",
       "decline_reason": null,
       "delivery_risk": "0.01"
     },

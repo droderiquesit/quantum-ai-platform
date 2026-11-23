@@ -655,7 +655,12 @@ impl Platform {
                         found.counterfeit.len()
                     ));
                     outcome.problems.extend(found.problems.iter().cloned());
-                    self.journal_breadth(found, "kernel/commerce", now, outcome);
+                    self.journal_breadth(
+                        found,
+                        crate::commerce_ledger_journal::COMMERCE_ORIGIN,
+                        now,
+                        outcome,
+                    );
                 }
                 Err(error) => outcome
                     .problems
@@ -701,7 +706,12 @@ impl Platform {
                         run.sold.len()
                     ));
                     outcome.problems.extend(run.problems.iter().cloned());
-                    self.journal_breadth(run, "kernel/commerce", now, outcome);
+                    self.journal_breadth(
+                        run,
+                        crate::commerce_ledger_journal::COMMERCE_ORIGIN,
+                        now,
+                        outcome,
+                    );
                 }
                 Err(error) => outcome
                     .problems

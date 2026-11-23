@@ -361,6 +361,10 @@ fn input() -> FeasibilityInput {
         daily_capital_cost: Some(dec!("0.001")),
         purchase_tax_rate: Some(dec!("0.05")),
         chargeback_rate: Some(Decimal::ZERO),
+        insurance: Some(Insurance::Declined {
+            reason: "a fixture with no delivery risk".to_string(),
+        }),
+        delivery_risk: Some(Decimal::ZERO),
     }
 }
 

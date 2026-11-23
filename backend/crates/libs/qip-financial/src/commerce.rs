@@ -325,6 +325,14 @@ pub struct FeasibilityInput {
     /// value in `[0, 1)` (ADR 0246). Reserved against expected resale, so it
     /// can only lower a margin; nothing is booked for it.
     pub chargeback_rate: Option<Decimal>,
+    /// The purchase's insurance decision (R12-COMMERCE-1171). Required like
+    /// every other input: before it was one, a plan could state cover and a
+    /// premium that no assessment charged and no loss drew on, so deleting
+    /// the cover changed no figure and the decision was a label.
+    pub insurance: Option<Insurance>,
+    /// The probability the consignment is lost in delivery, in `[0, 1]`.
+    /// What the cover does not reach is reserved at this rate.
+    pub delivery_risk: Option<Decimal>,
 }
 
 /// The six figures feasibility owes, plus the parts that explain them.
@@ -342,6 +350,14 @@ pub struct Assessment {
     /// The chargeback reserve already taken out of `expected_resale`: the
     /// declared rate on the expected gross sale value (ADR 0246).
     pub chargeback_reserve: Decimal,
+    /// The insurance premium paid on the purchase, inside `all_in_cost` and
+    /// `capital_lockup`: it is paid when the goods are bought.
+    pub insurance_premium: Decimal,
+    /// The expected delivery loss the cover does not reach, inside
+    /// `all_in_cost`: the delivery risk on the declared value of the
+    /// consignment above the cover. Zero when the cover is the full declared
+    /// value, which is the whole point of buying it.
+    pub delivery_loss_reserve: Decimal,
 }
 
 fn need<T: Clone>(v: &Option<T>, what: &str) -> Result<T> {
@@ -362,6 +378,13 @@ impl FeasibilityInput {
         let capital = need(&self.daily_capital_cost, "the daily cost of capital")?;
         let tax_rate = need(&self.purchase_tax_rate, "the purchase tax rate")?;
         let chargeback_rate = need(&self.chargeback_rate, "the chargeback rate")?;
+        let insurance = need(&self.insurance, "the insurance decision")?;
+        let delivery_risk = need(&self.delivery_risk, "the delivery-risk estimate")?;
+        if delivery_risk.is_negative() || delivery_risk > Decimal::ONE {
+            return Err(Error::invalid(format!(
+                "the delivery risk {delivery_risk} is not a probability in [0, 1]"
+            )));
+        }
         if chargeback_rate.is_negative() || chargeback_rate >= Decimal::ONE {
             return Err(Error::invalid(format!(
                 "the chargeback rate {chargeback_rate} is outside [0, 1); a rate of one or more \
@@ -397,12 +420,23 @@ impl FeasibilityInput {
         let landed = arb.cost;
         let purchase_tax = mul("the purchase tax", landed.goods, tax_rate)?;
         let time_to_sale_days = landed.elapsed_days + days;
+        // Cover is on the consignment's declared value; what it does not
+        // reach is lost at the delivery risk and reserved here, so declining
+        // insurance is priced rather than free (R12-COMMERCE-1171).
+        let declared_total = mul("the declared value", declared, quantity)?;
+        let (insurance_premium, coverage) = match &insurance {
+            Insurance::Insured { coverage, premium } => (*premium, *coverage),
+            Insurance::Declined { .. } => (Decimal::ZERO, Decimal::ZERO),
+        };
+        let uncovered = (declared_total - coverage).max(Decimal::ZERO);
+        let delivery_loss_reserve = mul("the delivery-loss reserve", uncovered, delivery_risk)?;
         let capital_lockup = landed.goods
             + landed.freight
             + landed.duty
             + landed.clearance
             + landed.storage
-            + purchase_tax;
+            + purchase_tax
+            + insurance_premium;
         let carry = mul("the capital carry", capital_lockup, capital)?;
         let inventory_carry = landed.storage
             + mul(
@@ -411,7 +445,7 @@ impl FeasibilityInput {
                 Decimal::from(i64::from(time_to_sale_days)),
             )?;
         Ok(Assessment {
-            all_in_cost: landed.total() + purchase_tax,
+            all_in_cost: landed.total() + purchase_tax + insurance_premium + delivery_loss_reserve,
             expected_resale: arb.proceeds - chargeback_reserve,
             time_to_sale_days,
             return_risk: terms.returns.rate,
@@ -419,6 +453,8 @@ impl FeasibilityInput {
             capital_lockup,
             purchase_tax,
             chargeback_reserve,
+            insurance_premium,
+            delivery_loss_reserve,
             landed,
         })
     }

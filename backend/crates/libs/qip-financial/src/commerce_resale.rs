@@ -358,6 +358,10 @@ impl ResaleDesk {
 pub struct CycleEvent {
     pub sku: String,
     pub realised_cost: Decimal,
+    /// The gross price the buyer paid, before the venue's fee and any return
+    /// refund. Gross because [`FeasibilityInput::with_learned`] feeds it to
+    /// [`FeasibilityInput::assess`], which charges the fee and prices returns
+    /// itself: a net figure there pays the fee twice (R12-COMMERCE-1171).
     pub resale_price: Decimal,
     pub days_to_sale: u32,
     pub returned: bool,

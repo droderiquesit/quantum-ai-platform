@@ -951,6 +951,7 @@ fn commerce_plan() -> Result<CommercePlan> {
             warehouse: "paper-warehouse".to_string(),
             consolidate_with: None,
             insurance: None,
+            insurance_premium_rate: None,
             decline_reason: Some("goods under the insured threshold".to_string()),
             delivery_risk: dec!("0.01"),
         },
