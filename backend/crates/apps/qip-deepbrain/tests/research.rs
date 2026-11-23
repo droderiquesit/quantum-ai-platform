@@ -3189,4 +3189,17 @@ fn the_deployed_sweep_reads_every_federation_review_the_journal_holds() {
             "sweep {step} read every review the journal holds"
         );
     }
+    // The read is not vacuous: the cycle the deployed node runs resolves
+    // federation propositions with an arbitrated number, so the watch the
+    // sweep fed was handed sided resolutions and not only empty reviews.
+    let journal = federation_stage::replay_each(&platform)
+        .unwrap_or_else(|e| panic!("the journal reads: {e}"));
+    assert!(
+        journal
+            .iter()
+            .flatten()
+            .flat_map(|review| review.resolved.iter())
+            .any(|resolution| resolution.ensemble.is_some()),
+        "the federation resolved a proposition it had arbitrated: {journal:?}"
+    );
 }
