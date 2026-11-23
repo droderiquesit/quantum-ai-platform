@@ -646,7 +646,7 @@
   },
   {
     "id": "R12-AMBIENT-3027",
-    "status": "PARTIAL",
+    "status": "COMPLETE",
     "current": "AttentionRouter (the Ambient Attention Brain) is built by ResearchLoop::new and runs every deep-brain sweep, combining surprise/opportunity/risk/assumption signals and waking specialists; its attention events are on every ResearchRound. It is registered as `ambient/attention` in the deep brain's Brain Registry (brains.rs), built at start-up, and it is the only entry covering the `attention-routing` scope. Since 2026-11-22 the deep brain's research sweep composes one attention finding from the sweep's AttentionRouter events, carrying an attention_routing fact; an ambient scope set beside coverage::Scope (the desk's scopes and their tests are unchanged) reads the scope as covered from that finding; the gauge qip_ambient_scope_covered records it; and the run loop journals the finding after the events it cites.",
     "evidence": [
       "backend/crates/libs/qip-contracts/src/ambient.rs AttentionRouter",
@@ -656,12 +656,14 @@
       "backend/crates/apps/qip-deepbrain/src/ambient_coverage.rs attention_finding; backend/crates/apps/qip-deepbrain/src/research.rs ResearchLoop::sweep_over",
       "backend/crates/agents/qip-investment-agents/src/coverage.rs AmbientScope, ambient_covered_by",
       "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs removing_the_attention_router_drops_attention_routing_from_covered_scopes",
-      "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing"
+      "backend/crates/apps/qip-deepbrain/tests/ambient_coverage.rs the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing",
+      "backend/crates/tests/qip-acceptance/tests/scope_inspections.rs the_deep_brain_builds_its_attention_router_and_ambient_journal_unconditionally_and_hands_both_to_the_run_loop",
+      "docs/blueprint/owner-decisions-2026-11-23.md (ADR 0725 accepted; decision 4 governs the quiet sweep)"
     ],
-    "gap": "2026-11-23 (after the owner accepted ADR 0725 by merging pull request #288; read three more times by two independent readers who ran no test): every clause has code and a caller the deployed deep brain reaches, and the composition root is now pinned (scope_inspections.rs refuses a main.rs that builds the router conditionally, does not hand it to the run loop, or removes it; four mutations fail it). The owner decision that held the row is now recorded: under the owner's instruction of 2026-11-23 ('Make decisions for me to complete this'), ADR 0725 decision 4 governs, so a quiet sweep composes no finding and the code on main is the decided behaviour (docs/blueprint/owner-decisions-2026-11-23.md). Smaller points readers raised that stand either way: removal is shown only through a constructor tests call (the ruling named that test, and no binary may call it); no test drives main.rs's own catalogue universe through a sweep that routes an event; nothing is deployed.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
@@ -669,7 +671,7 @@
     "verification": "cd backend && cargo test -p qip-deepbrain --test ambient_coverage --test ambient_journal && cargo test -p qip-acceptance --test scope_inspections",
     "work_item": "",
     "size": "L",
-    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028)."
+    "notes": "Re-read 2026-10-18 by lane L04; no code changed. Owner ruling 2026-10-31 (ADR_THEN_IMPLEMENT): The Brain Registry records a brain; it does not cover a scope. Treating it as the production organisation would redefine the requirement to pass the row. Handed to lane L2b (wave1031-handoff-2026-10-31.json); stays PARTIAL until the lane closes it. ADR to claim first, title: an ambient brain covers a scope only through a finding the deep brain composes from its sweep, the brain registry records and does not cover, and the desk's seven scopes keep their test (AMBIENT-3027, AGENCY-3028). Re-graded 2026-11-23. Built in ceec1d800 and 35751eba1 (merged in pull request #288) under the owner's 2026-10-31 ruling, with the composition-root pin added in fd9838679 and strengthened in 7bb1b295c. Read six times by two independent readers who ran no test. It was held on three grounds in turn: the reading that the deployed deep brain is the production organisation (ADR 0725, accepted by the owner by merging #288); a conflict between the ruling's 'one finding per round' and ADR 0725 decision 4 ('no events, no finding'), which the owner settled on 2026-11-23 under the instruction 'Make decisions for me to complete this' in favour of decision 4; and a composition root no test read, now pinned against a conditional build, a missing hand-off and any deployed call of without_attention_router. On the tree with those changes both readers failed to refute every clause. Limits they named and did not hold against the row: removal is shown through a constructor only tests call; a quiet router and a missing one read the same on the gauge; no test drives main.rs's own catalogue universe through a sweep that routes an event; the ambient journal is in-memory unless a deployment names a destination; nothing is deployed."
   },
   {
     "id": "R12-AGENCY-3028",

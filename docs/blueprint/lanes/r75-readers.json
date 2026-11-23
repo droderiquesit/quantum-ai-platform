@@ -2,7 +2,7 @@
  "lane": "r75",
  "date": "2026-11-23",
  "base": "613a7ce8f",
- "what": "Readers on the two rows pull request #288 carried, after the owner accepted ADR 0724 and ADR 0725 by merging it. Pass 1 on 6a2e5b400: R12-AMBIENT-3024 refuted by the test-strength reader only (per-cell reliability facts unasserted); R12-AMBIENT-3027 refuted by both (the quiet-sweep rule and an untested main.rs hand-off). Pass 2 on cad0d17e2: R12-AMBIENT-3024 not refuted by either reader and regraded COMPLETE; R12-AMBIENT-3027 refuted by both, on a quiet-round finding whose zeros were not read from the router and a main.rs pin a later call could undo. The quiet-round change was reverted to ADR 0725 decision 4 and the pin made stronger in 7bb1b295c. Readers read the code and ran no test.",
+ "what": "Readers on the two rows pull request #288 carried, after the owner accepted ADR 0724 and ADR 0725 by merging it. Pass 1 on 6a2e5b400: R12-AMBIENT-3024 refuted by the test-strength reader only (per-cell reliability facts unasserted); R12-AMBIENT-3027 refuted by both (the quiet-sweep rule and an untested main.rs hand-off). Pass 2 on cad0d17e2: R12-AMBIENT-3024 not refuted by either reader and regraded COMPLETE; R12-AMBIENT-3027 refuted by both, on a quiet-round finding whose zeros were not read from the router and a main.rs pin a later call could undo. The quiet-round change was reverted to ADR 0725 decision 4 and the pin made stronger in 7bb1b295c. Readers read the code and ran no test. Pass 4 on 7e8f0e21e, after the owner instruction of 2026-11-23 settled the quiet-sweep conflict: R12-AMBIENT-3027 not refuted by either reader and regraded COMPLETE.",
  "reader_verdicts": [
   {
    "pass": "pass 1 on 6a2e5b400",
@@ -127,6 +127,32 @@
     "ambient_coverage.rs::a_quiet_round_composes_one_finding_... never asserts that the router was consulted. Its empty universe raises no signal, so router.route never runs, yet quiet_finding hard-codes 0.0 as an `observed` fact. That pins a constant rather than a measurement, and coverage on a quiet round reduces to `self.router.is_some()`.",
     "The register row in docs/blueprint/assessment/R12-M3.json still reads PARTIAL, cites ADR 0725 as Proposed, and lists the quiet sweep as still to fix. Its verification command, `cargo test -p qip-investment-agents --test organisation`, runs no test that touches AttentionRouting."
    ]
+  },
+  {
+   "id": "R12-AMBIENT-3027",
+   "lens": "callers",
+   "refuted": false,
+   "reasons": [
+    "main.rs::main builds ResearchLoop::new_for_node unconditionally and hands research and ambient to node::run_with, and scope_inspections.rs pins both and refuses any app calling without_attention_router.",
+    "node.rs::research_pass reaches maybe_sweep and record_attention_finding on the committed path, and nothing in infrastructure/ or .github/ disables research or a sentinel, so every default stays on.",
+    "owner-decisions-2026-11-23.md quotes the owner's instruction verbatim with its session id, the same way owner-decisions-2026-10-31.md records a delegation, and the quoted text matches the harness-relayed user request.",
+    "The disclosed limits (removal shown only through a test-only constructor, the gauge reading the same for a quiet and a missing router, in-memory journal by default, ADR Status line, nothing deployed) are costs that ADR 0725 names, and none is a clause of the statement or the check.",
+    "The qip-deepbrain src at HEAD is the same as origin/main (git diff shows only test files changed), so the code judged here is the code on main."
+   ],
+   "pass": "pass 4 on 7e8f0e21e"
+  },
+  {
+   "id": "R12-AMBIENT-3027",
+   "lens": "tests",
+   "refuted": false,
+   "reasons": [
+    "Each assertion fails on deletion: dropping the composition in research.rs::ResearchLoop::sweep_over, the router in new_holding, or the call to ambient_journal.rs::record_attention_finding fails tests/ambient_coverage.rs. Its premises (equal signals, one activated event) are asserted first.",
+    "Weakness, not a failed clause: tests/ambient_coverage.rs builds through ResearchLoop::new with a hand-made bare-key coverage map. main.rs's new_for_node over coverage_universe(catalogue) is held only by the text scan in scope_inspections.rs. The scan's contains(\"Self::new_holding(\") would miss a router set to None inside new_for_node.",
+    "Weakness, not a failed clause: sweep_over's qip_ambient_scope_covered reads 0 both on a quiet sweep and on a missing router, so a deployment cannot see removal. Removal is shown only through without_attention_router, which the ruling names and scope_inspections.rs keeps out of every apps/*/src.",
+    "Governance holds: docs/blueprint/owner-decisions-2026-11-23.md quotes the relayed owner instruction word for word. It decides under it the way owner-decisions-2026-10-31.md does, and docs/adr/README.md records ADR 0725 as accepted.",
+    "Not verified: no test was run, because this worktree forbids cargo. Every pass and mutation claim is unchecked."
+   ],
+   "pass": "pass 4 on 7e8f0e21e"
   }
  ]
 }
