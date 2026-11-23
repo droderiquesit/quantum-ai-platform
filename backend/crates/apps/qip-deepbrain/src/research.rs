@@ -59,7 +59,7 @@ use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
     AcquisitionCriteria, AcquisitionKind, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
     AuthorityBoundary, ComputeResourceType, Detection, Disposition, InfoRequest, ModelReputation,
-    Pathway, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
+    Pathway, ProducerQuarantine, RoutingPolicy, SignalClass, Trigger, rank_acquisitions,
 };
 use qip_contracts::expansion::{
     CapabilityEntry, GapClass, OntologyPatch, OntologyTypeFamily, OntologyTypeSpec,
@@ -672,6 +672,21 @@ pub struct ResearchConfig {
     /// [`AMBIENT_MODELS_VARIABLE`]. With it off the sweep runs none and
     /// [`ResearchRound::ambient_models`] is `None`, not an empty report.
     pub ambient_models: bool,
+    /// How many signals a producer must have raised before the attention
+    /// router judges it by its record (R12-RES-7107). Default 100: more than
+    /// the sweeps one signal's life spans at the shortest cadence a
+    /// deployment states, so a detector re-asserting one standing
+    /// deviation is judged on more than that deviation's own repeats.
+    /// Provisional, stated under the owner's 2026-11-23 instruction.
+    pub producer_quarantine_min_signals: u32,
+    /// The reputation, in basis points of signals that were neither repeats
+    /// of a live signal nor shed, below which the router quarantines a
+    /// producer (R12-RES-7107). Default 100 (1%): below the share a standing
+    /// deviation re-raised every sweep keeps at a five-minute cadence and a
+    /// one-hour signal life, so only a producer whose attention is almost
+    /// all repeats or shed is stopped. Advisory routing, not a risk limit;
+    /// provisional, stated under the owner's 2026-11-23 instruction.
+    pub producer_quarantine_floor_bp: u32,
 }
 
 /// The variable switching the always-on ambient models: `on` or `off`, on
@@ -748,6 +763,8 @@ impl Default for ResearchConfig {
             attention_budget_per_hour: 256,
             attention_held_capacity: 256,
             ambient_models: true,
+            producer_quarantine_min_signals: 100,
+            producer_quarantine_floor_bp: 100,
         }
     }
 }
@@ -2145,12 +2162,24 @@ impl ResearchLoop {
         // from the configuration (R12-AMBIENT-7202), defaulting far above
         // what a sweep raises today, so the budget binds only in a storm,
         // which is when it is meant to.
+        //
+        // A storm is also repeats and noise, not only volume (R12-RES-7107):
+        // a repeat of a live deviation is clustered and spends no budget,
+        // and a producer whose record is almost all repeats or shed is
+        // quarantined, so one detector cannot spend the hour saying one
+        // thing. Until 2026-11-23 both were contract code no deployed router
+        // turned on.
         let policy = RoutingPolicy::standard(
             1_000,
             config.attention_budget_per_hour,
             Duration::from_hours(1),
             config.attention_held_capacity,
-        )?;
+        )?
+        .clustering_duplicates()
+        .quarantining_producers(ProducerQuarantine::new(
+            config.producer_quarantine_min_signals,
+            config.producer_quarantine_floor_bp,
+        )?);
         // Every specialist a surprise can wake is a registered brain whose
         // tools this node actually has. Refused at start-up rather than at
         // the first wake: a spec naming a tool nobody registered is a brain
@@ -2258,6 +2287,22 @@ impl ResearchLoop {
     /// refused when it lacks a type the sweep's detectors read. Whether it
     /// names every asset class in the coverage map is checked at each sweep,
     /// by [`Self::check_coverage_registered`].
+    /// The attention router's record of `producer` (a trigger name): its
+    /// reputation in basis points, `None` before it raised a signal or
+    /// with no router.
+    pub fn producer_reputation_bp(&self, producer: &str) -> Option<u32> {
+        self.router
+            .as_ref()
+            .and_then(|r| r.producer_reputation_bp(producer))
+    }
+
+    /// Whether the attention router has quarantined `producer`.
+    pub fn is_producer_quarantined(&self, producer: &str) -> bool {
+        self.router
+            .as_ref()
+            .is_some_and(|r| r.is_quarantined(producer))
+    }
+
     /// This loop with its attention router removed (R12-AMBIENT-3027).
     ///
     /// No binary calls it: every deployed loop keeps the router its
@@ -3409,10 +3454,37 @@ impl ResearchLoop {
                 );
                 match event.disposition {
                     Disposition::Deferred => {}
-                    Disposition::Shed
-                    | Disposition::Expired
-                    | Disposition::Clustered
-                    | Disposition::Quarantined => {
+                    // A clustered gap is a re-raise of one the router already
+                    // routed. It spends no attention, but the desk still
+                    // hears it: the desk is what declines a retired question
+                    // raised again and refreshes a queued one's deadline,
+                    // and a re-raise it never heard would leave both to the
+                    // router, which knows neither. Nothing else a clustered
+                    // signal carries — a specialist wake, a capital move —
+                    // is acted on twice.
+                    Disposition::Clustered => {
+                        self.pending_wakes.remove(&event.signal_id);
+                        self.pending_capital.remove(&event.signal_id);
+                        self.unknown_questions.remove(&event.signal_id);
+                        if let Some((gap, deadline, stated_urgency)) =
+                            self.pending.remove(&event.signal_id)
+                        {
+                            let AuthorityBoundary::AdvisoryOnly = event.authority;
+                            self.admit(
+                                gap,
+                                deadline,
+                                stated_urgency,
+                                event.pathway,
+                                &event.feedback_link,
+                                now,
+                                &metrics,
+                                &mut round,
+                                licensed_sources,
+                                eligible_jurisdictions,
+                            )?;
+                        }
+                    }
+                    Disposition::Shed | Disposition::Expired | Disposition::Quarantined => {
                         self.pending.remove(&event.signal_id);
                         self.unknown_questions.remove(&event.signal_id);
                         self.pending_wakes.remove(&event.signal_id);
