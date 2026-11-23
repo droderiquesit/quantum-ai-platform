@@ -13795,20 +13795,40 @@ impl Platform {
     /// Route the survival ceiling as a deterministic decision and seed it
     /// under the gate the routing mints (R12-RISK-3022).
     ///
-    /// A routing the router refuses seeds nothing higher: the ceiling falls to
-    /// what the book already stands in, exactly as a construction that sized
-    /// nothing leaves it, because a ceiling that could not be shown to be
-    /// derived deterministically is not one to trade against.
+    /// A routing the router refuses loosens nothing, and that is two rules,
+    /// not one. A ceiling that was never seeded stays unseeded: `None` is what
+    /// the survival limit refuses every gross-raising order on, so it is
+    /// already the tightest state there is. A standing ceiling may only fall
+    /// — to what the book stands in when that is lower, or to none when that
+    /// figure overflows — and is otherwise left where it stood. This arm
+    /// called `release_nothing` unconditionally until the round-81 review:
+    /// at assembly that turned "nothing seeded, refuse all new gross" into
+    /// "stand behind everything already held", and over a ceiling a
+    /// construction had set below the book it raised the ceiling to the book.
+    /// A ceiling that could not be shown to be derived deterministically is
+    /// not one to trade against, so it is never one to trade more against.
     fn reseed_survival_ceiling(&mut self, now: Timestamp) {
         match self.determine_book_decision(SURVIVAL_CEILING_SUBJECT) {
             Ok(routing) => self.seed_survival_ceiling(&routing.gate(), now),
-            Err(_) => self.governor.release_nothing(
-                RiskState::from_figures(&self.aggregates).gross_exposure,
-                self.reservations
+            Err(_) => {
+                let gross = RiskState::from_figures(&self.aggregates).gross_exposure;
+                let held = self
+                    .reservations
                     .reserved_total()
                     .checked_sub(self.yield_parked(now))
-                    .unwrap_or(Decimal::ZERO),
-            ),
+                    .unwrap_or(Decimal::ZERO);
+                // The same sum `release_nothing` writes, taken first only to
+                // decide whether writing it would lower anything. An overflow
+                // is a fall to no ceiling, which `release_nothing` performs.
+                let lowers = match (self.governor.gross_ceiling(), gross.abs().checked_add(held)) {
+                    (None, _) => false,
+                    (Some(_), None) => true,
+                    (Some(ceiling), Some(standing)) => standing < ceiling,
+                };
+                if lowers {
+                    self.governor.release_nothing(gross, held);
+                }
+            }
         }
     }
 
