@@ -1042,6 +1042,65 @@ fn signature_of(item: &str) -> &str {
     &item[..item.find('{').unwrap_or(item.len())]
 }
 
+/// `code` with the text of every function blanked — from the line that
+/// declares it through the brace that closes its body, or the `;` that ends
+/// a declaration with none — newlines kept. What is left is the item-level
+/// text no function's item holds: `const`s, `static`s, `impl` and trait
+/// headers, `use` lines, macro bodies.
+///
+/// [`function_items`] starts each item at a declaration line, so the text
+/// before a file's first function belongs to no item, and text between two
+/// functions belongs to the one above it. A module `const RELEASE: fn(..) =
+/// Proposal::release;` at the top of a file, called as `RELEASE(p, now)`
+/// from anywhere, was therefore invisible to the one-caller scan, and an
+/// associated `const` placed just after the one allowed caller was read as
+/// that caller's own text (second round-81 review). Assumes [`code_only`]
+/// text, so no brace or `;` sits inside a comment or a literal.
+fn outside_functions(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut blank = vec![false; bytes.len()];
+    let mut offset = 0;
+    let mut covered = 0;
+    for line in code.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if start < covered || function_name(line).is_none() {
+            continue;
+        }
+        // The body opens at the first `{` outside the signature's `()` and
+        // `[]`; a `;` there first ends a declaration with no body.
+        let mut nesting = 0usize;
+        let mut braces = 0usize;
+        let mut end = bytes.len();
+        for (at, &byte) in bytes.iter().enumerate().skip(start) {
+            match byte {
+                b'(' | b'[' if braces == 0 => nesting += 1,
+                b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
+                b';' if braces == 0 && nesting == 0 => {
+                    end = at + 1;
+                    break;
+                }
+                b'{' if nesting == 0 || braces > 0 => braces += 1,
+                b'}' if braces > 0 => {
+                    braces -= 1;
+                    if braces == 0 {
+                        end = at + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for flag in &mut blank[start..end] {
+            *flag = true;
+        }
+        covered = end;
+    }
+    code.char_indices()
+        .map(|(at, c)| if blank[at] && c != '\n' { ' ' } else { c })
+        .collect()
+}
+
 #[test]
 fn the_function_splitter_reads_every_visibility_and_qualifier() {
     let source = "    pub fn a(gate: &DeterministicGate) {\n        x.check(y);\n    }\n\
@@ -1251,7 +1310,10 @@ fn call_arity(text: &str) -> Option<usize> {
 /// with the receiver as an extra first argument), or a path naming it
 /// without calling it (`Type::method` handed on as a function value, counted
 /// whatever it is later called with). A bare token — the definition, a
-/// binding, a field — is not a call.
+/// binding, a field — is not a call, and nor is a path segment with a name
+/// after it (`qip_confidential::release::Policy`): that is a module on the
+/// way to something else, which a method cannot be. A turbofish after the
+/// segment (`Type::method::<T>`) still names the method.
 fn reaches(code: &str, method: &str, arity: usize) -> usize {
     token_offsets(code, method)
         .into_iter()
@@ -1259,6 +1321,11 @@ fn reaches(code: &str, method: &str, arity: usize) -> usize {
             let before = code[..*at].trim_end();
             let after = code[at + method.len()..].trim_start();
             if before.ends_with("::") {
+                if let Some(rest) = after.strip_prefix("::")
+                    && !rest.trim_start().starts_with('<')
+                {
+                    return false;
+                }
                 !after.starts_with('(') || call_arity(after) == Some(arity + 1)
             } else if before.ends_with('.') && !before.ends_with("..") {
                 after.starts_with('(') && call_arity(after) == Some(arity)
@@ -1298,6 +1365,136 @@ fn the_hard_limit_matcher_finds_any_receiver_and_path_calls_and_nothing_else() {
     assert_eq!(reached("seed", 4), ["d"]);
 }
 
+/// Who reaches each method of [`KERNEL_HARD_LIMIT_CALLS`] in `sources`,
+/// each a file's name and its [`code_only`] text.
+#[derive(Default)]
+struct HardLimitReach {
+    /// By `Owner::method`: every function that reaches it, by name, then
+    /// `{file}: item-level` for each file whose text outside any function
+    /// does.
+    found: BTreeMap<String, Vec<String>>,
+    /// Reachers that do not demand the gate by signature. Item-level text
+    /// has no signature, so a guarded method named there is always here.
+    ungated: Vec<String>,
+    /// Functions that take the gate and do not record its rationale.
+    unrecorded: Vec<String>,
+}
+
+fn hard_limit_reach(sources: &[(String, String)]) -> HardLimitReach {
+    let mut reach = HardLimitReach::default();
+    for (file, code) in sources {
+        for (name, item) in function_items(code) {
+            for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
+                if reaches(item, method, arity) == 0 {
+                    continue;
+                }
+                let call = format!("{owner}::{method}");
+                reach
+                    .found
+                    .entry(call.clone())
+                    .or_default()
+                    .push(name.clone());
+                if !demands_the_gate(signature_of(item)) {
+                    reach.ungated.push(format!("{name} ({call})"));
+                }
+                if !item.contains("gate.rationale().to_string()") {
+                    reach.unrecorded.push(format!("{name} ({call})"));
+                }
+            }
+        }
+        // A guarded method bound or called outside every function — a
+        // `const` or `static` holding it as a function value, an associated
+        // `const` in an `impl`, a macro body — is a caller no signature can
+        // gate, whoever later calls the binding.
+        let outside = outside_functions(code);
+        for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
+            if reaches(&outside, method, arity) == 0 {
+                continue;
+            }
+            let call = format!("{owner}::{method}");
+            let site = format!("{file}: item-level");
+            reach
+                .found
+                .entry(call.clone())
+                .or_default()
+                .push(site.clone());
+            reach.ungated.push(format!("{site} ({call})"));
+        }
+    }
+    reach
+}
+
+/// The one-caller scan, on a fixture holding the evasions the function-only
+/// split let through (second round-81 review): a guarded method bound as a
+/// function value outside every function — a module `const` before the
+/// first function, a `static`, and an associated `const` placed just after
+/// the one allowed caller, where the split read it as that caller's own text
+/// — and then called through the binding from a function that never names
+/// the method. Each binding is reported as an ungated item-level caller,
+/// while a doc comment naming the method, a same-named method of another
+/// type, and a module of the same name in a `use` line are not — the last
+/// is `central/insights.rs`'s `use qip_confidential::release::{..}`, which
+/// the item-level scan read as `Proposal::release` until path segments were
+/// told apart from methods.
+///
+/// Mutations: drop the item-level arm of `hard_limit_reach` —
+/// `advance_released` looks like the only caller of `Proposal::release` and
+/// nothing reaches `seed` or `approve`; drop the path-segment exclusion in
+/// `reaches` — the `size` module is read as the method.
+#[test]
+fn the_one_caller_scan_sees_a_guarded_method_bound_outside_every_function() {
+    let fixture = "use crate::proposal::Proposal;\n\
+                   use qip_confidential::release::{Policy, Release};\n\
+                   use qip_layout::size::Bounds;\n\
+                   /// Proposal::release(p, now), named in a doc comment.\n\
+                   const SEED: fn(&mut SurvivalGovernor, F, Option<&W>, f64, Timestamp) = \
+                   SurvivalGovernor::seed;\n\
+                   static APPROVE: fn(&mut Proposal, Timestamp, Vec<String>) = Proposal::approve;\n\
+                   impl Platform {\n    \
+                   fn advance_released(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.routings.insert(gate.rationale().to_string());\n        \
+                   self.proposal.release(now);\n    }\n    \
+                   const RELEASE: fn(&mut Proposal, Timestamp) = Proposal::release;\n    \
+                   fn later(&mut self, now: Timestamp) {\n        \
+                   Self::RELEASE(&mut self.proposal, now);\n        \
+                   APPROVE(&mut self.proposal, now, Vec::new());\n        \
+                   self.reservations.release(id, now);\n    }\n}\n";
+    let reach = hard_limit_reach(&[("fixture.rs".to_string(), code_only(fixture))]);
+    let site = "fixture.rs: item-level".to_string();
+    // Premise: the allowed caller is found as a function, so the item-level
+    // entries below are added to a scan that still works.
+    assert_eq!(
+        reach.found.get("Proposal::release").map(Vec::as_slice),
+        Some(&["advance_released".to_string(), site.clone()][..]),
+        "the associated const after the allowed caller was read as that caller's text"
+    );
+    assert_eq!(
+        reach.found.get("SurvivalGovernor::seed").map(Vec::as_slice),
+        Some(&[site.clone()][..]),
+        "a module const before the first function was invisible"
+    );
+    assert_eq!(
+        reach.found.get("Proposal::approve").map(Vec::as_slice),
+        Some(&[site.clone()][..]),
+        "a static holding the method was invisible"
+    );
+    assert_eq!(
+        reach.ungated,
+        [
+            format!("{site} (SurvivalGovernor::seed)"),
+            format!("{site} (Proposal::approve)"),
+            format!("{site} (Proposal::release)"),
+        ],
+        "an item-level binding was not reported as a caller no gate holds"
+    );
+    assert!(reach.unrecorded.is_empty(), "{:?}", reach.unrecorded);
+    assert!(
+        !reach.found.contains_key("SurvivalGovernor::size"),
+        "a module named `size` in a `use` line was read as the method: {:?}",
+        reach.found.get("SurvivalGovernor::size")
+    );
+}
+
 /// R12-RISK-3022 beyond the order manager: the survival waterfall, the
 /// sign-off of a draft and the release of an approved proposal are each made
 /// only by a kernel function that demands, by signature, the deterministic
@@ -1310,9 +1507,6 @@ fn the_hard_limit_matcher_finds_any_receiver_and_path_calls_and_nothing_else() {
 /// written without asking the router compiled and ran exactly as well.
 #[test]
 fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
-    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut ungated = Vec::new();
-    let mut unrecorded = Vec::new();
     let mut kernel_files = Vec::new();
     rust_files(
         &crates_root().join("runtime/qip-kernel/src"),
@@ -1322,25 +1516,18 @@ fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
         kernel_files.len() > 10,
         "premise: the kernel's sources were found"
     );
-    for path in &kernel_files {
-        let source = std::fs::read_to_string(path).expect("kernel source is readable");
-        let code = code_only(&source);
-        for (name, item) in function_items(&code) {
-            for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
-                if reaches(item, method, arity) == 0 {
-                    continue;
-                }
-                let call = format!("{owner}::{method}");
-                found.entry(call.clone()).or_default().push(name.clone());
-                if !demands_the_gate(signature_of(item)) {
-                    ungated.push(format!("{name} ({call})"));
-                }
-                if !item.contains("gate.rationale().to_string()") {
-                    unrecorded.push(format!("{name} ({call})"));
-                }
-            }
-        }
-    }
+    let sources: Vec<(String, String)> = kernel_files
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path).expect("kernel source is readable");
+            (path.display().to_string(), code_only(&source))
+        })
+        .collect();
+    let HardLimitReach {
+        found,
+        ungated,
+        unrecorded,
+    } = hard_limit_reach(&sources);
     // Premise, and the exact placement: each method is reached by exactly the
     // one function named for it, on any receiver and in path form, so a
     // second caller is a failure here whether or not it took a gate.
