@@ -114,9 +114,17 @@ impl Platform {
                     .decode::<CommerceSimulated>()?
                     .body;
                 cycles.extend(body.sold);
+                // A consignment lost in delivery puts no event on the ledger,
+                // so a pass that only lost one journals no purchase count;
+                // its number is read here instead, or a restart would count
+                // that purchase again and lose a second consignment for the
+                // first (R12-COMMERCE-1171).
+                for lost in &body.lost {
+                    purchases = purchases.max(lost.consignment);
+                }
             }
         }
-        if !events.is_empty() {
+        if !events.is_empty() || purchases != 0 {
             research.resume_ledger(events, purchases)?;
         }
         if !cycles.is_empty() {

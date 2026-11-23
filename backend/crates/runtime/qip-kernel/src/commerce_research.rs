@@ -44,9 +44,9 @@ use qip_data_finder::admission::LicensingDecision;
 use qip_events::{EventBody, Topic};
 use qip_financial::commerce::{
     Account, Candidate, Channel, CommercePlane, Condition, Consolidation, Credential,
-    FeasibilityInput, FraudBook, Insurance, Ledger, LedgerEvent, Listing, LogisticsPlan,
-    LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver, UnitState,
-    regions_spanned, scout,
+    DeliveryClaim, FeasibilityInput, FraudBook, Insurance, Ledger, LedgerEvent, Listing,
+    LogisticsPlan, LogisticsPlanDraft, Observation, PurchaseExecutor, PurchaseRequest, Resolver,
+    UnitState, lost_in_delivery, regions_spanned, scout,
 };
 use qip_financial::commerce_resale::{
     Attr, CycleEvent, ResaleDesk, SkuEconomics, UNIT_ATTRIBUTES, UnitAttributes, VenueKind,
@@ -484,6 +484,26 @@ pub struct CommerceSimulated {
     /// existed.
     #[serde(default)]
     pub tracked: Vec<TrackedUnit>,
+    /// R12-COMMERCE-1171: every consignment bought this pass that the
+    /// delivery risk lost before it reached the warehouse, with the claim
+    /// its cover paid. Before this no consignment was ever lost, so the
+    /// cover the plan bought could never pay and an insured plan behaved
+    /// exactly like one whose cover was worthless. Absent from a record
+    /// written before it existed.
+    #[serde(default)]
+    pub lost: Vec<LostConsignment>,
+}
+
+/// A paper consignment lost in delivery, and what its cover paid on it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LostConsignment {
+    pub sku: String,
+    pub merchant: String,
+    /// The purchase number, counted from one, the delivery-risk schedule
+    /// lost (`qip_financial::commerce::lost_in_delivery`).
+    pub consignment: u32,
+    pub quantity: Decimal,
+    pub claim: DeliveryClaim,
 }
 
 /// One unit's tracked attributes as journalled: each of the twelve names to
@@ -944,6 +964,27 @@ impl CommerceResearch {
             }
         };
         self.purchases = self.purchases.saturating_add(1);
+        // The delivery risk, realised: a consignment the schedule loses
+        // never reaches the warehouse, so nothing is received, listed or
+        // sold, and its cover pays the claim on its declared value.
+        if lost_in_delivery(self.purchases, logistics.delivery_risk)? {
+            let claim = logistics.insurance.claim_for_loss(declared_value)?;
+            run.lost.push(LostConsignment {
+                sku: record.sku.clone(),
+                merchant: record.merchant.clone(),
+                consignment: self.purchases,
+                quantity: record.quantity,
+                claim,
+            });
+            run.purchases.push(PaperPurchase {
+                sku: record.sku,
+                merchant: record.merchant,
+                quantity: record.quantity,
+                notional: record.notional,
+                units: Vec::new(),
+            });
+            return Ok(());
+        }
         let unit_count = whole_units(self.plan.quantity)?;
         let cost_basis = assessment
             .all_in_cost
