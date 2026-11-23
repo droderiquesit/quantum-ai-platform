@@ -136,6 +136,60 @@ deployment: the deep brain's committed storage target is `memory`, no dev
 apply carries the new plan mount, and no execution node is enabled.
 Decision 39 keeps deployment the owner's.
 
+## A design decided, and a figure not decided, later the same day
+
+**Decided: the edge cell's pre-trade check is held by dependency closure
+(R12-RISK-3022).** The row asks that hard limits be enforced by
+deterministic gates that never route to a model. In the kernel, that is
+now a `DeterministicGate` the cost router mints, demanded by the order
+manager and by each kernel hard-limit decision. The edge cell's
+`CellRiskGate` calls the same `PreTradeChecker::check`, but a cell cannot
+hold a router-minted gate. Three things prevent it: `qip-edge` is
+safety-critical and has no path to the cost router; arch_001 forbids the
+node a cognitive crate; and the mint scan refuses a second minter. The
+orchestrator decided, under the owner's instruction quoted above, that the
+cell's check is held deterministic by what the edge crates can link. No
+crate reachable from `qip-edge` or `qip-edge-node` through their normal
+dependencies may be `qip-ai`, `qip-language-providers` or
+`qip-cost-router`.
+`qip-acceptance` `order_route_risk_gate.rs`
+`the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model`
+walks every workspace manifest and refuses such a path. It reads tables,
+renames, inherited renames and single-quoted strings, and is mutation-
+verified on a scratch copy of the manifest data.
+
+- **Why this and not a witness.** A cell that cannot link a model cannot
+  route to one. That is a stronger guarantee than a witness the cell would
+  have to be handed, and handing it one would mean either linking the cost
+  router into the safety-critical crate or minting a second gate.
+- **What it costs.** The cell's check carries no recorded rationale, as
+  the kernel's do. The guarantee lives in the dependency graph and in one
+  acceptance test, so a manifest change that adds such a crate is caught
+  by that test and nowhere else.
+- **What would make this wrong.** A model-capable crate reached by a path
+  the walk does not read, such as a build dependency that ships code into
+  the cell, or a crate that gains a model rung without being named in the
+  list above.
+
+This removes one ground a reader held against R12-RISK-3022, and the row is
+not regraded on it. The others are in the row's gap. One of them is
+deployment: the central plane's gated halt is reached only through
+`qip-api`'s mesh, which no committed environment configures. The rest are
+code-fixable.
+
+**Not decided: a learnable synthetic arm for the deep brain
+(R12-MODEL-4021).** The adversarial suite now runs at promotion, and a
+measured clearance is the only way into production. On committed
+configuration, though, no fit on the deep brain's synthetic arm clears the
+skill bar: a 400-cycle probe ran 50 rounds and refused every one. So a
+deployed deep brain never reaches the attack. Closing the row needs a
+stated signal strength for the synthetic series, or a committed tape.
+Either one would let a model trained on synthetic data reach production
+and become eligible for the paper desk's decisions. That is a product
+decision about what may inform decisions, not an engineering figure, so it
+is left to the owner. The recommendation is to keep the row PARTIAL until
+the deep brain learns on a licensed feed.
+
 ## What this file does not do
 
 - **No register row is regraded by this file.** Acceptance removes the one

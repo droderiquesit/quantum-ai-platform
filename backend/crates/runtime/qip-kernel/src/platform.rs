@@ -193,6 +193,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
+use qip_risk::gate::DeterministicGate;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
@@ -452,6 +453,13 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// The promotion records the restart refused to put back into
+    /// `model_promotions`, by reference, with why (R12-MODEL-4021): a record
+    /// that does not show every promotion test, or that names a student and
+    /// does not show the student's attack. Reported as a capture problem at
+    /// assembly and readable through
+    /// [`Platform::quarantined_model_promotions`]; written only there.
+    pub(crate) quarantined_promotions: BTreeMap<String, String>,
     /// Every registered model card as this process last journaled it, by
     /// reference, rebuilt from the log at assembly and written only by
     /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
@@ -915,6 +923,15 @@ pub struct Platform {
     /// arm, obtained through [`Router::determine`]; see
     /// [`Self::observe_book_under_routing`].
     monitor_routing: Option<DeterministicRouting>,
+    /// How the most recent kernel-side hard-limit decision of each kind was
+    /// routed (R12-RISK-3022): the survival ceiling, sign-off, release and a
+    /// reconciliation halt. Each function that makes one demands the gate the
+    /// routing mints; this is the record of which routing that was.
+    hard_limit_routings: BTreeMap<HardLimitDecision, String>,
+    /// What [`Self::determine_book_decision`] consults before the router:
+    /// the subjects a unit test asked it to refuse, and nothing in any other
+    /// build (round-81 review). See `crate::refusal_seam`.
+    refused_book_decisions: crate::refusal_seam::RefusedBookDecisions,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -4656,6 +4673,36 @@ impl UniverseAssembled {
     }
 }
 
+/// The subject the survival ceiling is routed under (R12-RISK-3022).
+pub const SURVIVAL_CEILING_SUBJECT: &str = "survival ceiling for the book";
+/// The subject the sign-off of draft proposals is routed under.
+pub const SIGN_OFF_SUBJECT: &str = "sign-off of the cycle's draft proposals";
+/// The subject the release of approved proposals is routed under.
+pub const RELEASE_SUBJECT: &str = "release of the cycle's approved proposals";
+
+/// A kernel-side hard-limit decision the cost router determines before the
+/// function that makes it runs (R12-RISK-3022, ADR 0430).
+///
+/// One variant per decision whose function demands a
+/// [`qip_risk::gate::DeterministicGate`] by signature: the order manager's
+/// pre-trade check and the risk monitor's pass keep their own records
+/// ([`Platform::pretrade_routing`], [`Platform::monitor_routing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HardLimitDecision {
+    /// The survival waterfall's ceiling seeded with no construction: at
+    /// assembly and when the policy changes.
+    SurvivalCeiling,
+    /// The survival waterfall and confidence governor run for a construction
+    /// in DECIDE.
+    SurvivalSizing,
+    /// The two-control sign-off of a draft proposal in ACT.
+    SignOff,
+    /// The release of approved proposals to execution in ACT.
+    Release,
+    /// The scoped halt of a cell whose records do not reconcile.
+    ReconciliationHalt,
+}
+
 /// How an attributed fill reached the user books, on the record.
 ///
 /// One variant per choice the kernel can make, so a reader of the log can
@@ -6955,6 +7002,9 @@ impl Platform {
             .map(|limit| (limit.name.clone(), RuleActivity::new()))
             .collect();
 
+        // Rebuilt before the literal so the records the restart refused to
+        // put back can be reported once the platform exists (R12-MODEL-4021).
+        let resumed_promotions = crate::model_serving::resume_model_promotions(&event_log)?;
         let mut platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
@@ -6962,7 +7012,8 @@ impl Platform {
             admitted_sources: BTreeMap::new(),
             references: Self::resume_references(&event_log)?,
             model_provider,
-            model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            model_promotions: resumed_promotions.promoted,
+            quarantined_promotions: resumed_promotions.quarantined,
             world_snapshots: crate::world_snapshot::resume(&event_log)?,
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
@@ -7071,6 +7122,8 @@ impl Platform {
             cost_router: Router::default(),
             pretrade_routing: None,
             monitor_routing: None,
+            hard_limit_routings: BTreeMap::new(),
+            refused_book_decisions: crate::refusal_seam::RefusedBookDecisions::default(),
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
             routing_reputation: routing_reputation_resumed,
@@ -7372,7 +7425,11 @@ impl Platform {
         // The survival ceiling the installed limit reads, from the book as
         // resumed — after `resume_book`, so a restarted process stands behind
         // the positions it actually holds.
-        platform.seed_survival_ceiling(now);
+        platform.reseed_survival_ceiling(now);
+        // A quarantined promotion record is reported, never dropped silently:
+        // LEARN surfaces each line on the first cycle's record.
+        let quarantined: Vec<String> = platform.quarantined_promotions.values().cloned().collect();
+        platform.capture_problems.extend(quarantined);
         Ok(platform)
     }
 
@@ -8355,13 +8412,41 @@ impl Platform {
         // derivation reads `last_heard` and not the log.
         let (_, problems) = self.review_region_darkness(now);
         self.capture_problems.extend(problems);
+        // The halt a break causes is a hard-limit decision, so it is routed
+        // as one before the report is read (R12-RISK-3022): the plane trips
+        // the cell's scope only under the gate this routing mints. A routing
+        // the router refuses is not a reason to read the report unhalted: the
+        // platform halts globally, as the ACT stage does when the book's
+        // limits cannot be routed, and the report is refused.
+        let halt_routing = match self
+            .determine_book_decision(&format!("reconciliation halt for {reporting_cell}"))
+        {
+            Ok(routing) => routing,
+            Err(error) => {
+                let action = MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the reconciliation halt for {reporting_cell} could not be routed as a \
+                             deterministic decision ({}); halted rather than read on an unproven path",
+                        error.message()
+                    ),
+                };
+                self.monitor
+                    .enforce(&action, self.autonomy.kill_switch_mut(), now);
+                return Err(error);
+            }
+        };
+        let halt_gate = halt_routing.gate();
+        self.hard_limit_routings.insert(
+            HardLimitDecision::ReconciliationHalt,
+            halt_gate.rationale().to_string(),
+        );
         // Two disjoint fields, borrowed as fields rather than through
         // accessors, which is what lets the central plane trip the platform's
         // own switch instead of keeping one of its own.
         let Self {
             central, autonomy, ..
         } = self;
-        let ingested = central.ingest(report, autonomy.kill_switch_mut(), now);
+        let ingested = central.ingest(&halt_gate, report, autonomy.kill_switch_mut(), now);
         let ingestion = match ingested {
             Ok(ingestion) => ingestion,
             Err(error) => {
@@ -13363,7 +13448,7 @@ impl Platform {
         let signals = self.governor.signals().clone();
         self.governor = crate::survival::SurvivalGovernor::with_policy(policy);
         *self.governor.signals_mut() = signals;
-        self.seed_survival_ceiling(self.context.now());
+        self.reseed_survival_ceiling(self.context.now());
     }
 
     /// Apply the generated joint tail world to the survival reserve and hedge
@@ -13718,13 +13803,69 @@ impl Platform {
             )));
         }
         self.ledger_obligations = Some(obligations);
-        self.seed_survival_ceiling(self.context.now());
+        self.reseed_survival_ceiling(self.context.now());
         Ok(())
     }
 
     /// The ledger reading the survival waterfall withholds from, if any.
     pub fn ledger_obligations(&self) -> Option<&qip_capital::LedgerObligations> {
         self.ledger_obligations.as_ref()
+    }
+
+    /// Route the survival ceiling as a deterministic decision and seed it
+    /// under the gate the routing mints (R12-RISK-3022).
+    ///
+    /// A routing the router refuses loosens nothing: the ceiling goes through
+    /// [`Self::lower_survival_ceiling_to_the_book`], which leaves an unseeded
+    /// ceiling unseeded and only ever lowers a standing one. This arm called
+    /// `release_nothing` unconditionally until the round-81 review: at
+    /// assembly that turned "nothing seeded, refuse all new gross" into
+    /// "stand behind everything already held", and over a ceiling a
+    /// construction had set below the book it raised the ceiling to the book.
+    /// A ceiling that could not be shown to be derived deterministically is
+    /// not one to trade against, so it is never one to trade more against.
+    fn reseed_survival_ceiling(&mut self, now: Timestamp) {
+        match self.determine_book_decision(SURVIVAL_CEILING_SUBJECT) {
+            Ok(routing) => self.seed_survival_ceiling(&routing.gate(), now),
+            Err(_) => self.lower_survival_ceiling_to_the_book(now),
+        }
+    }
+
+    /// Lower the survival ceiling to what the book already stands in — its
+    /// gross plus the capital still held for it — and never raise it
+    /// (R12-RISK-3022). The one place the kernel calls
+    /// `SurvivalGovernor::release_nothing`, for both arms that answer a
+    /// sizing that did not happen: a reseed the router refused, and a DECIDE
+    /// construction that sized nothing. Two copies of this rule drifted once
+    /// already — the second review found DECIDE still raising after the
+    /// reseed arm had been fixed — so there is one.
+    ///
+    /// Two rules, not one. A ceiling that was never seeded stays unseeded:
+    /// `None` is what the survival limit refuses every gross-raising order
+    /// on, so it is already the tightest state there is. A standing ceiling
+    /// may only fall — to the book's figure when that is lower, or to none
+    /// when that figure overflows, which `release_nothing` turns into `None`
+    /// — and is otherwise left where it stood. The result is therefore never
+    /// above what the unconditional `release_nothing` wrote, and is below it
+    /// exactly where that call would have raised the ceiling.
+    fn lower_survival_ceiling_to_the_book(&mut self, now: Timestamp) {
+        let gross = RiskState::from_figures(&self.aggregates).gross_exposure;
+        let held = self
+            .reservations
+            .reserved_total()
+            .checked_sub(self.yield_parked(now))
+            .unwrap_or(Decimal::ZERO);
+        // The same sum `release_nothing` writes, taken first only to decide
+        // whether writing it would lower anything. An overflow is a fall to
+        // no ceiling, which `release_nothing` performs.
+        let lowers = match (self.governor.gross_ceiling(), gross.abs().checked_add(held)) {
+            (None, _) => false,
+            (Some(_), None) => true,
+            (Some(ceiling), Some(standing)) => standing < ceiling,
+        };
+        if lowers {
+            self.governor.release_nothing(gross, held);
+        }
     }
 
     /// Derive the survival ceiling with no construction: at assembly and when
@@ -13736,7 +13877,16 @@ impl Platform {
     /// next DECIDE re-derives the figure and reports any refusal on the cycle.
     /// Failing assembly instead would stop a process because its book is
     /// stressed — the one moment an operator most needs it running to reduce.
-    fn seed_survival_ceiling(&mut self, now: Timestamp) {
+    ///
+    /// Demands the gate the cost router mints for the survival ceiling
+    /// (R12-RISK-3022): the ceiling is what the survival limit refuses a
+    /// gross-raising order against, so deriving it is a hard-limit decision.
+    /// Reached only through [`Self::reseed_survival_ceiling`].
+    fn seed_survival_ceiling(&mut self, gate: &DeterministicGate, now: Timestamp) {
+        self.hard_limit_routings.insert(
+            HardLimitDecision::SurvivalCeiling,
+            gate.rationale().to_string(),
+        );
         let figures = self
             .deployable_capital(now)
             .and_then(|free| self.survival_figures(free, now));
@@ -18010,6 +18160,30 @@ impl Platform {
         )
     }
 
+    /// Ask the cost router to determine a book-level hard-limit decision —
+    /// the survival ceiling, sign-off, release, a reconciliation halt — as one
+    /// that must be deterministic (R12-RISK-3022).
+    ///
+    /// Beside [`Self::determine_pretrade`] and for the same reason: the gate
+    /// the routing mints is what each kernel function that makes one of those
+    /// decisions demands by signature, so a path into one that never asked the
+    /// router has nothing to pass. Routed under the book's conditions, which
+    /// label the record and choose nothing, because the `Required` arm consults
+    /// no ladder.
+    pub fn determine_book_decision(&self, subject: &str) -> Result<DeterministicRouting> {
+        if let Some(refusal) = self.refused_book_decisions.refusal(subject) {
+            return Err(refusal);
+        }
+        self.cost_router.determine(subject, self.book_conditions())
+    }
+
+    /// The rationale of the gate the last decision of `kind` was made under,
+    /// as the cost router wrote it, or `None` if the platform has not made one
+    /// (R12-RISK-3022).
+    pub fn hard_limit_routing(&self, kind: HardLimitDecision) -> Option<&str> {
+        self.hard_limit_routings.get(&kind).map(String::as_str)
+    }
+
     /// How the last submitted order's pre-trade check was routed.
     pub fn pretrade_routing(&self) -> Option<&DeterministicRouting> {
         self.pretrade_routing.as_ref()
@@ -20658,6 +20832,34 @@ impl Platform {
         Ok(free)
     }
 
+    /// Run the survival waterfall and the confidence governor for one
+    /// construction under the gate the cost router minted for the survival
+    /// ceiling (R12-RISK-3022).
+    ///
+    /// **The only caller of `SurvivalGovernor::size`.** The waterfall's
+    /// refusals and the ceiling it sets are exactly the governor's; the gate
+    /// changes nothing about them, and its rationale is recorded as the
+    /// routing the ceiling was derived under.
+    fn size_survival(
+        &mut self,
+        gate: &DeterministicGate,
+        figures: crate::survival::LedgerFigures,
+        views: &[crate::confidence::ThesisView],
+        now: Timestamp,
+    ) -> Result<crate::survival::SizingBudget> {
+        self.hard_limit_routings.insert(
+            HardLimitDecision::SurvivalSizing,
+            gate.rationale().to_string(),
+        );
+        self.governor.size(
+            figures,
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
+            STRESS_LOSS_TOLERANCE,
+            views,
+            now,
+        )
+    }
+
     /// Size the approved theses, and say which of them had to be left out.
     ///
     /// The second half of the return is the point. A thesis whose mark cannot
@@ -20784,13 +20986,11 @@ impl Platform {
             })
             .collect();
         let figures = self.survival_figures(free, now)?;
-        let sizing = self.governor.size(
-            figures,
-            self.stress.as_ref().map(StressReport::worlds).as_ref(),
-            STRESS_LOSS_TOLERANCE,
-            &views,
-            now,
-        )?;
+        // Routed before the waterfall runs (R12-RISK-3022). A refusal here is
+        // a construction that sized nothing, which the caller answers by
+        // lowering the ceiling to what the book stands in.
+        let survival = self.determine_book_decision(SURVIVAL_CEILING_SUBJECT)?;
+        let sizing = self.size_survival(&survival.gate(), figures, &views, now)?;
         self.governor
             .signals_mut()
             .forget_theses(theses.iter().map(|thesis| thesis.hypothesis_id.as_str()));
@@ -23044,14 +23244,27 @@ impl Platform {
                     // whichever step refused — before the waterfall ran, in
                     // it, or after it, when its release was never held. The
                     // survival ceiling falls to what the book already stands
-                    // in, rather than keeping a release no proposal holds.
-                    self.governor.release_nothing(
-                        RiskState::from_figures(&self.aggregates).gross_exposure,
-                        self.reservations
-                            .reserved_total()
-                            .checked_sub(self.yield_parked(now))
-                            .unwrap_or(Decimal::ZERO),
-                    );
+                    // in, rather than keeping a release no proposal holds,
+                    // and never rises to it.
+                    //
+                    // One arm answers every refusal, the router's included:
+                    // `construct_from` returns the survival routing's refusal
+                    // through the same `?` as the governor's, so a router
+                    // refusal and a sizing the router routed and the governor
+                    // refused are one path here. Until the second round-81
+                    // review this arm called `release_nothing`
+                    // unconditionally, so a routing refused after a policy
+                    // change had left no ceiling turned `None` into the whole
+                    // book, and a standing ceiling below the book was raised
+                    // to it. Lowers-only is never looser than that call for
+                    // any refusal. Where the governor refused, `size` has
+                    // already set the ceiling to the same figure (or to none,
+                    // where the held capital less the parked overflows), so
+                    // the helper finds nothing to lower and the outcome is as
+                    // it was; where a step after `size` refused, the release
+                    // `size` set falls to the book as before wherever it
+                    // stands above it.
+                    self.lower_survival_ceiling_to_the_book(now);
                     self.constructor.nothing_to_do(
                         ProposalId::from_string(format!("prop-{}", self.cycle)),
                         Money::new(self.capital.equity(), Currency::USD),
@@ -23380,6 +23593,87 @@ impl Platform {
         outcome
     }
 
+    /// Sign off every draft that proposes something, with the two controls'
+    /// signatures, under the gate the cost router minted for the sign-off
+    /// (R12-RISK-3022).
+    ///
+    /// **The only caller of `Proposal::approve`.** Which drafts are signed and
+    /// which refusals are recorded are exactly what the loop in ACT decided
+    /// before it was extracted; the gate's rationale is recorded as the
+    /// routing the signatures were taken under. Returns how many were signed.
+    fn sign_off_drafts(
+        &mut self,
+        gate: &DeterministicGate,
+        now: Timestamp,
+        sign_off_problems: &mut Vec<String>,
+    ) -> u64 {
+        self.hard_limit_routings
+            .insert(HardLimitDecision::SignOff, gate.rationale().to_string());
+        let mut signed = 0u64;
+        for proposal in &mut self.proposals {
+            if !matches!(proposal.status(), ProposalStatus::Draft) {
+                continue;
+            }
+            // A proposal with no legs proposes nothing. `stage_decide`
+            // records one on every quiet cycle so the log says the cycle
+            // ran and chose not to trade, and signing those off would put
+            // a risk and a compliance signature against a decision neither
+            // control examined — filling the audit trail with approvals
+            // that approved nothing, and making a real approval harder to
+            // find rather than easier.
+            if proposal.is_empty() {
+                continue;
+            }
+            match proposal.approve(
+                now,
+                vec!["risk-monitor".to_string(), "compliance".to_string()],
+            ) {
+                // Counted from `approve` returning, not from the draft
+                // being offered to it. A proposal that reached this call
+                // and was rejected by it is not a signed proposal, and a
+                // counter incremented before the call would say the
+                // signatures were taken whenever they were merely asked
+                // for.
+                Ok(()) => signed += 1,
+                Err(error) => sign_off_problems.push(format!(
+                    "{} could not be approved: {}",
+                    proposal.proposal_id.as_str(),
+                    error.message()
+                )),
+            }
+        }
+        signed
+    }
+
+    /// Advance every proposal the release loop offered to `Released`, under
+    /// the gate the cost router minted for the release (R12-RISK-3022).
+    ///
+    /// **The only caller of `Proposal::release`.** Which proposals advance,
+    /// and the problem recorded when one cannot, are exactly what the loop in
+    /// ACT did before it was extracted; the gate's rationale is recorded as
+    /// the routing the release was made under.
+    fn advance_released(
+        &mut self,
+        gate: &DeterministicGate,
+        offered: &[String],
+        now: Timestamp,
+        problems: &mut Vec<String>,
+    ) {
+        self.hard_limit_routings
+            .insert(HardLimitDecision::Release, gate.rationale().to_string());
+        for proposal in &mut self.proposals {
+            if offered.contains(&proposal.proposal_id.as_str().to_string())
+                && let Err(error) = proposal.release(now)
+            {
+                problems.push(format!(
+                    "{} was released but its status could not be advanced: {}",
+                    proposal.proposal_id.as_str(),
+                    error.message()
+                ));
+            }
+        }
+    }
+
     /// The ACT stage proper: the risk monitor, sizing, sign-off, release and
     /// the quote loop. Wrapped by [`Self::stage_act`], which is the only
     /// caller.
@@ -23580,40 +23874,20 @@ impl Platform {
             );
         }
         if signable {
-            let at = now;
-            let mut signed = 0u64;
-            for proposal in &mut self.proposals {
-                if !matches!(proposal.status(), ProposalStatus::Draft) {
-                    continue;
-                }
-                // A proposal with no legs proposes nothing. `stage_decide`
-                // records one on every quiet cycle so the log says the cycle
-                // ran and chose not to trade, and signing those off would put
-                // a risk and a compliance signature against a decision neither
-                // control examined — filling the audit trail with approvals
-                // that approved nothing, and making a real approval harder to
-                // find rather than easier.
-                if proposal.is_empty() {
-                    continue;
-                }
-                match proposal.approve(
-                    at,
-                    vec!["risk-monitor".to_string(), "compliance".to_string()],
-                ) {
-                    // Counted from `approve` returning, not from the draft
-                    // being offered to it. A proposal that reached this call
-                    // and was rejected by it is not a signed proposal, and a
-                    // counter incremented before the call would say the
-                    // signatures were taken whenever they were merely asked
-                    // for.
-                    Ok(()) => signed += 1,
-                    Err(error) => sign_off_problems.push(format!(
-                        "{} could not be approved: {}",
-                        proposal.proposal_id.as_str(),
+            // Routed before a signature is taken (R12-RISK-3022). A routing the
+            // router refuses signs nothing, which is the restrictive answer:
+            // an unsigned draft is never released.
+            let signed = match self.determine_book_decision(SIGN_OFF_SUBJECT) {
+                Ok(routing) => self.sign_off_drafts(&routing.gate(), now, &mut sign_off_problems),
+                Err(error) => {
+                    sign_off_problems.push(format!(
+                        "no proposal was signed off: the sign-off could not be routed as a \
+                         deterministic decision ({})",
                         error.message()
-                    )),
+                    ));
+                    0
                 }
-            }
+            };
             if signed > 0 {
                 self.telemetry
                     .metrics
@@ -23678,6 +23952,30 @@ impl Platform {
             // green, which is how the gap was found.
             return crate::quote_loop::review(self, now, outcome);
         }
+
+        // Routed before anything is released (R12-RISK-3022). A routing the
+        // router refuses releases nothing on this cycle: the approved
+        // proposals stay approved, no order is built from them, and the
+        // reason reaches the report.
+        let release = match self.determine_book_decision(RELEASE_SUBJECT) {
+            Ok(routing) => routing,
+            Err(error) => {
+                let mut outcome = StageOutcome::ran(
+                    Stage::Act,
+                    0,
+                    format!("{releasable} approved proposal(s) were not released"),
+                )
+                .with_problem(format!(
+                    "the release could not be routed as a deterministic decision ({})",
+                    error.message()
+                ));
+                for problem in sign_off_problems {
+                    outcome = outcome.with_problem(problem);
+                }
+                return crate::quote_loop::review(self, now, outcome);
+            }
+        };
+        let release_gate = release.gate();
 
         // Release them. Until this loop existed the stage counted approved
         // proposals and returned, so the platform sensed, reasoned, sized and
@@ -23898,17 +24196,7 @@ impl Platform {
                 ));
             }
         }
-        for proposal in &mut self.proposals {
-            if offered.contains(&proposal.proposal_id.as_str().to_string())
-                && let Err(error) = proposal.release(now)
-            {
-                problems.push(format!(
-                    "{} was released but its status could not be advanced: {}",
-                    proposal.proposal_id.as_str(),
-                    error.message()
-                ));
-            }
-        }
+        self.advance_released(&release_gate, &offered, now, &mut problems);
 
         let mut outcome = StageOutcome::ran(
             Stage::Act,
@@ -32503,6 +32791,13 @@ impl Platform {
     pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
         self.event_log = event_log;
     }
+
+    /// Make [`Self::determine_book_decision`] refuse `subject` from now on, so
+    /// a unit test can drive the arm that answers a refused routing
+    /// (round-81 review, R12-RISK-3022). See `crate::refusal_seam`.
+    pub(crate) fn refuse_book_decision(&mut self, subject: impl Into<String>) {
+        self.refused_book_decisions.refuse(subject);
+    }
 }
 
 /// The universe the unit-test platforms below trade in: the symbols named, listed.
@@ -33575,7 +33870,13 @@ mod decide_tests {
             moved_by: None,
             evidence: None,
             permitted_locations: None,
-            stages: Vec::new(),
+            // A line per promotion test, as this build writes one: the
+            // restart now also quarantines a record that lacks them
+            // (R12-MODEL-4021), and this test is about the workload check.
+            stages: qip_ai::registry::PROMOTION_TESTS
+                .iter()
+                .map(|name| format!("{name}: measured on window w"))
+                .collect(),
             rollback_parent: None,
             signature: None,
             at: Timestamp::from_secs(1_760_000_000),
@@ -33591,7 +33892,7 @@ mod decide_tests {
             .expect("journaled");
         let restored = resume_model_promotions(built.event_log()).expect("a built family restores");
         assert!(
-            restored.contains_key("qi-built@0.1.0"),
+            restored.promoted.contains_key("qi-built@0.1.0"),
             "premise: {restored:?}"
         );
 
@@ -33611,6 +33912,717 @@ mod decide_tests {
             "{}",
             refused.message()
         );
+    }
+
+    /// R12-MODEL-4021, the restart door read against the log. A promotion
+    /// record from a build before the adversarial attack was a promotion
+    /// test names a model nobody attacked; readmitting its card on restart
+    /// would put that model back in production without a clearance this
+    /// build would mint. So the record must carry a stage line for every
+    /// promotion test, matched on the delimited name: the legacy record here
+    /// also carries `distilled_adversarial`, which a substring match on
+    /// `adversarial` would take for the teacher's attack. And the record must
+    /// name the card's own reference at the card's own bytes: a card at
+    /// another digest, or another reference at the promoted digest, is
+    /// refused while a matching record is on the log, which is what an
+    /// empty-log test cannot show.
+    ///
+    /// Mutations: drop the `records_every_promotion_test` check in
+    /// `readmit_promoted_card` (the legacy card is readmitted); match the
+    /// test name as a substring (likewise); drop `record.artifact_digest ==
+    /// digest` (the card at other bytes is readmitted); drop
+    /// `record.reference == reference` (the other reference is readmitted).
+    #[test]
+    fn a_card_is_readmitted_only_on_a_record_of_its_own_bytes_that_shows_every_promotion_test() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, ModelProducer, ModelPromotion};
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST,
+            DISTILLED_ADVERSARIAL_TEST, ModelCard, ModelRegistry, ModelStage, PROMOTION_TESTS,
+            REPLAY_TEST, RISK_ENVELOPE_TEST,
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let digest = "a".repeat(64);
+        let record = |reference: &str, stages: Vec<String>| ModelPromotion {
+            reference: reference.to_string(),
+            name: "bar-linear".to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: digest.clone(),
+            arity: 2,
+            distilled: None,
+            displaced: Vec::new(),
+            producer: ModelProducer::TrainingPipeline,
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages,
+            rollback_parent: None,
+            signature: None,
+            at: now,
+        };
+        let card = |version: &str, bytes: &str| {
+            let mut card = ModelCard::new(
+                qip_core::ModelId::from_string(format!("m-{version}")),
+                "bar-linear",
+                version,
+                "desk",
+                now,
+            );
+            card.stage = ModelStage::Production;
+            card.artifact_digest = Some(bytes.to_string());
+            card
+        };
+        let line = |name: &str| format!("{name}: measured on window w");
+        let legacy: Vec<String> = [
+            REPLAY_TEST,
+            CALIBRATION_TEST,
+            CLASSICAL_BASELINE_TEST,
+            RISK_ENVELOPE_TEST,
+            DISTILLED_ADVERSARIAL_TEST,
+        ]
+        .iter()
+        .map(|name| line(name))
+        .collect();
+        let full: Vec<String> = PROMOTION_TESTS.iter().map(|name| line(name)).collect();
+        // Premises: the legacy record lacks exactly the teacher's attack,
+        // and the full one carries every test.
+        assert!(PROMOTION_TESTS.contains(&ADVERSARIAL_TEST));
+        assert!(!legacy.contains(&line(ADVERSARIAL_TEST)));
+        assert!(!record("x@1", legacy.clone()).records_every_promotion_test());
+        assert!(record("x@1", full.clone()).records_every_promotion_test());
+
+        let mut platform = small_book_platform();
+        platform
+            .journal_record(record("bar-linear@1", legacy), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("1", &digest))
+            .expect_err("a card whose record shows no adversarial test was readmitted");
+        assert!(
+            refused
+                .message()
+                .contains("does not show every promotion test"),
+            "{}",
+            refused.message()
+        );
+
+        platform
+            .journal_record(record("bar-linear@2", full), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let mut restarted = ModelRegistry::new();
+        platform
+            .readmit_promoted_card(&mut restarted, card("2", &digest))
+            .expect("a card on a record showing every test is readmitted");
+        assert!(restarted.admitted_at("bar-linear@2", &digest));
+
+        let other_bytes = "b".repeat(64);
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("2", &other_bytes))
+            .expect_err("a card at bytes the log never promoted was readmitted");
+        assert!(
+            refused
+                .message()
+                .contains("no promotion record on the log promoted it with those bytes"),
+            "{}",
+            refused.message()
+        );
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("3", &digest))
+            .expect_err("a reference the log never promoted was readmitted at its bytes");
+        assert!(
+            refused
+                .message()
+                .contains("no promotion record on the log promoted it with those bytes"),
+            "{}",
+            refused.message()
+        );
+    }
+
+    /// A promotion record of `bar-linear@{version}` at `digest`, naming
+    /// `student` to the cells, carrying one line per name in `tests`.
+    fn student_record(
+        version: &str,
+        digest: &str,
+        student: Option<&str>,
+        tests: &[&str],
+    ) -> crate::model_serving::ModelPromotion {
+        crate::model_serving::ModelPromotion {
+            reference: format!("bar-linear@{version}"),
+            name: "bar-linear".to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: digest.to_string(),
+            arity: 2,
+            distilled: student.map(|name| crate::model_serving::DistilledManifestEntry {
+                name: name.to_string(),
+                digest: format!("{name}-digest"),
+            }),
+            displaced: Vec::new(),
+            producer: crate::model_serving::ModelProducer::TrainingPipeline,
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages: tests
+                .iter()
+                .map(|name| format!("{name}: measured on window w"))
+                .collect(),
+            rollback_parent: None,
+            signature: None,
+            at: Timestamp::from_secs(1_760_000_000),
+        }
+    }
+
+    /// The card a restarted desk would readmit for `bar-linear@{version}`.
+    fn production_card(version: &str, digest: &str) -> qip_ai::registry::ModelCard {
+        let mut card = qip_ai::registry::ModelCard::new(
+            qip_core::ModelId::from_string(format!("m-{version}")),
+            "bar-linear",
+            version,
+            "desk",
+            Timestamp::from_secs(1_760_000_000),
+        );
+        card.stage = qip_ai::registry::ModelStage::Production;
+        card.artifact_digest = Some(digest.to_string());
+        card
+    }
+
+    /// A process over the event log at `path`, as a composition root would
+    /// assemble one; `seed` keeps a restart off the first run's ids.
+    fn over_log(path: &std::path::Path, seed_flip: u64) -> Platform {
+        let mut config = PlatformConfig::default().with_event_log_file(path);
+        config.seed ^= seed_flip;
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles over the log")
+    }
+
+    /// Journal `records` through one process over a fresh log, then assemble
+    /// a second over the same file: the restart a deployed binary performs.
+    fn restarted_over(
+        name: &str,
+        records: Vec<crate::model_serving::ModelPromotion>,
+    ) -> (Platform, std::path::PathBuf) {
+        // Not the environment's temp directory, for the reason
+        // `dormancy_boot_log_path` gives: `architecture.rs` refuses the
+        // process environment in any `src/` file's text, tests included.
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-{name}-{}-{}",
+            std::process::id(),
+            Timestamp::from_secs(1_760_000_000).as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        {
+            let mut first = over_log(&path, 0);
+            for record in records {
+                first
+                    .journal_record(
+                        record,
+                        crate::model_serving::MODEL_PROMOTION_ORIGIN,
+                        Timestamp::from_secs(1_760_000_000),
+                    )
+                    .expect("journaled");
+            }
+        }
+        (over_log(&path, 1), directory)
+    }
+
+    /// Round-81 review, R12-MODEL-4021: the restart door and the card door
+    /// now read a promotion record the same way. `readmit_promoted_card`
+    /// refused a card whose record came from a build before the adversarial
+    /// test was a promotion test, while `resume_model_promotions` put the
+    /// same record back in the promoted set — and `model_manifest_targeted`
+    /// named its distilled student to the cells from there, so a restart put
+    /// an unattacked model and its student back on the manifest with the
+    /// card refused. The legacy record also carries `distilled_adversarial`,
+    /// which a substring match on `adversarial` would take for the teacher's
+    /// attack. The record is quarantined, reported and not dropped silently.
+    ///
+    /// Mutations: drop the `records_every_promotion_test` branch in
+    /// `resume_model_promotions` (the legacy record is restored and its
+    /// student named); quarantine without recording it (the report is
+    /// missing).
+    #[test]
+    fn a_legacy_promotion_record_is_quarantined_at_restart_and_its_student_is_not_on_the_manifest()
+    {
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST,
+            DISTILLED_ADVERSARIAL_TEST, ModelRegistry, PROMOTION_TESTS, REPLAY_TEST,
+            RISK_ENVELOPE_TEST,
+        };
+        let legacy_digest = "a".repeat(64);
+        let full_digest = "c".repeat(64);
+        let legacy = student_record(
+            "1",
+            &legacy_digest,
+            Some("student-legacy"),
+            &[
+                REPLAY_TEST,
+                CALIBRATION_TEST,
+                CLASSICAL_BASELINE_TEST,
+                RISK_ENVELOPE_TEST,
+                DISTILLED_ADVERSARIAL_TEST,
+            ],
+        );
+        let mut every: Vec<&str> = PROMOTION_TESTS.to_vec();
+        every.push(DISTILLED_ADVERSARIAL_TEST);
+        let full = student_record("2", &full_digest, Some("student-full"), &every);
+        // Premises: the legacy record lacks exactly the teacher's attack, and
+        // the complete one — a control on the same log — carries every line.
+        assert!(PROMOTION_TESTS.contains(&ADVERSARIAL_TEST));
+        assert!(
+            !legacy
+                .stages
+                .iter()
+                .any(|stage| stage.starts_with("adversarial: "))
+        );
+        assert!(!legacy.records_every_promotion_test());
+        assert!(full.records_every_promotion_test());
+
+        let (restarted, directory) = restarted_over("legacy-quarantine", vec![legacy, full]);
+        assert!(
+            restarted.model_promotions().contains_key("bar-linear@2"),
+            "premise: a complete record is restored on this log"
+        );
+        assert!(
+            !restarted.model_promotions().contains_key("bar-linear@1"),
+            "a record showing no adversarial test was restored to the promoted set"
+        );
+        let manifest = restarted
+            .model_manifest()
+            .expect("the complete record's student is named")
+            .manifest()
+            .clone();
+        assert_eq!(
+            manifest.models.get("student-full"),
+            Some(&"student-full-digest".to_string()),
+            "premise: the restart names a complete record's student"
+        );
+        assert!(
+            !manifest.models.contains_key("student-legacy"),
+            "the unattacked model's student is back on the manifest: {:?}",
+            manifest.models
+        );
+        let why = restarted
+            .quarantined_model_promotions()
+            .get("bar-linear@1")
+            .cloned()
+            .expect("the legacy record was dropped without being reported");
+        assert!(why.contains("does not show every promotion test"), "{why}");
+        assert!(
+            restarted.capture_problems.contains(&why),
+            "the quarantine is not on the record LEARN surfaces: {:?}",
+            restarted.capture_problems
+        );
+        // And the card door agrees with the restart door.
+        assert!(
+            restarted
+                .readmit_promoted_card(
+                    &mut ModelRegistry::new(),
+                    production_card("1", &legacy_digest)
+                )
+                .is_err(),
+            "the legacy record's card was readmitted"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Round-81 review, R12-MODEL-4021: a record that names a distilled
+    /// student must show the student's own attack. The teacher's five lines
+    /// say nothing about the model the cells run inline, so a record with
+    /// them and without `distilled_adversarial` is refused at both doors,
+    /// while the same record naming no student — the control — restores.
+    ///
+    /// Mutation: drop the `distilled` clause from
+    /// `ModelPromotion::records_every_promotion_test` (the record is restored
+    /// and its student named).
+    #[test]
+    fn a_record_naming_a_student_without_the_students_attack_is_refused_at_restart_and_at_the_card_door()
+     {
+        use qip_ai::registry::{ModelRegistry, PROMOTION_TESTS};
+        let digest = "d".repeat(64);
+        let control_digest = "e".repeat(64);
+        let unattacked = student_record("4", &digest, Some("student-unattacked"), &PROMOTION_TESTS);
+        let control = student_record("5", &control_digest, None, &PROMOTION_TESTS);
+        // Premise: the two records carry the same lines and differ only in
+        // naming a student.
+        assert_eq!(unattacked.stages, control.stages);
+        assert!(control.records_every_promotion_test());
+        assert!(!unattacked.records_every_promotion_test());
+
+        let (restarted, directory) =
+            restarted_over("student-unattacked", vec![unattacked, control]);
+        assert!(
+            restarted.model_promotions().contains_key("bar-linear@5"),
+            "premise: the control restores"
+        );
+        assert!(
+            !restarted.model_promotions().contains_key("bar-linear@4"),
+            "a record naming a student nobody attacked was restored"
+        );
+        assert!(
+            restarted
+                .model_manifest()
+                .ok()
+                .is_none_or(|issue| !issue.manifest().models.contains_key("student-unattacked")),
+            "the unattacked student is on the manifest"
+        );
+        let why = restarted
+            .quarantined_model_promotions()
+            .get("bar-linear@4")
+            .cloned()
+            .expect("the record was dropped without being reported");
+        assert!(
+            why.contains("and distilled_adversarial for the student it names"),
+            "{why}"
+        );
+        assert!(
+            restarted
+                .readmit_promoted_card(&mut ModelRegistry::new(), production_card("4", &digest))
+                .is_err(),
+            "the card of a record naming an unattacked student was readmitted"
+        );
+        restarted
+            .readmit_promoted_card(
+                &mut ModelRegistry::new(),
+                production_card("5", &control_digest),
+            )
+            .expect("premise: the control's card is readmitted");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: the refusal
+    /// `promote_model_from` makes when the record it is about to sign names
+    /// a student and the card holds no passing `distilled_adversarial`
+    /// result. Untested until now. Driven through `student_attack_stage`,
+    /// which the promotion calls, because no clearance the registry mints
+    /// reaches it through the promotion — that helper's doc names the three
+    /// refusals in front of it. A missing result and a failed one are both
+    /// refused; a passing one is signed as the line
+    /// `records_every_promotion_test` reads at restart.
+    ///
+    /// Mutations: drop `.filter(|test| test.passed)` from
+    /// `student_attack_stage` (the failed attack is signed); return the line
+    /// for a missing result (the missing attack is signed).
+    #[test]
+    fn a_promotion_naming_a_student_signs_no_attack_line_for_an_attack_missing_or_failed() {
+        use crate::model_serving::student_attack_stage;
+        use qip_ai::registry::{
+            DISTILLED_ADVERSARIAL_TEST, PROMOTION_TESTS, PromotionTest, PromotionTests,
+        };
+        let digest = "f".repeat(64);
+        let mut tests = PromotionTests {
+            artifact_digest: digest.clone(),
+            window: "student-window".to_string(),
+            rows: 64,
+            ran_at: Timestamp::from_secs(1_760_000_000),
+            results: PROMOTION_TESTS
+                .iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        PromotionTest {
+                            passed: true,
+                            evidence: format!("{name} held"),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        // Premise: the teacher's tests all pass, so every refusal below is
+        // about the student.
+        assert_eq!(tests.gap(&digest), None);
+        let refusal = "its card holds no passing distilled_adversarial test to record";
+
+        let missing = student_attack_stage("bar-linear@6", &tests)
+            .expect_err("a student with no attack on record was signed as attacked");
+        assert!(missing.message().contains(refusal), "{}", missing.message());
+
+        tests.results.insert(
+            DISTILLED_ADVERSARIAL_TEST.to_string(),
+            PromotionTest {
+                passed: false,
+                evidence: "the student stepped inside the data".to_string(),
+            },
+        );
+        let failed = student_attack_stage("bar-linear@6", &tests)
+            .expect_err("a student whose attack failed was signed as attacked");
+        assert!(failed.message().contains(refusal), "{}", failed.message());
+
+        tests.results.insert(
+            DISTILLED_ADVERSARIAL_TEST.to_string(),
+            PromotionTest {
+                passed: true,
+                evidence: "the student held".to_string(),
+            },
+        );
+        let line =
+            student_attack_stage("bar-linear@6", &tests).expect("a passing attack is signed");
+        assert_eq!(
+            line,
+            "distilled_adversarial: the student held on student-window"
+        );
+        // And the line signed is the one the restart door reads.
+        let mut record = student_record("6", &digest, Some("student"), &PROMOTION_TESTS);
+        assert!(
+            !record.records_every_promotion_test(),
+            "premise: without the line the record names an unattacked student"
+        );
+        record.stages.push(line);
+        assert!(record.records_every_promotion_test());
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: what a quarantined record does
+    /// to the references it displaced. It is not put back, and the models it
+    /// retired stay retired. The log's newest word on `bar-linear@7` is that
+    /// a promotion took it out of production, and that promotion being
+    /// unrestorable does not return it: a restart that put it back would
+    /// serve it, and name its student to the cells, with nobody having rolled
+    /// back to it. So the restrictive outcome is that neither stands.
+    ///
+    /// Mutation: drop the displacement loop from the quarantine branch of
+    /// `resume_model_promotions` — the displaced record is restored.
+    #[test]
+    fn a_quarantined_record_still_retires_what_it_displaced_and_restores_neither() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, resume_model_promotions};
+        use qip_ai::registry::{ADVERSARIAL_TEST, DISTILLED_ADVERSARIAL_TEST, PROMOTION_TESTS};
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut every: Vec<&str> = PROMOTION_TESTS.to_vec();
+        every.push(DISTILLED_ADVERSARIAL_TEST);
+        let unattacked: Vec<&str> = every
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        let displaced = student_record("7", &"7".repeat(64), Some("student-displaced"), &every);
+        let mut displacing = student_record(
+            "8",
+            &"8".repeat(64),
+            Some("student-displacing"),
+            &unattacked,
+        );
+        displacing.displaced = vec!["bar-linear@7".to_string()];
+        assert!(displaced.records_every_promotion_test());
+        assert!(!displacing.records_every_promotion_test());
+
+        // Premise: alone, the displaced record restores, so its absence below
+        // is the displacement's doing.
+        let mut alone = small_book_platform();
+        alone
+            .journal_record(displaced.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let restored = resume_model_promotions(alone.event_log()).expect("the record restores");
+        assert!(
+            restored.promoted.contains_key("bar-linear@7"),
+            "premise: {restored:?}"
+        );
+
+        let mut platform = small_book_platform();
+        for record in [displaced, displacing] {
+            platform
+                .journal_record(record, MODEL_PROMOTION_ORIGIN, now)
+                .expect("journaled");
+        }
+        let resumed = resume_model_promotions(platform.event_log())
+            .expect("a quarantined record does not stop the restart");
+        assert!(
+            resumed.quarantined.contains_key("bar-linear@8"),
+            "premise: the displacing record is quarantined: {resumed:?}"
+        );
+        assert!(
+            !resumed.promoted.contains_key("bar-linear@8"),
+            "a quarantined record was restored"
+        );
+        assert!(
+            !resumed.promoted.contains_key("bar-linear@7"),
+            "a model the quarantined promotion retired was put back in production"
+        );
+        assert!(
+            resumed.promoted.is_empty(),
+            "something stands after the restart: {:?}",
+            resumed.promoted.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: a quarantine is cleared by a
+    /// later, complete record for the same reference. The reference is
+    /// restored from that record — the one whose stages show every promotion
+    /// test, not the legacy one — and is no longer reported, because "a
+    /// record for it was not put back" has stopped being true of it. A report
+    /// that kept it would send an operator after a model that stands in
+    /// production on a clean record, and a report nobody can act on is one
+    /// that teaches people to ignore the next.
+    ///
+    /// Mutation: drop `resumed.quarantined.remove(..)` from
+    /// `resume_model_promotions` — the reference stays listed.
+    #[test]
+    fn a_quarantine_is_cleared_by_a_later_complete_record_for_the_same_reference() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, resume_model_promotions};
+        use qip_ai::registry::{ADVERSARIAL_TEST, PROMOTION_TESTS};
+        let now = Timestamp::from_secs(1_760_000_000);
+        let digest = "9".repeat(64);
+        let unattacked: Vec<&str> = PROMOTION_TESTS
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        let legacy = student_record("9", &digest, None, &unattacked);
+        let complete = student_record("9", &digest, None, &PROMOTION_TESTS);
+        assert!(!legacy.records_every_promotion_test());
+        assert!(complete.records_every_promotion_test());
+
+        let mut platform = small_book_platform();
+        platform
+            .journal_record(legacy.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let quarantined = resume_model_promotions(platform.event_log()).expect("restores");
+        assert!(
+            quarantined.quarantined.contains_key("bar-linear@9"),
+            "premise: the legacy record alone is quarantined: {quarantined:?}"
+        );
+
+        platform
+            .journal_record(complete.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let resumed = resume_model_promotions(platform.event_log()).expect("restores");
+        assert_eq!(
+            resumed
+                .promoted
+                .get("bar-linear@9")
+                .map(|record| record.stages.clone()),
+            Some(complete.stages),
+            "the reference was not restored from its complete record"
+        );
+        assert!(
+            !resumed.quarantined.contains_key("bar-linear@9"),
+            "a reference restored on a complete record is still reported quarantined: {:?}",
+            resumed.quarantined
+        );
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: a rollback refuses a
+    /// predecessor whose promotion record does not show every promotion test,
+    /// by its own check rather than the card door's. The record a rollback
+    /// writes copies the restored record's stages, so restoring a legacy one
+    /// put a model nobody attacked back on the manifest. The registry here is
+    /// one the card door does not hold — each card admitted on a journaled
+    /// admission minted by hand, as a desk restoring from its own storage
+    /// might — so only the rollback can stop it. The control is the same log
+    /// with the predecessor's record complete, which rolls back.
+    ///
+    /// Mutation: drop the `records_every_promotion_test` check from
+    /// `rollback_model` — the legacy predecessor is reactivated.
+    #[test]
+    fn a_rollback_refuses_a_predecessor_whose_record_does_not_show_every_promotion_test() {
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, EvaluationRecord, JournaledAdmission, ModelRegistry, ModelStage,
+            PROMOTION_TESTS,
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let later = now.saturating_add(Duration::from_mins(5));
+        let predecessor_digest = "1".repeat(64);
+        let live_digest = "2".repeat(64);
+        let unattacked: Vec<&str> = PROMOTION_TESTS
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        // The predecessor retired at the bytes the log recorded, the live
+        // model in production, each with a passing evaluation, each admitted
+        // on an admission minted by hand rather than through the card door.
+        let registry = || {
+            let mut registry = ModelRegistry::new();
+            for (version, digest, stage) in [
+                ("10", &predecessor_digest, ModelStage::Retired),
+                ("11", &live_digest, ModelStage::Production),
+            ] {
+                let mut card = production_card(version, digest);
+                card.stage = stage;
+                card.evaluations.push(EvaluationRecord {
+                    evaluated_at: now,
+                    dataset: "holdout".to_string(),
+                    metrics: BTreeMap::new(),
+                    passed: true,
+                });
+                registry
+                    .readmit_on_journaled_admission(
+                        card,
+                        JournaledAdmission::minted_from_the_promotion_log(
+                            &format!("bar-linear@{version}"),
+                            digest,
+                        ),
+                    )
+                    .expect("premise: the card is admitted");
+            }
+            registry
+        };
+        let mut live = student_record("11", &live_digest, None, &PROMOTION_TESTS);
+        live.displaced = vec!["bar-linear@10".to_string()];
+
+        let (mut control, control_directory) = restarted_over(
+            "rollback-complete",
+            vec![
+                student_record("10", &predecessor_digest, None, &PROMOTION_TESTS),
+                live.clone(),
+            ],
+        );
+        control.name_model_desk("desk").expect("the desk is named");
+        assert!(
+            control.model_promotions().contains_key("bar-linear@11"),
+            "premise: the live record restores"
+        );
+        assert_eq!(
+            control
+                .rollback_model(&mut registry(), "bar-linear@11", later)
+                .expect("premise: a complete predecessor record rolls back"),
+            "bar-linear@10"
+        );
+
+        let (mut platform, directory) = restarted_over(
+            "rollback-legacy",
+            vec![
+                student_record("10", &predecessor_digest, None, &unattacked),
+                live,
+            ],
+        );
+        platform.name_model_desk("desk").expect("the desk is named");
+        assert!(
+            platform.model_promotions().contains_key("bar-linear@11"),
+            "premise: the live record restores"
+        );
+        let mut registry = registry();
+        let refused = platform
+            .rollback_model(&mut registry, "bar-linear@11", later)
+            .expect_err("a predecessor whose record shows no adversarial test was rolled back to");
+        assert!(
+            refused.message().contains(&format!(
+                "bar-linear@10's promotion record at artifact {predecessor_digest} does not show \
+                 every promotion test"
+            )),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert_eq!(
+            registry.get("bar-linear@11").map(|card| card.stage),
+            Some(ModelStage::Production),
+            "a refused rollback retired the live model"
+        );
+        assert_eq!(
+            registry.get("bar-linear@10").map(|card| card.stage),
+            Some(ModelStage::Retired),
+            "a refused rollback reactivated the predecessor"
+        );
+        assert!(
+            !platform.model_promotions().contains_key("bar-linear@10"),
+            "a refused rollback put the predecessor in the promoted set"
+        );
+        let _ = std::fs::remove_dir_all(&control_directory);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// R12-WORLD-9035: the cycle grows a future tree from the held world
@@ -35704,6 +36716,441 @@ mod decide_tests {
             "the drawdown cleared with the day, so the book's peak was reset \
              too: {}",
             platform.capital.drawdown()
+        );
+    }
+
+    /// R12-RISK-3022 on the trading spine: the survival waterfall's sizing,
+    /// the two-control sign-off and the release each ran under a gate the cost
+    /// router minted for that decision, through the DECIDE and ACT stages a
+    /// deployed binary's cycle runs. Each rationale is the router's own
+    /// sentence about the subject the kernel routed — compared against the
+    /// subject written out here, not looked up through the kernel. Fails if
+    /// any of the three gated functions stops recording the gate it was
+    /// handed, or if a stage reaches the decision some other way.
+    #[test]
+    fn sizing_sign_off_and_release_each_ran_under_a_gate_the_router_determined() {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
+        for kind in [
+            HardLimitDecision::SurvivalSizing,
+            HardLimitDecision::SignOff,
+            HardLimitDecision::Release,
+        ] {
+            assert_eq!(
+                platform.hard_limit_routing(kind),
+                None,
+                "premise: no {kind:?} decision has been made before the cycle"
+            );
+        }
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let sized = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!sized.is_empty(), "premise: legs were sized");
+        let correlation = CorrelationId::from_string("corr-gated-release");
+        let outcome = platform.stage_act(now, &correlation);
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "premise: the sized proposal was signed and released: {:?}",
+            outcome.problems
+        );
+
+        for (kind, subject) in [
+            (
+                HardLimitDecision::SurvivalSizing,
+                "survival ceiling for the book",
+            ),
+            (
+                HardLimitDecision::SignOff,
+                "sign-off of the cycle's draft proposals",
+            ),
+            (
+                HardLimitDecision::Release,
+                "release of the cycle's approved proposals",
+            ),
+        ] {
+            let rationale = platform
+                .hard_limit_routing(kind)
+                .unwrap_or_else(|| panic!("{kind:?} ran under no recorded gate"));
+            assert!(
+                rationale.starts_with(&format!(
+                    "'{subject}' must be a function of its inputs, so it is answered in \
+                     deterministic code under "
+                )),
+                "{kind:?} ran under a gate for another decision: {rationale}"
+            );
+        }
+    }
+
+    /// The small-book platform with two justified theses queued over enough
+    /// history to size them: the state in which DECIDE sizes legs and ACT
+    /// signs and releases them when nothing refuses.
+    fn two_sizeable_theses() -> Platform {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
+        platform
+    }
+
+    /// Round-81 review, R12-RISK-3022: a survival sizing the router refuses
+    /// sizes nothing, and the ceiling the survival limit reads falls to what
+    /// the book already stands in. The arm was unreachable until the
+    /// `#[cfg(test)]` refusal seam, because `Router::default` refuses nothing
+    /// a kernel subject can be — so nothing showed that a refused routing was
+    /// not quietly sized past. Fails if sizing proceeds without the routing,
+    /// or if the refusal keeps the assembly seed's release at the gate.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_sizes_nothing_and_the_ceiling_falls_to_the_book() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        // Premise: the same book sizes legs when the routing is not refused,
+        // so an empty proposal below is the refusal's doing.
+        let mut control = two_sizeable_theses();
+        control.stage_decide(now);
+        assert!(
+            !control
+                .proposals
+                .last()
+                .expect("the control records a proposal")
+                .is_empty(),
+            "premise: an unrefused routing sizes legs on this book"
+        );
+
+        let mut platform = two_sizeable_theses();
+        let seeded = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: assembly seeded a ceiling");
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        let outcome = platform.stage_decide(now);
+
+        assert!(
+            platform
+                .proposals
+                .last()
+                .expect("a refused construction still records its proposal")
+                .is_empty(),
+            "legs were sized under a survival routing the router refused"
+        );
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::SurvivalSizing),
+            None,
+            "a gate was recorded for a sizing the router refused"
+        );
+        let standing = RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(now))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable");
+        assert!(
+            standing < seeded,
+            "premise: the seed released something above the book ({standing} against {seeded})"
+        );
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(standing),
+            "the ceiling kept a release no construction holds"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| {
+                problem.contains(&format!(
+                "could not be sized: the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+            ))
+            }),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
+        );
+    }
+
+    /// The figure the DECIDE refusal arm may lower the ceiling to: the book's
+    /// gross and what is held against it, as the arm computes it.
+    fn book_standing(platform: &Platform, now: Timestamp) -> Decimal {
+        RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(now))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable")
+    }
+
+    /// Second round-81 review, R12-RISK-3022: after a policy change under a
+    /// refused routing has left no survival ceiling, a DECIDE whose survival
+    /// sizing the router also refuses must leave none, and no gross-raising
+    /// order may pass. The DECIDE refusal arm called `release_nothing`
+    /// unconditionally after the reseed arm had been fixed, so this exact
+    /// sequence turned "refuse all new gross" into "stand behind the book and
+    /// everything held for it": with a hold on the book, an order inside the
+    /// hold was admitted against a ceiling no routing derived.
+    ///
+    /// Mutation: restore the unconditional `release_nothing` in DECIDE's
+    /// refusal arm — the ceiling assertion fires, and so would the order.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_after_a_policy_change_seeds_no_ceiling_and_admits_no_gross()
+     {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        // Capital held on the book, so the figure the unconditional call
+        // wrote stands behind an order: gross plus this hold admits a buy
+        // inside it, where no ceiling admits none.
+        platform
+            .reservations
+            .reserve(
+                "standing-hold",
+                Decimal::from_int(20_000),
+                Timestamp::from_secs(1_760_000_000),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        let policy = *platform.governor.policy();
+        platform.set_survival_policy(policy);
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            None,
+            "premise: the policy change under a refused routing seeded nothing"
+        );
+        assert!(
+            book_standing(&platform, now) > Decimal::ZERO,
+            "premise: the book stands in something the unconditional call would have stood behind"
+        );
+
+        let outcome = platform.stage_decide(now);
+        assert!(
+            platform
+                .proposals
+                .last()
+                .expect("a refused construction still records its proposal")
+                .is_empty(),
+            "legs were sized under a survival routing the router refused"
+        );
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains(&format!(
+                    "the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+                ))),
+            "premise: the arm ran on the router's refusal: {:?}",
+            outcome.problems
+        );
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            None,
+            "a refused survival sizing seeded a ceiling where the policy change had left none"
+        );
+
+        let order = platform.order_from(
+            qip_core::ObjectId::from_string("AAPL"),
+            Side::Buy,
+            Decimal::from_int(10),
+            Decimal::from_int(100),
+            "prop-unrouted",
+            vec!["HYP-AAPL".to_string()],
+            now,
+        );
+        let refusal = platform
+            .submit_order(order, now)
+            .expect_err("a gross-raising order passed a survival ceiling no routing derived");
+        assert!(
+            refusal
+                .message()
+                .contains(crate::survival::SURVIVAL_LIMIT_NAME),
+            "refused for another reason: {}",
+            refusal.message()
+        );
+    }
+
+    /// Second round-81 review, R12-RISK-3022: a standing ceiling below what
+    /// the book stands in is not raised by a DECIDE whose survival sizing the
+    /// router refuses. A ceiling below the book is what a construction
+    /// leaves when the book grew after it; the unconditional `release_nothing`
+    /// raised it to the book, so the refusal of the routing loosened the
+    /// control it refused to derive.
+    ///
+    /// Mutation: restore the unconditional `release_nothing` in DECIDE's
+    /// refusal arm — the ceiling is raised to the book and the assertion
+    /// fires.
+    #[test]
+    fn a_survival_sizing_the_router_refuses_never_raises_a_standing_ceiling_below_the_book() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        platform
+            .reservations
+            .reserve(
+                "standing-hold",
+                Decimal::from_int(20_000),
+                Timestamp::from_secs(1_760_000_000),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        // A ceiling of a quarter of the hold, below the book's figure.
+        platform
+            .governor
+            .release_nothing(Decimal::ZERO, Decimal::from_int(5_000));
+        let below = platform
+            .survival_gross_ceiling()
+            .expect("premise: a ceiling stands");
+        let book = book_standing(&platform, now);
+        assert!(
+            below < book,
+            "premise: the ceiling ({below}) sits below the book ({book})"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+
+        let outcome = platform.stage_decide(now);
+        assert!(
+            outcome
+                .problems
+                .iter()
+                .any(|problem| problem.contains(&format!(
+                    "the unit test's router refuses '{SURVIVAL_CEILING_SUBJECT}'"
+                ))),
+            "premise: the arm ran on the router's refusal: {:?}",
+            outcome.problems
+        );
+        assert_eq!(
+            platform.survival_gross_ceiling(),
+            Some(below),
+            "a refused survival sizing raised a standing ceiling toward the book"
+        );
+    }
+
+    /// Round-81 review, R12-RISK-3022: a sign-off the router refuses signs
+    /// nothing, so nothing is releasable and no order exists. Unreachable and
+    /// untested until the `#[cfg(test)]` seam. Fails if the refused arm takes
+    /// the two signatures anyway, which would put a risk and a compliance
+    /// approval on a decision no deterministic routing stood behind.
+    #[test]
+    fn a_sign_off_the_router_refuses_signs_nothing_and_releases_nothing() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let correlation = CorrelationId::from_string("corr-refused-sign-off");
+        // Premise: without the refusal this book is signed and released.
+        let mut control = two_sizeable_theses();
+        control.stage_decide(now);
+        control.stage_act(now, &correlation);
+        assert!(
+            control
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "premise: an unrefused sign-off signs and releases this book"
+        );
+
+        let mut platform = two_sizeable_theses();
+        platform.stage_decide(now);
+        let drafted = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!drafted.is_empty(), "premise: legs were sized");
+        assert!(
+            matches!(drafted.status(), ProposalStatus::Draft),
+            "premise: the sized proposal is a draft"
+        );
+        platform.refuse_book_decision(SIGN_OFF_SUBJECT);
+        let outcome = platform.stage_act(now, &correlation);
+
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .all(|proposal| matches!(proposal.status(), ProposalStatus::Draft)),
+            "a proposal left draft under a sign-off the router refused: {:?}",
+            platform
+                .proposals
+                .iter()
+                .map(|proposal| proposal.status().as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(platform.orders.orders().count(), 0, "an order exists");
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::SignOff),
+            None,
+            "a gate was recorded for a sign-off the router refused"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| problem.starts_with(
+                "no proposal was signed off: the sign-off could not be routed as a deterministic \
+                 decision ("
+            )),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
+        );
+    }
+
+    /// Round-81 review, R12-RISK-3022: a release the router refuses releases
+    /// nothing. The proposals stay approved, no order is built from them, and
+    /// the reason reaches the report. Unreachable and untested until the
+    /// `#[cfg(test)]` seam. Fails if the refused arm advances a proposal or
+    /// submits an order.
+    #[test]
+    fn a_release_the_router_refuses_releases_nothing_and_leaves_the_signed_proposal_approved() {
+        let now = Timestamp::from_secs(1_760_000_100);
+        let mut platform = two_sizeable_theses();
+        platform.stage_decide(now);
+        assert!(
+            !platform
+                .proposals
+                .last()
+                .expect("a proposal is recorded")
+                .is_empty(),
+            "premise: legs were sized"
+        );
+        platform.refuse_book_decision(RELEASE_SUBJECT);
+        let outcome = platform.stage_act(now, &CorrelationId::from_string("corr-refused-release"));
+
+        assert!(
+            platform
+                .hard_limit_routing(HardLimitDecision::SignOff)
+                .is_some(),
+            "premise: the sign-off ran under a gate: {:?}",
+            outcome.problems
+        );
+        assert!(
+            !platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "a proposal was released under a routing the router refused"
+        );
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Approved { .. })),
+            "the signed proposal did not stay approved: {:?}",
+            outcome.problems
+        );
+        assert_eq!(platform.orders.orders().count(), 0, "an order exists");
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::Release),
+            None,
+            "a gate was recorded for a release the router refused"
+        );
+        assert!(
+            outcome.problems.iter().any(|problem| problem
+                .starts_with("the release could not be routed as a deterministic decision (")),
+            "the refusal did not reach the stage's record: {:?}",
+            outcome.problems
         );
     }
 
@@ -37914,14 +39361,14 @@ mod user_ledger_tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::{Limit, LimitKind, LimitSet};
 
-    const CELL: &str = "cell-lon-1";
+    pub(super) const CELL: &str = "cell-lon-1";
     const INSTRUMENT: &str = "obj-AAA";
 
-    fn start() -> Timestamp {
+    pub(super) fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
     }
 
-    fn platform() -> Platform {
+    pub(super) fn platform() -> Platform {
         let mut universe = Universe::new();
         universe
             .insert(
@@ -37952,7 +39399,12 @@ mod user_ledger_tests {
     /// One order sent and filled whole for a single strategy, as the cell
     /// reports it: the order registered as sent and the venue's fill beside
     /// it, attributed entirely to `strategy`.
-    fn report(order_id: &str, side: BookSide, quantity: Decimal, price: Decimal) -> CellReport {
+    pub(super) fn report(
+        order_id: &str,
+        side: BookSide,
+        quantity: Decimal,
+        price: Decimal,
+    ) -> CellReport {
         let strategy = StrategyId::new("alpha");
         let order = DeltaOrder {
             order_id: order_id.to_string(),
@@ -38067,6 +39519,244 @@ mod user_ledger_tests {
             platform.capture_problems.is_empty(),
             "nothing was left unjournalled: {:?}",
             platform.capture_problems
+        );
+    }
+}
+
+#[cfg(test)]
+mod book_decision_refusal_tests {
+    //! Round-81 review, R12-RISK-3022: the arms that answer a book decision
+    //! the cost router refuses, for the survival reseed and the
+    //! reconciliation halt. Unit tests because the refusal can only be
+    //! provoked through `Platform::refuse_book_decision`, which is
+    //! `#[cfg(test)]` on purpose: `Router::default` refuses nothing a kernel
+    //! subject can be, so these arms ran in no test and no deployment before
+    //! the seam existed. The DECIDE and ACT arms are in `decide_tests`, beside
+    //! the fixtures that size and release a book.
+
+    use super::user_ledger_tests::{CELL, platform, report, start};
+    use super::*;
+    use qip_core::dec;
+
+    /// The figure a refused reseed may lower the ceiling to: the book's
+    /// gross and what is held against it, as the arm computes it.
+    fn standing(platform: &Platform) -> Decimal {
+        RiskState::from_figures(&platform.aggregates)
+            .gross_exposure
+            .abs()
+            .checked_add(
+                platform
+                    .reservations
+                    .reserved_total()
+                    .checked_sub(platform.yield_parked(start()))
+                    .unwrap_or(Decimal::ZERO),
+            )
+            .expect("the book's standing figure is representable")
+    }
+
+    /// A platform standing in a settled cell fill, so the book has a gross a
+    /// refused reseed would otherwise have stood behind.
+    fn holding_a_book() -> Platform {
+        let mut platform = platform();
+        platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("premise: the fill is ingested");
+        assert!(
+            standing(&platform) > Decimal::ZERO,
+            "premise: the book stands in something"
+        );
+        platform
+    }
+
+    /// At assembly the governor holds no ceiling, which the survival limit
+    /// refuses every gross-raising order on. A refused routing at the reseed
+    /// `Platform::new` ends with must leave it so. Until the round-81 fix the
+    /// arm called `release_nothing` unconditionally and turned "nothing
+    /// seeded" into "stand behind the whole book" — a router refusal that
+    /// loosened the one control it was refusing to derive. Also through
+    /// `set_survival_policy`, the public road to the same fresh governor.
+    #[test]
+    fn a_reseed_the_router_refuses_leaves_a_ceiling_that_was_never_seeded_unseeded() {
+        let mut platform = holding_a_book();
+        // The governor exactly as `Platform::new` holds it before its last
+        // line, `reseed_survival_ceiling(now)`.
+        platform.governor =
+            crate::survival::SurvivalGovernor::with_policy(*platform.governor.policy());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "premise: nothing has been seeded"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a refused reseed seeded a ceiling where there was none"
+        );
+
+        let policy = *platform.governor.policy();
+        platform.set_survival_policy(policy);
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a policy change under a refused routing seeded a ceiling"
+        );
+    }
+
+    /// A standing ceiling may only fall on a refused reseed. One below the
+    /// book — what a construction leaves when the book grew after it — stays
+    /// where it is, and one above the book falls to it. Fails if the arm
+    /// raises the lower ceiling to the book, which is what the unconditional
+    /// `release_nothing` did, or stops lowering the higher one.
+    #[test]
+    fn a_reseed_the_router_refuses_never_raises_a_standing_ceiling_and_lowers_one_above_the_book() {
+        let mut platform = holding_a_book();
+        let book = standing(&platform);
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+
+        platform
+            .governor
+            .release_nothing(Decimal::ZERO, dec!("1000"));
+        let below = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: a ceiling stands");
+        assert!(
+            below < book,
+            "premise: the ceiling ({below}) sits below the book ({book})"
+        );
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(below),
+            "a refused reseed raised the ceiling"
+        );
+
+        let raised = book.checked_mul(dec!("10")).expect("representable");
+        platform.governor.release_nothing(Decimal::ZERO, raised);
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(raised),
+            "premise: the ceiling sits above the book"
+        );
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            Some(book),
+            "a refused reseed left a ceiling above what the book stands in"
+        );
+    }
+
+    /// The overflow branch of the refused reseed: where the book's gross plus
+    /// what is held against it cannot be represented, a standing ceiling
+    /// falls to none — which the survival limit refuses every gross-raising
+    /// order on — rather than staying where it stood. Untested until the
+    /// second round-81 review, which is how a branch that decides "this
+    /// figure is unknowable, so stand behind nothing" can quietly become
+    /// "this figure is unknowable, so keep the old release".
+    ///
+    /// Mutation: make the `(Some(_), None)` arm of
+    /// `lower_survival_ceiling_to_the_book` answer `false` — the seeded
+    /// ceiling survives the overflow and the assertion fires.
+    #[test]
+    fn a_reseed_the_router_refuses_over_a_book_whose_figure_overflows_leaves_no_ceiling() {
+        let mut platform = holding_a_book();
+        let seeded = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: assembly seeded a ceiling");
+        // Hold the largest representable amount, so the book's gross plus
+        // the hold overflows.
+        platform.reservations =
+            ReservationLedger::new(Decimal::MAX).expect("a ledger over the largest balance");
+        platform
+            .reservations
+            .reserve(
+                "unrepresentable",
+                Decimal::MAX,
+                start(),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        assert!(
+            RiskState::from_figures(&platform.aggregates)
+                .gross_exposure
+                .abs()
+                .checked_add(
+                    platform
+                        .reservations
+                        .reserved_total()
+                        .checked_sub(platform.yield_parked(start()))
+                        .unwrap_or(Decimal::ZERO),
+                )
+                .is_none(),
+            "premise: the book's figure overflows"
+        );
+        assert!(
+            platform.governor.gross_ceiling() == Some(seeded),
+            "premise: the ceiling still stands at the seed"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a refused reseed over an unrepresentable book kept a ceiling standing"
+        );
+    }
+
+    /// A cell report whose reconciliation halt the router refuses to route is
+    /// not read unhalted: the platform halts globally through the monitor,
+    /// and the report is refused before anything settles. Unreachable and
+    /// untested until the `#[cfg(test)]` seam. Fails if the arm returns
+    /// without halting, or reads the report under a routing it never got.
+    #[test]
+    fn a_cell_report_whose_halt_cannot_be_routed_halts_the_platform_and_is_refused() {
+        // Premise: the report itself is admissible when nothing refuses.
+        let mut control = platform();
+        control
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect("premise: the same report is ingested when the halt is routed");
+
+        let mut platform = platform();
+        assert!(
+            !platform.autonomy.kill_switch().is_globally_tripped(),
+            "premise: the platform is not halted"
+        );
+        platform.refuse_book_decision(format!("reconciliation halt for {CELL}"));
+        let error = platform
+            .ingest_cell_report(
+                report("ord-1", BookSide::Ask, dec!("100"), dec!("50")),
+                start(),
+            )
+            .expect_err("a report was read under a halt the router refused to route");
+        assert!(
+            error
+                .message()
+                .contains(&format!("refuses 'reconciliation halt for {CELL}'")),
+            "refused for another reason: {}",
+            error.message()
+        );
+        assert!(
+            platform.autonomy.kill_switch().is_globally_tripped(),
+            "the platform was not halted when the halt could not be routed"
+        );
+        assert_eq!(
+            platform.user_ledger().fills_journalled(),
+            0,
+            "the refused report's fill was settled"
+        );
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::ReconciliationHalt),
+            None,
+            "a gate was recorded for a halt the router refused"
         );
     }
 }
@@ -38308,9 +39998,16 @@ mod central_sizing_tests {
         card.stage = ModelStage::Production;
         card.drift_threshold = 0.2;
         card.drift_score = 0.1;
+        // R12-MODEL-4021: a production card stands only where it was
+        // admitted; this one is staged as the log's readmission would.
+        card.artifact_digest = Some("0".repeat(64));
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &"0".repeat(64),
+        );
         let mut registry = ModelRegistry::new();
         registry
-            .register(card)
+            .readmit_on_journaled_admission(card, admission)
             .expect("an empty registry admits a card");
         platform.observe_model_drift(&registry);
         assert!(platform.drifted_models().is_empty());

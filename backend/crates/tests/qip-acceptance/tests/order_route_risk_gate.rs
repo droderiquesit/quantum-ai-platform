@@ -936,32 +936,18 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
         .find("#[cfg(test)]")
         .map_or(source.as_str(), |at| &source[..at]);
 
-    // Each function: from one `fn ` item start to the next.
-    let starts: Vec<usize> = production
-        .match_indices("    pub fn ")
-        .chain(production.match_indices("    fn "))
-        .map(|(at, _)| at)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // Each function at any visibility — `pub(crate) fn`, `const fn` and the
+    // rest split an item as `fn` does — and a limit check by either name:
+    // `PreTradeChecker::check` is the same evaluation as
+    // `check_with_working`, and a method reaching it would bypass nothing a
+    // scan for only one name could see.
     let mut checking = Vec::new();
     let mut ungated = Vec::new();
-    for (index, start) in starts.iter().enumerate() {
-        let end = starts.get(index + 1).copied().unwrap_or(production.len());
-        let item = &production[*start..end];
-        if !item.contains(".check_with_working(") {
+    for (name, item) in function_items(production) {
+        if !item.contains(".check_with_working(") && !item.contains(".check(") {
             continue;
         }
-        let name = item
-            .trim_start()
-            .trim_start_matches("pub ")
-            .trim_start_matches("fn ")
-            .split('(')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let signature = &item[..item.find('{').unwrap_or(item.len())];
-        if !demands_the_gate(signature) {
+        if !demands_the_gate(signature_of(item)) {
             ungated.push(name.clone());
         }
         checking.push(name);
@@ -980,11 +966,13 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
          `Platform::determine_pretrade(..)?.gate()` (R12-RISK-3022, ADR 0430)"
     );
 
-    // A literal is the struct name after `=` or a closure's `|`; the
-    // declaration, the `impl` and a `-> SubmissionResult {` return type are
-    // not results.
-    let literals = production.matches("= SubmissionResult {").count()
-        + production.matches("| SubmissionResult {").count();
+    // Every `SubmissionResult {` is a literal except the declaration, the
+    // `impl` and a `-> SubmissionResult {` return type, so a literal after
+    // `return`, `Ok(` or anything else is counted too.
+    let literals = production.matches("SubmissionResult {").count()
+        - production.matches("pub struct SubmissionResult {").count()
+        - production.matches("impl SubmissionResult {").count()
+        - production.matches("-> SubmissionResult {").count();
     assert!(
         literals > 0,
         "premise: the manager builds submission results"
@@ -996,5 +984,1086 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
         literals + 1,
         "every SubmissionResult the manager builds, and the ladder admission, must carry the \
          gate's rationale"
+    );
+}
+/// Whether `line` declares a function, at any visibility and with any of the
+/// qualifiers Rust allows before `fn`, and its name if so.
+///
+/// The order-manager scan once split items only on `    pub fn ` and
+/// `    fn `, so a `pub(crate) fn`, `pub(super) fn` or `const fn` written after
+/// `OrderManager::submit` was read as part of `submit`, and an ungated limit
+/// check inside it passed under `submit`'s gate (round 80's review).
+fn function_name(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        rest = after.trim_start();
+        if let Some(after) = rest.strip_prefix('(') {
+            rest = after.split_once(')')?.1.trim_start();
+        }
+    }
+    for qualifier in ["const ", "async ", "unsafe ", "extern \"C\" "] {
+        if let Some(after) = rest.strip_prefix(qualifier) {
+            rest = after.trim_start();
+        }
+    }
+    let rest = rest.strip_prefix("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every function in `source`, as its name and its text from the line that
+/// declares it to the line before the next declaration.
+fn function_items(source: &str) -> Vec<(String, &str)> {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if let Some(name) = function_name(line) {
+            starts.push((offset, name));
+        }
+        offset += line.len();
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, (start, name))| {
+            let end = starts
+                .get(index + 1)
+                .map_or(source.len(), |(next, _)| *next);
+            (name.clone(), &source[*start..end])
+        })
+        .collect()
+}
+
+/// A function's signature: its text up to the brace that opens its body.
+fn signature_of(item: &str) -> &str {
+    &item[..item.find('{').unwrap_or(item.len())]
+}
+
+/// `code` with the text of every function blanked — from the line that
+/// declares it through the brace that closes its body, or the `;` that ends
+/// a declaration with none — newlines kept. What is left is the item-level
+/// text no function's item holds: `const`s, `static`s, `impl` and trait
+/// headers, `use` lines, macro bodies.
+///
+/// [`function_items`] starts each item at a declaration line, so the text
+/// before a file's first function belongs to no item, and text between two
+/// functions belongs to the one above it. A module `const RELEASE: fn(..) =
+/// Proposal::release;` at the top of a file, called as `RELEASE(p, now)`
+/// from anywhere, was therefore invisible to the one-caller scan, and an
+/// associated `const` placed just after the one allowed caller was read as
+/// that caller's own text (second round-81 review). Assumes [`code_only`]
+/// text, so no brace or `;` sits inside a comment or a literal.
+fn outside_functions(code: &str) -> String {
+    let bytes = code.as_bytes();
+    let mut blank = vec![false; bytes.len()];
+    let mut offset = 0;
+    let mut covered = 0;
+    for line in code.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if start < covered || function_name(line).is_none() {
+            continue;
+        }
+        // The body opens at the first `{` outside the signature's `()` and
+        // `[]`; a `;` there first ends a declaration with no body.
+        let mut nesting = 0usize;
+        let mut braces = 0usize;
+        let mut end = bytes.len();
+        for (at, &byte) in bytes.iter().enumerate().skip(start) {
+            match byte {
+                b'(' | b'[' if braces == 0 => nesting += 1,
+                b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
+                b';' if braces == 0 && nesting == 0 => {
+                    end = at + 1;
+                    break;
+                }
+                b'{' if nesting == 0 || braces > 0 => braces += 1,
+                b'}' if braces > 0 => {
+                    braces -= 1;
+                    if braces == 0 {
+                        end = at + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for flag in &mut blank[start..end] {
+            *flag = true;
+        }
+        covered = end;
+    }
+    code.char_indices()
+        .map(|(at, c)| if blank[at] && c != '\n' { ' ' } else { c })
+        .collect()
+}
+
+#[test]
+fn the_function_splitter_reads_every_visibility_and_qualifier() {
+    let source = "    pub fn a(gate: &DeterministicGate) {\n        x.check(y);\n    }\n\
+                  \x20   pub(crate) fn b() {\n        x.check(y);\n    }\n\
+                  \x20   const fn c() {}\n    pub(super) async fn d() {}\n    fn e() {}\n";
+    let names: Vec<String> = function_items(source)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, ["a", "b", "c", "d", "e"]);
+    let (_, b) = &function_items(source)[1];
+    assert!(
+        !demands_the_gate(signature_of(b)),
+        "b's item must not inherit a's gate"
+    );
+}
+
+/// The kernel functions that make a book-level hard-limit decision, and the
+/// method by which each one makes it (R12-RISK-3022): the function, the type
+/// that owns the method, the method's name, and how many arguments a call of
+/// it takes after the receiver.
+///
+/// Each is the only caller of its method in the kernel's production source, and
+/// each must demand `gate: &DeterministicGate` by signature and record the
+/// gate's rationale. The calls that only *restrict* — `Proposal::veto`,
+/// `SurvivalGovernor::release_nothing`, which lowers the survival ceiling to
+/// what the book stands in — are deliberately not here: a restriction needs
+/// no witness, and demanding one would let a router refusal stop a control
+/// from tightening.
+///
+/// Matched by structure, not by receiver (round-81 review). The scan once
+/// looked for `self.governor.size(` and `proposal.approve(` as text, so
+/// `p.approve(..)` in a loop, a rebinding `g.size(..)`, or a path call
+/// `Proposal::release(p, now)` was a second caller it could not see. Now the
+/// method is matched as a delimited token on any receiver and in path form,
+/// and the argument count is what tells it from a same-named method of
+/// another type — `ReservationLedger::release(id, now)` takes two,
+/// `Proposal::release(now)` one — because the count is part of the
+/// signature and a receiver's name is not.
+const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 4] = [
+    ("size_survival", "SurvivalGovernor", "size", 5),
+    ("seed_survival_ceiling", "SurvivalGovernor", "seed", 4),
+    ("sign_off_drafts", "Proposal", "approve", 2),
+    ("advance_released", "Proposal", "release", 1),
+];
+
+/// Production text with every comment and the contents of every string and
+/// character literal removed, line structure kept, so a method named in a
+/// doc comment or an error message neither satisfies nor trips a scan.
+/// String state is carried across lines, because a message continued with a
+/// trailing `\\` is still a string on the next line.
+fn code_only(source: &str) -> String {
+    let production = qip_acceptance::production_text(source);
+    let chars: Vec<char> = production.chars().collect();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(production.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if c == '/' && next == Some('*') {
+            let mut depth = 0usize;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        if c == 'r' && (i == 0 || chars[i - 1] == 'b' || !ident(chars[i - 1])) {
+            let mut hashes = 0;
+            while chars.get(i + 1 + hashes) == Some(&'#') {
+                hashes += 1;
+            }
+            if chars.get(i + 1 + hashes) == Some(&'"') {
+                out.push_str("\"\"");
+                i += 2 + hashes;
+                while i < chars.len() {
+                    if chars[i] == '"' && (1..=hashes).all(|k| chars.get(i + k) == Some(&'#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        if c == '"' {
+            out.push_str("\"\"");
+            i += 1;
+            while i < chars.len() {
+                match chars[i] {
+                    '\\' => {
+                        if chars.get(i + 1) == Some(&'\n') {
+                            out.push('\n');
+                        }
+                        i += 2;
+                    }
+                    '"' => {
+                        i += 1;
+                        break;
+                    }
+                    '\n' => {
+                        out.push('\n');
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        if c == '\'' {
+            // A character literal, `'x'` or an escape; a lifetime has no
+            // closing quote and is left as code.
+            let close = if next == Some('\\') {
+                chars
+                    .get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&ch| ch == '\''))
+                    .map(|at| i + 3 + at)
+            } else {
+                (chars.get(i + 2) == Some(&'\'')).then_some(i + 2)
+            };
+            if let Some(close) = close {
+                out.push_str("' '");
+                i = close + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Every offset where `token` begins as a whole identifier, so `release`
+/// is not found inside `release_nothing` nor `approve` inside `approve_all`.
+fn token_offsets(text: &str, token: &str) -> Vec<usize> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    text.match_indices(token)
+        .filter(|(at, _)| {
+            let before = text[..*at].chars().next_back();
+            let after = text[at + token.len()..].chars().next();
+            !before.is_some_and(ident) && !after.is_some_and(ident)
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// How many arguments the call whose parenthesis opens `text` passes: commas
+/// at the outermost depth of `()`, `[]` and `{}` and outside every generic
+/// argument list, a trailing comma not counted. `None` if the parenthesis
+/// never closes. Closure parameters written directly as an argument would be
+/// miscounted; none of the methods held here takes a closure.
+///
+/// A `<` opens a generic list where an expression can hold one: after `::`
+/// (a turbofish, `BTreeMap::<A, B>::new()`), at the start of an argument (a
+/// qualified path, `<T as Default>::default()`), or inside a list already
+/// open. Anywhere else it is a comparison or a shift, and a `>` closes only an
+/// open list and never as part of `->`. Without this a turbofish comma was
+/// counted as an argument, so `p.approve(now, BTreeMap::<A, B>::new())` read
+/// as three arguments and was not taken for the two-argument sign-off
+/// (second round-81 review).
+fn call_arity(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut generics = 0usize;
+    let mut commas = 0usize;
+    let mut since_comma = false;
+    let mut previous: Option<char> = None;
+    for c in text.chars() {
+        let generic_open = generics > 0 || matches!(previous, Some(':' | '(' | '[' | '{' | ','));
+        match c {
+            '<' if depth >= 1 && generic_open => {
+                generics += 1;
+                since_comma = true;
+            }
+            '>' if generics > 0 && previous != Some('-') => {
+                generics -= 1;
+                since_comma = true;
+            }
+            '(' | '[' | '{' => {
+                depth += 1;
+                if depth > 1 {
+                    since_comma = true;
+                }
+            }
+            ')' | ']' | '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(commas + usize::from(since_comma));
+                }
+                since_comma = true;
+            }
+            ',' if depth == 1 && generics == 0 => {
+                commas += 1;
+                since_comma = false;
+            }
+            c if depth >= 1 && !c.is_whitespace() => since_comma = true,
+            _ => {}
+        }
+        if !c.is_whitespace() {
+            previous = Some(c);
+        }
+    }
+    None
+}
+
+/// The argument count, on the turbofish and qualified-path forms a
+/// bracket-only count read wrong, and on the comparisons and shifts it must
+/// not take for generics. Mutation: count commas inside a generic list again
+/// (drop `&& generics == 0`) — the turbofish cases read one argument too
+/// many and the sign-off with a turbofish argument is not found.
+#[test]
+fn the_arity_count_reads_a_turbofish_comma_as_part_of_one_argument() {
+    assert_eq!(
+        call_arity("(now, BTreeMap::<String, Vec<u8>>::new())"),
+        Some(2)
+    );
+    assert_eq!(call_arity("(now, Vec::<(u8, u8)>::new(), x)"), Some(3));
+    assert_eq!(call_arity("(now, Vec::<fn(u8, u8) -> u8>::new())"), Some(2));
+    assert_eq!(
+        call_arity("(<Vec<u8> as Default>::default(), now)"),
+        Some(2)
+    );
+    // An arrow's `>` closes no generic list: with a comma after the arrow
+    // at the generic list's own depth, reading `->` as a close would count
+    // the comma as a third argument and miss a second sign-off caller.
+    assert_eq!(
+        call_arity("(now, HashMap::<fn() -> u8, u8>::new())"),
+        Some(2)
+    );
+    // A qualified path opening an argument is a generic list whose comma
+    // sits at the list's own depth; without the rule that `<` after `(` or
+    // `,` opens one, that comma is counted as an argument.
+    assert_eq!(
+        call_arity("(<HashMap<A, B> as Default>::default(), now)"),
+        Some(2)
+    );
+    assert_eq!(call_arity("(a < b, c > d)"), Some(2));
+    assert_eq!(call_arity("(x << 2, y >> 1, z)"), Some(3));
+    assert_eq!(call_arity("(f::<A, B>(x), y,)"), Some(2));
+    let code = code_only(
+        "fn f() {\n    p.approve(now, BTreeMap::<String, String>::new());\n    \
+         Proposal::release(&mut p, HashMap::<A, B>::default());\n}\n",
+    );
+    assert_eq!(
+        reaches(&code, "approve", 2),
+        1,
+        "a sign-off with a turbofish argument was not found"
+    );
+    assert_eq!(
+        reaches(&code, "release", 1),
+        1,
+        "a path-form release with a turbofish argument was not found"
+    );
+}
+
+/// How many times `code` reaches `method`: a call on any receiver
+/// (`x.method(..)` with `arity` arguments), a path call (`Type::method(..)`
+/// with the receiver as an extra first argument), or a path naming it
+/// without calling it (`Type::method` handed on as a function value, counted
+/// whatever it is later called with). A bare token — the definition, a
+/// binding, a field — is not a call, and nor is a path segment with a name
+/// after it (`qip_confidential::release::Policy`): that is a module on the
+/// way to something else, which a method cannot be. A turbofish after the
+/// segment (`Type::method::<T>`) still names the method.
+fn reaches(code: &str, method: &str, arity: usize) -> usize {
+    token_offsets(code, method)
+        .into_iter()
+        .filter(|at| {
+            let before = code[..*at].trim_end();
+            let after = code[at + method.len()..].trim_start();
+            if before.ends_with("::") {
+                if let Some(rest) = after.strip_prefix("::")
+                    && !rest.trim_start().starts_with('<')
+                {
+                    return false;
+                }
+                !after.starts_with('(') || call_arity(after) == Some(arity + 1)
+            } else if before.ends_with('.') && !before.ends_with("..") {
+                after.starts_with('(') && call_arity(after) == Some(arity)
+            } else {
+                false
+            }
+        })
+        .count()
+}
+
+/// The matcher, on a fixture that holds each evasion the receiver-spelled
+/// scan let through and each neighbour it must not take for a caller.
+/// Mutations: match `self.governor.size(` as text again, or drop the
+/// path-call arm of `reaches`, or the arity filter — each fails here.
+#[test]
+fn the_hard_limit_matcher_finds_any_receiver_and_path_calls_and_nothing_else() {
+    let fixture = "fn a() {\n    for p in &mut self.proposals { p.approve(now, vec![x]); }\n}\n\
+                   fn b() {\n    let g = &mut self.governor;\n    g.size(f, s, t, v, now);\n}\n\
+                   fn c() {\n    Proposal::release(&mut p, now);\n}\n\
+                   fn d() {\n    let f = SurvivalGovernor::seed;\n}\n\
+                   fn e() {\n    x.approve_all(now, v);\n    self.reservations.release(id, now);\n    \
+                   self.governor.release_nothing(g, h);\n    let s = config.seed;\n    \
+                   context.seed();\n    // p.approve(now, v)\n    m(\"p.release(now)\");\n}\n";
+    let code = code_only(fixture);
+    let items = function_items(&code);
+    let reached = |method: &str, arity: usize| -> Vec<String> {
+        items
+            .iter()
+            .filter(|(_, item)| reaches(item, method, arity) > 0)
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    assert_eq!(items.len(), 5, "premise: the fixture's five functions");
+    assert_eq!(reached("approve", 2), ["a"]);
+    assert_eq!(reached("size", 5), ["b"]);
+    assert_eq!(reached("release", 1), ["c"]);
+    assert_eq!(reached("seed", 4), ["d"]);
+}
+
+/// Who reaches each method of [`KERNEL_HARD_LIMIT_CALLS`] in `sources`,
+/// each a file's name and its [`code_only`] text.
+#[derive(Default)]
+struct HardLimitReach {
+    /// By `Owner::method`: every function that reaches it, by name, then
+    /// `{file}: item-level` for each file whose text outside any function
+    /// does.
+    found: BTreeMap<String, Vec<String>>,
+    /// Reachers that do not demand the gate by signature. Item-level text
+    /// has no signature, so a guarded method named there is always here.
+    ungated: Vec<String>,
+    /// Functions that take the gate and do not record its rationale.
+    unrecorded: Vec<String>,
+}
+
+fn hard_limit_reach(sources: &[(String, String)]) -> HardLimitReach {
+    let mut reach = HardLimitReach::default();
+    for (file, code) in sources {
+        for (name, item) in function_items(code) {
+            for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
+                if reaches(item, method, arity) == 0 {
+                    continue;
+                }
+                let call = format!("{owner}::{method}");
+                reach
+                    .found
+                    .entry(call.clone())
+                    .or_default()
+                    .push(name.clone());
+                if !demands_the_gate(signature_of(item)) {
+                    reach.ungated.push(format!("{name} ({call})"));
+                }
+                if !item.contains("gate.rationale().to_string()") {
+                    reach.unrecorded.push(format!("{name} ({call})"));
+                }
+            }
+        }
+        // A guarded method bound or called outside every function — a
+        // `const` or `static` holding it as a function value, an associated
+        // `const` in an `impl`, a macro body — is a caller no signature can
+        // gate, whoever later calls the binding.
+        let outside = outside_functions(code);
+        for (_, owner, method, arity) in KERNEL_HARD_LIMIT_CALLS {
+            if reaches(&outside, method, arity) == 0 {
+                continue;
+            }
+            let call = format!("{owner}::{method}");
+            let site = format!("{file}: item-level");
+            reach
+                .found
+                .entry(call.clone())
+                .or_default()
+                .push(site.clone());
+            reach.ungated.push(format!("{site} ({call})"));
+        }
+    }
+    reach
+}
+
+/// The one-caller scan, on a fixture holding the evasions the function-only
+/// split let through (second round-81 review): a guarded method bound as a
+/// function value outside every function — a module `const` before the
+/// first function, a `static`, and an associated `const` placed just after
+/// the one allowed caller, where the split read it as that caller's own text
+/// — and then called through the binding from a function that never names
+/// the method. Each binding is reported as an ungated item-level caller,
+/// while a doc comment naming the method, a same-named method of another
+/// type, and a module of the same name in a `use` line are not — the last
+/// is `central/insights.rs`'s `use qip_confidential::release::{..}`, which
+/// the item-level scan read as `Proposal::release` until path segments were
+/// told apart from methods.
+///
+/// Mutations: drop the item-level arm of `hard_limit_reach` —
+/// `advance_released` looks like the only caller of `Proposal::release` and
+/// nothing reaches `seed` or `approve`; drop the path-segment exclusion in
+/// `reaches` — the `size` module is read as the method.
+#[test]
+fn the_one_caller_scan_sees_a_guarded_method_bound_outside_every_function() {
+    let fixture = "use crate::proposal::Proposal;\n\
+                   use qip_confidential::release::{Policy, Release};\n\
+                   use qip_layout::size::Bounds;\n\
+                   /// Proposal::release(p, now), named in a doc comment.\n\
+                   const SEED: fn(&mut SurvivalGovernor, F, Option<&W>, f64, Timestamp) = \
+                   SurvivalGovernor::seed;\n\
+                   static APPROVE: fn(&mut Proposal, Timestamp, Vec<String>) = Proposal::approve;\n\
+                   impl Platform {\n    \
+                   fn advance_released(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.routings.insert(gate.rationale().to_string());\n        \
+                   self.proposal.release(now);\n    }\n    \
+                   const RELEASE: fn(&mut Proposal, Timestamp) = Proposal::release;\n    \
+                   fn later(&mut self, now: Timestamp) {\n        \
+                   Self::RELEASE(&mut self.proposal, now);\n        \
+                   APPROVE(&mut self.proposal, now, Vec::new());\n        \
+                   self.reservations.release(id, now);\n    }\n}\n";
+    let reach = hard_limit_reach(&[("fixture.rs".to_string(), code_only(fixture))]);
+    let site = "fixture.rs: item-level".to_string();
+    // Premise: the allowed caller is found as a function, so the item-level
+    // entries below are added to a scan that still works.
+    assert_eq!(
+        reach.found.get("Proposal::release").map(Vec::as_slice),
+        Some(&["advance_released".to_string(), site.clone()][..]),
+        "the associated const after the allowed caller was read as that caller's text"
+    );
+    assert_eq!(
+        reach.found.get("SurvivalGovernor::seed").map(Vec::as_slice),
+        Some(&[site.clone()][..]),
+        "a module const before the first function was invisible"
+    );
+    assert_eq!(
+        reach.found.get("Proposal::approve").map(Vec::as_slice),
+        Some(&[site.clone()][..]),
+        "a static holding the method was invisible"
+    );
+    assert_eq!(
+        reach.ungated,
+        [
+            format!("{site} (SurvivalGovernor::seed)"),
+            format!("{site} (Proposal::approve)"),
+            format!("{site} (Proposal::release)"),
+        ],
+        "an item-level binding was not reported as a caller no gate holds"
+    );
+    assert!(reach.unrecorded.is_empty(), "{:?}", reach.unrecorded);
+    assert!(
+        !reach.found.contains_key("SurvivalGovernor::size"),
+        "a module named `size` in a `use` line was read as the method: {:?}",
+        reach.found.get("SurvivalGovernor::size")
+    );
+}
+
+/// R12-RISK-3022 beyond the order manager: the survival waterfall, the
+/// sign-off of a draft and the release of an approved proposal are each made
+/// only by a kernel function that demands, by signature, the deterministic
+/// gate only the cost router mints, and records its rationale.
+///
+/// The failure this prevents: until this change the three decisions were
+/// made inline in DECIDE and ACT with no routing at all — deterministic by
+/// the absence of a model in the call, not by anything a reader could check —
+/// so a second path to `Proposal::approve` or `SurvivalGovernor::size`
+/// written without asking the router compiled and ran exactly as well.
+#[test]
+fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
+    let mut kernel_files = Vec::new();
+    rust_files(
+        &crates_root().join("runtime/qip-kernel/src"),
+        &mut kernel_files,
+    );
+    assert!(
+        kernel_files.len() > 10,
+        "premise: the kernel's sources were found"
+    );
+    let sources: Vec<(String, String)> = kernel_files
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path).expect("kernel source is readable");
+            (path.display().to_string(), code_only(&source))
+        })
+        .collect();
+    let HardLimitReach {
+        found,
+        ungated,
+        unrecorded,
+    } = hard_limit_reach(&sources);
+    // Premise, and the exact placement: each method is reached by exactly the
+    // one function named for it, on any receiver and in path form, so a
+    // second caller is a failure here whether or not it took a gate.
+    for (function, owner, method, _) in KERNEL_HARD_LIMIT_CALLS {
+        let call = format!("{owner}::{method}");
+        assert_eq!(
+            found.get(&call).map(Vec::as_slice),
+            Some(&[function.to_string()][..]),
+            "`{call}` must be reached by `{function}` alone in the kernel's production source"
+        );
+    }
+    assert!(
+        ungated.is_empty(),
+        "these kernel functions make a hard-limit decision without demanding \
+         `gate: &DeterministicGate`: {ungated:?}. Take the gate from \
+         `Platform::determine_book_decision(..)?.gate()` (R12-RISK-3022, ADR 0430)"
+    );
+    assert!(
+        unrecorded.is_empty(),
+        "these kernel functions take the gate but do not record its rationale: {unrecorded:?}"
+    );
+}
+
+/// R12-RISK-3022 on the kill-switch path beyond `RiskMonitor::enforce`: no
+/// kernel production source trips the kill switch through the ungated
+/// `KillSwitch::trip_scope` or `trip_global`, and every kernel function that
+/// trips a scope under a gate demands that gate by signature.
+///
+/// The failure this prevents: the central plane halted a cell whose records
+/// did not reconcile with `kill_switch.trip_scope(..)`, a hard-limit decision
+/// made with no routing, and nothing distinguished it from an operator's
+/// trip. A kernel halt now goes through `trip_scope_under`, or through the
+/// monitor's `enforce`, which acts on a verdict the routed monitor gave.
+#[test]
+fn every_kernel_kill_switch_trip_demands_the_deterministic_gate() {
+    let mut kernel_files = Vec::new();
+    rust_files(
+        &crates_root().join("runtime/qip-kernel/src"),
+        &mut kernel_files,
+    );
+    let mut ungated_trips = Vec::new();
+    let mut gated = Vec::new();
+    let mut ungated = Vec::new();
+    // Every mention of the ungated trips as a delimited token, on any
+    // receiver, in path form (`KillSwitch::trip_scope(&mut switch, ..)`) or
+    // handed on as a function value. The scan once matched `.trip_scope(` as
+    // text, which a path call does not contain (round-81 review). The kernel
+    // defines neither name, so any mention in its code is a route to one.
+    for path in &kernel_files {
+        let source = std::fs::read_to_string(path).expect("kernel source is readable");
+        let code = code_only(&source);
+        for method in ["trip_scope", "trip_global"] {
+            let mentions = token_offsets(&code, method).len();
+            if mentions > 0 {
+                ungated_trips.push(format!("{} ({method} x{mentions})", path.display()));
+            }
+        }
+        for (name, item) in function_items(&code) {
+            if !token_offsets(item, "trip_scope_under").is_empty() {
+                if !demands_the_gate(signature_of(item)) {
+                    ungated.push(name.clone());
+                }
+                gated.push(name);
+            }
+        }
+    }
+    assert!(
+        ungated_trips.is_empty(),
+        "the kernel trips the kill switch without a deterministic gate: {ungated_trips:?}. \
+         Use `KillSwitch::trip_scope_under` with a gate from \
+         `Platform::determine_book_decision` (R12-RISK-3022)"
+    );
+    assert_eq!(
+        gated,
+        ["ingest"],
+        "premise: the central plane's ingest is the kernel's one gated trip"
+    );
+    assert!(
+        ungated.is_empty(),
+        "these kernel functions trip a scope under a gate they do not demand: {ungated:?}"
+    );
+}
+
+// --- the edge cell's pre-trade check (DECISION, R12-RISK-3022) -------------
+
+/// The crates that can put a model on a decision: the language-model crate,
+/// its providers, and the cost router, whose `Judged` arm names a model rung.
+///
+/// The edge cell's `CellRiskGate` calls `PreTradeChecker::check`, and a cell
+/// cannot hold a router-minted `DeterministicGate`: the router links
+/// `qip-ai`. So the cell's pre-trade check is held to never route to a model
+/// by its dependency closure instead — neither `qip-edge` nor the binary that
+/// hosts it links any of these, directly or through any crate they link.
+const MODEL_CRATES: [&str; 3] = ["qip-ai", "qip-language-providers", "qip-cost-router"];
+
+/// Each workspace crate's normal dependencies on other workspace crates, read
+/// from its `Cargo.toml`. Dev-dependencies are left out: they never reach the
+/// binary a node runs.
+fn workspace_dependencies() -> BTreeMap<String, BTreeSet<String>> {
+    let root = std::fs::read_to_string(crates_root().join("../Cargo.toml"))
+        .expect("the workspace manifest is readable");
+    let inherited = workspace_packages(&root);
+    assert!(
+        inherited.get("qip-ai").map(String::as_str) == Some("qip-ai"),
+        "premise: the workspace manifest's dependency table was read"
+    );
+    let mut manifests = BTreeMap::new();
+    for group in std::fs::read_dir(crates_root()).expect("the crates root is readable") {
+        let group = group.expect("a crate group").path();
+        let Ok(crates) = std::fs::read_dir(&group) else {
+            continue;
+        };
+        for krate in crates.flatten() {
+            let manifest = krate.path().join("Cargo.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let name = krate.file_name().to_string_lossy().to_string();
+            manifests.insert(name, normal_dependencies(&text, &inherited));
+        }
+    }
+    manifests
+}
+
+/// One dependency as a manifest declares it: the key it is written under,
+/// the `package = "…"` it renames, and whether it inherits the workspace's
+/// entry for that key.
+#[derive(Default)]
+struct Declared {
+    key: String,
+    package: Option<String>,
+    workspace: bool,
+}
+
+impl Declared {
+    /// The package that links: a rename's `package`, else the workspace's
+    /// package for an inherited key, else the key itself.
+    fn package(&self, inherited: &BTreeMap<String, String>) -> String {
+        self.package.clone().unwrap_or_else(|| {
+            self.workspace
+                .then(|| inherited.get(&self.key).cloned())
+                .flatten()
+                .unwrap_or_else(|| self.key.clone())
+        })
+    }
+}
+
+/// The table a manifest header opens, for the dependency scan.
+enum Table {
+    /// Not a table this scan reads.
+    Other,
+    /// `[dependencies]`, `[target.*.dependencies]` or
+    /// `[workspace.dependencies]`: one dependency per key.
+    Entries,
+    /// `[dependencies.name]` (or a target's, or the workspace's): one
+    /// dependency, its fields one per line.
+    Entry(Declared),
+}
+
+/// The line with a trailing `#` comment removed, outside a quoted string —
+/// a basic `"…"` or a literal `'…'` one, each closed only by its own quote,
+/// so a `'` inside `"it's"` closes nothing. A `#` inside a single-quoted
+/// value cut the line there while only `"` was read, and a `package` after
+/// it was lost.
+fn without_comment(line: &str) -> &str {
+    let mut quote: Option<char> = None;
+    for (at, c) in line.char_indices() {
+        match (c, quote) {
+            ('"' | '\'', None) => quote = Some(c),
+            (c, Some(open)) if c == open => quote = None,
+            ('#', None) => return &line[..at],
+            _ => {}
+        }
+    }
+    line
+}
+
+/// The key a manifest line opens with — `qip-ai` in `qip-ai = …` and in
+/// `qip-ai.workspace = true` — quotes removed.
+fn leading_key(line: &str) -> String {
+    line.trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+/// The quoted value of `field = "…"` or `field = '…'` inside `text`, as a
+/// delimited field. TOML takes either; reading only `"` let `models = {
+/// package = 'qip-ai' }` link the language-model crate under the key
+/// `models`, which the scan does not treat as a model crate (second round-81
+/// review).
+fn quoted_field(text: &str, field: &str) -> Option<String> {
+    for (at, _) in text.match_indices(field) {
+        let before = text[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            continue;
+        }
+        let rest = text[at + field.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        return rest[1..]
+            .split_once(quote)
+            .map(|(value, _)| value.to_string());
+    }
+    None
+}
+
+/// Whether `text` sets `workspace = true` (inline) or is `key.workspace = true`.
+fn inherits(text: &str) -> bool {
+    text.split([',', '{', '}'])
+        .map(|part| part.split_whitespace().collect::<String>())
+        .any(|part| part == "workspace=true" || part.ends_with(".workspace=true"))
+}
+
+/// What table `header` (between the brackets) opens.
+fn table_of(header: &str) -> Table {
+    let header = header.trim();
+    let rest = if let Some(target) = header.strip_prefix("target.") {
+        // A target spec is quoted (`'cfg(unix)'`, `"cfg(..)"`) or one bare
+        // segment (a triple, which holds no dot).
+        let after = match target.chars().next() {
+            Some(quote @ ('\'' | '"')) => target[1..]
+                .split_once(quote)
+                .map(|(_, after)| after.trim_start_matches('.')),
+            _ => target.split_once('.').map(|(_, after)| after),
+        };
+        let Some(after) = after else {
+            return Table::Other;
+        };
+        after
+    } else {
+        header.strip_prefix("workspace.").unwrap_or(header)
+    };
+    if rest == "dependencies" {
+        Table::Entries
+    } else if let Some(name) = rest.strip_prefix("dependencies.") {
+        Table::Entry(Declared {
+            key: name.trim_matches(['"', '\'']).to_string(),
+            ..Declared::default()
+        })
+    } else {
+        Table::Other
+    }
+}
+
+/// Every dependency `manifest` declares for its build, as declared: entries
+/// under `[dependencies]` and `[target.*.dependencies]`, each dependency
+/// given its own `[dependencies.name]` table, and the workspace's own
+/// `[workspace.dependencies]`.
+fn declared_dependencies(manifest: &str) -> Vec<Declared> {
+    let mut declared = Vec::new();
+    let mut table = Table::Other;
+    for line in manifest.lines() {
+        let line = without_comment(line).trim();
+        if line.starts_with('[') {
+            if let Table::Entry(entry) = std::mem::replace(&mut table, Table::Other) {
+                declared.push(entry);
+            }
+            table = table_of(line.trim_start_matches('[').trim_end_matches(']'));
+            continue;
+        }
+        match &mut table {
+            Table::Other => {}
+            Table::Entries => {
+                let key = leading_key(line);
+                if !key.is_empty() {
+                    declared.push(Declared {
+                        package: quoted_field(line, "package"),
+                        workspace: inherits(line),
+                        key,
+                    });
+                }
+            }
+            Table::Entry(entry) => {
+                if leading_key(line) == "package" {
+                    entry.package = quoted_field(line, "package");
+                }
+                if inherits(line) {
+                    entry.workspace = true;
+                }
+            }
+        }
+    }
+    if let Table::Entry(entry) = table {
+        declared.push(entry);
+    }
+    declared
+}
+
+/// The workspace manifest's `[workspace.dependencies]`, key to package, so a
+/// member's `key.workspace = true` resolves to what links even when the
+/// workspace renames it.
+fn workspace_packages(root: &str) -> BTreeMap<String, String> {
+    let mut packages = BTreeMap::new();
+    let mut in_workspace = false;
+    let mut kept = String::new();
+    for line in root.lines() {
+        let header = without_comment(line).trim();
+        if header.starts_with('[') {
+            in_workspace = header.starts_with("[workspace.dependencies");
+        }
+        if in_workspace {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    for entry in declared_dependencies(&kept) {
+        let package = entry.package.clone().unwrap_or_else(|| entry.key.clone());
+        packages.insert(entry.key, package);
+    }
+    packages
+}
+
+/// The `qip-*` packages a member manifest links for its build — by the
+/// package, not the key, so a rename (`models = { package = "qip-ai" }`) or a
+/// `[dependencies.qip-ai]` table is seen. The scan once read only keys under
+/// a `[dependencies]` header, and both forms passed it (round-81 review).
+fn normal_dependencies(manifest: &str, inherited: &BTreeMap<String, String>) -> BTreeSet<String> {
+    declared_dependencies(manifest)
+        .iter()
+        .map(|entry| entry.package(inherited))
+        .filter(|package| package.starts_with("qip-"))
+        .collect()
+}
+
+/// The manifest parser, on a fixture holding each form a key-only scan
+/// missed and each it must not take for a normal dependency. Mutations: read
+/// only `[dependencies]` headers again, or take the key over `package` —
+/// each fails here.
+#[test]
+fn the_dependency_scan_reads_tables_renames_and_inherited_renames() {
+    let inherited = BTreeMap::from([
+        ("qip-core".to_string(), "qip-core".to_string()),
+        ("lm".to_string(), "qip-language-providers".to_string()),
+    ]);
+    let manifest = "[package]\nname = \"x\"\n\n[dependencies]\nqip-core.workspace = true\n\
+                    router = { package = \"qip-cost-router\", path = \"../r\" } # renamed\n\
+                    lm = { workspace = true }\nserde = \"1\"\n\n\
+                    [dependencies.qip-ai]\npath = \"../qip-ai\"\n\n\
+                    [target.'cfg(unix)'.dependencies.models]\npackage = \"qip-models\"\n\n\
+                    [dev-dependencies]\nqip-dev-only = { path = \"../d\" }\n\n\
+                    [dev-dependencies.qip-dev-table]\npath = \"../e\"\n";
+    let found = normal_dependencies(manifest, &inherited);
+    let expected: BTreeSet<String> = [
+        "qip-ai",
+        "qip-core",
+        "qip-cost-router",
+        "qip-language-providers",
+        "qip-models",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
+}
+
+/// The manifest parser on single-quoted TOML strings, which a parser reading
+/// only `"` missed (second round-81 review): an inline rename, a rename in
+/// its own `[dependencies.name]` table, and an inline rename whose `package`
+/// follows a single-quoted value holding a `#`, which the comment stripper
+/// cut at while it read only `"`. A `'` inside a double-quoted value opens
+/// nothing, so the `#` after it is still inside that value.
+///
+/// Mutations: read only `"` in `quoted_field` (the three single-quoted
+/// renames fall back to keys outside `qip-*`); read only `"` in
+/// `without_comment` (the rename after the single-quoted `#` is lost); let
+/// either quote close the other (the rename after `it's#` is lost).
+#[test]
+fn the_dependency_scan_reads_single_quoted_package_renames() {
+    let inherited = BTreeMap::from([("qip-core".to_string(), "qip-core".to_string())]);
+    let manifest = "[package]\nname = 'x'\n\n\
+                    [dependencies]\nrouter = { package = 'qip-cost-router', path = '../r' }\n\
+                    hashed = { path = '../#h', package = 'qip-ai' } # renamed\n\
+                    apostrophe = { path = \"../it's#here\", package = \"qip-models\" }\n\
+                    qip-core.workspace = true\nserde = '1'\n\n\
+                    [dependencies.lm]\npackage = 'qip-language-providers'\npath = '../lm'\n";
+    let found = normal_dependencies(manifest, &inherited);
+    let expected: BTreeSet<String> = [
+        "qip-ai",
+        "qip-core",
+        "qip-cost-router",
+        "qip-language-providers",
+        "qip-models",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
+}
+
+/// Every model crate reachable from `root`, with the path that reaches it.
+fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Vec<String> {
+    let mut reached = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![vec![root.to_string()]];
+    while let Some(path) = stack.pop() {
+        let at = path.last().cloned().unwrap_or_default();
+        if !seen.insert(at.clone()) {
+            continue;
+        }
+        if MODEL_CRATES.contains(&at.as_str()) {
+            reached.push(path.join(" -> "));
+            continue;
+        }
+        for next in manifests.get(&at).into_iter().flatten() {
+            let mut longer = path.clone();
+            longer.push(next.clone());
+            stack.push(longer);
+        }
+    }
+    reached
+}
+
+#[test]
+fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
+    let manifests = workspace_dependencies();
+    // Premise: the manifests were read and the walk sees what it must. Every
+    // model crate is a workspace member, the cost router reaches `qip-ai`, and
+    // the cell links the crate whose checker it calls.
+    for model in MODEL_CRATES {
+        assert!(
+            manifests.contains_key(model),
+            "premise: {model} is a workspace crate"
+        );
+    }
+    assert!(
+        manifests["qip-cost-router"].contains("qip-ai"),
+        "premise: the cost router links the language-model crate"
+    );
+    assert!(
+        manifests["qip-edge"].contains("qip-risk-engine"),
+        "premise: the cell links the crate whose PreTradeChecker its risk gate calls"
+    );
+    assert!(
+        manifests["qip-edge-node"].contains("qip-edge"),
+        "premise: the node links the cell"
+    );
+
+    for root in ["qip-edge", "qip-edge-node"] {
+        let reached = model_reach(&manifests, root);
+        assert!(
+            reached.is_empty(),
+            "{root} can reach a crate that routes to a model, so the cell's pre-trade check \
+             is no longer held deterministic by its closure: {reached:?}"
+        );
+    }
+
+    // The same walk on a scratch copy of the manifest data with one model
+    // edge added two links below the cell: it must be found, or the clean
+    // result above is the walk failing to look.
+    let mut scratch = manifests.clone();
+    scratch
+        .get_mut("qip-risk")
+        .expect("qip-risk is a workspace crate")
+        .insert("qip-cost-router".to_string());
+    let reached = model_reach(&scratch, "qip-edge-node");
+    assert!(
+        reached
+            .iter()
+            .any(|path| path.ends_with("-> qip-risk -> qip-cost-router")),
+        "a model edge added below the cell went unseen: {reached:?}"
     );
 }

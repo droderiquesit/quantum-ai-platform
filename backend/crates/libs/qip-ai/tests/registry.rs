@@ -9,6 +9,95 @@ use qip_ai::registry::{
 use qip_core::{ModelId, Timestamp};
 use std::collections::BTreeMap;
 
+/// R12-MODEL-4021: `ModelRegistry::register` refuses a card at `Production`
+/// that the registry never admitted, because a card is plain data whose
+/// stage anyone can write. These tests start from a model already in
+/// production, which in a running process means a promotion the log
+/// recorded; they stage that as the restart path does, readmitting the card
+/// on the log's admission (tests may mint one; production may not). A card
+/// below production is registered as it is.
+trait AdmitForTest {
+    fn admit_for_test(&mut self, card: qip_ai::registry::ModelCard) -> qip_core::error::Result<()>;
+}
+
+impl AdmitForTest for qip_ai::registry::ModelRegistry {
+    fn admit_for_test(
+        &mut self,
+        mut card: qip_ai::registry::ModelCard,
+    ) -> qip_core::error::Result<()> {
+        if card.stage != qip_ai::registry::ModelStage::Production {
+            return self.register(card);
+        }
+        let digest = card
+            .artifact_digest
+            .get_or_insert_with(|| "0".repeat(64))
+            .clone();
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &digest,
+        );
+        self.readmit_on_journaled_admission(card, admission)
+    }
+}
+
+/// R12-MODEL-4021: `ModelRegistry::promote` is private, and production is
+/// entered only by `promote_artifact` spending a measured promotion
+/// clearance. These tests are about what a production card does, not about
+/// how it was measured, so they stage the promotion as the kernel would: a
+/// passing record on fixture bytes named for the reference, the clearance
+/// that record earns (tests may mint one; production may not), and the real
+/// `promote_artifact`, whose own refusals still apply.
+trait PromoteCleared {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()>;
+}
+
+impl PromoteCleared for qip_ai::registry::ModelRegistry {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()> {
+        let artifact = qip_ai::serving::ModelArtifact::new(
+            reference,
+            qip_ai::serving::ModelFormat::DistilledLinear,
+            serde_json::Value::String(format!("test fixture for {reference}")),
+        );
+        let tests = qip_ai::registry::PromotionTests {
+            artifact_digest: artifact.digest.clone(),
+            window: "test-fixture".to_string(),
+            rows: 1,
+            ran_at: at,
+            results: qip_ai::registry::PROMOTION_TESTS
+                .iter()
+                .map(|name| {
+                    (
+                        (*name).to_string(),
+                        qip_ai::registry::PromotionTest {
+                            passed: true,
+                            evidence: "test fixture".to_string(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        if self.get(reference).is_some() {
+            self.lodge_clearance(
+                qip_ai::registry::PromotionClearance::minted_by_measured_promotion_tests(
+                    reference,
+                    &tests,
+                    "test-fixture",
+                    None,
+                )?,
+            );
+        }
+        self.promote_artifact(&artifact, at).map(|_| ())
+    }
+}
+
 fn now() -> Timestamp {
     Timestamp::from_secs(1_760_000_000)
 }
@@ -105,8 +194,9 @@ fn foundation_models_never_decide_and_policies_and_ensembles_need_a_named_benchm
 /// the shadow stage. The restore path registers journaled cards, which
 /// carry the completed shadow they were promoted out of, and those are
 /// admitted. Mutation: delete the `self_fitted && stage == Production` check
-/// in `register` — the unshadowed card is registered and the first `is_err`
-/// fails.
+/// in `register` — the short-shadow card is readmitted and the second
+/// `is_err` fails (the first, a bare `register`, is now refused for want of
+/// an admission too, R12-MODEL-4021).
 #[test]
 fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_refused() {
     let mut card = eligible(ModelClass::Generic);
@@ -129,7 +219,7 @@ fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_ref
         evidence: vec!["round".to_string()],
     });
     assert!(
-        registry.register(short).is_err(),
+        registry.admit_for_test(short).is_err(),
         "an unfinished shadow is not a completed one"
     );
 
@@ -140,7 +230,7 @@ fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_ref
         last_round: now(),
         evidence: vec!["round".to_string(); MIN_SHADOW_ROUNDS as usize],
     });
-    registry.register(completed).unwrap();
+    registry.admit_for_test(completed).unwrap();
     assert_eq!(
         registry.len(),
         1,
@@ -150,11 +240,14 @@ fn a_self_fitted_card_registered_at_production_without_a_completed_shadow_is_ref
     let mut pipeline = eligible(ModelClass::Generic);
     pipeline.self_fitted = false;
     pipeline.version = "1.0.1".to_string();
-    registry.register(pipeline).unwrap();
+    // Readmitted on the log's admission like the restored card above: since
+    // R12-MODEL-4021 no card stands at Production on its own say-so, and the
+    // shadow rule is the self-fitted card's extra condition, not its only one.
+    registry.admit_for_test(pipeline).unwrap();
     assert_eq!(
         registry.len(),
         2,
-        "a pipeline-trained card is governed elsewhere"
+        "a pipeline-trained card is governed by its clearance, not by shadow"
     );
 }
 
@@ -221,7 +314,10 @@ fn a_trial_round_is_refused_when_blank_repeated_or_recorded_after_acceptance() {
     let mut accepted = accepted;
     accepted.name = accepted_reference.clone();
     let accepted_reference = accepted.reference();
-    assert!(registry.register(accepted).is_ok(), "premise: registers");
+    assert!(
+        registry.admit_for_test(accepted).is_ok(),
+        "premise: registers"
+    );
     assert!(
         registry
             .record_trial_round(&accepted_reference, TrialVenue::Paper, "late", at(100))
@@ -244,7 +340,7 @@ fn a_card_that_requires_a_trial_is_refused_by_the_registry_until_it_has_run_one(
     assert!(registry.register(card).is_ok(), "premise: registers");
     let at = |secs: i64| now().saturating_add(qip_core::Duration::from_secs(secs));
 
-    let untried = registry.promote(&reference, at(100));
+    let untried = registry.promote_cleared(&reference, at(100));
     assert!(
         untried.is_err_and(|e| e.message().contains("trial")),
         "a card that requires a trial was promoted with none"
@@ -259,7 +355,7 @@ fn a_card_that_requires_a_trial_is_refused_by_the_registry_until_it_has_run_one(
         let _ = registry.record_trial_round(&reference, TrialVenue::Paper, "paper", at(round));
     }
     assert!(
-        registry.promote(&reference, at(100)).is_err(),
+        registry.promote_cleared(&reference, at(100)).is_err(),
         "one round short of the trial was promoted"
     );
     let _ = registry.record_trial_round(
@@ -268,5 +364,5 @@ fn a_card_that_requires_a_trial_is_refused_by_the_registry_until_it_has_run_one(
         "paper",
         at(i64::from(MIN_TRIAL_ROUNDS)),
     );
-    assert!(registry.promote(&reference, at(100)).is_ok());
+    assert!(registry.promote_cleared(&reference, at(100)).is_ok());
 }

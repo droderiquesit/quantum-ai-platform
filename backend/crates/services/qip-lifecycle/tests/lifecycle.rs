@@ -53,6 +53,37 @@ use qip_observability::metrics::{Metrics, labels, names};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
+/// R12-MODEL-4021: `ModelRegistry::register` refuses a card at `Production`
+/// that the registry never admitted, because a card is plain data whose
+/// stage anyone can write. These tests start from a model already in
+/// production, which in a running process means a promotion the log
+/// recorded; they stage that as the restart path does, readmitting the card
+/// on the log's admission (tests may mint one; production may not). A card
+/// below production is registered as it is.
+trait AdmitForTest {
+    fn admit_for_test(&mut self, card: qip_ai::registry::ModelCard) -> qip_core::error::Result<()>;
+}
+
+impl AdmitForTest for qip_ai::registry::ModelRegistry {
+    fn admit_for_test(
+        &mut self,
+        mut card: qip_ai::registry::ModelCard,
+    ) -> qip_core::error::Result<()> {
+        if card.stage != qip_ai::registry::ModelStage::Production {
+            return self.register(card);
+        }
+        let digest = card
+            .artifact_digest
+            .get_or_insert_with(|| "0".repeat(64))
+            .clone();
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &digest,
+        );
+        self.readmit_on_journaled_admission(card, admission)
+    }
+}
+
 fn start() -> Timestamp {
     Timestamp::from_secs(1_700_000_000)
 }
@@ -906,7 +937,7 @@ fn healthy_registry(now: Timestamp) -> ModelRegistry {
         passed: true,
     });
     registry
-        .register(card)
+        .admit_for_test(card)
         .expect("an empty registry admits a card");
     registry
 }

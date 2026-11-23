@@ -213,13 +213,10 @@ pub fn register(
         )));
     }
     let registration = crate::central::models::register_fit(registry, teacher, policy, owner, now)?;
-    let card = registry.get_mut(&registration.reference).ok_or_else(|| {
-        Error::not_found(format!(
-            "{} was registered and the registry does not hold it",
-            registration.reference
-        ))
+    registry.amend(&registration.reference, |card| {
+        card.purpose = MICROSTRUCTURE_PURPOSE.to_string();
+        Ok(())
     })?;
-    card.purpose = MICROSTRUCTURE_PURPOSE.to_string();
     Ok(registration)
 }
 

@@ -83,6 +83,37 @@ use qip_strategy::ir::{Expr, Rule, StrategySpec, Type};
 use qip_strategy::program::Program;
 use std::collections::BTreeMap;
 
+/// R12-MODEL-4021: `ModelRegistry::register` refuses a card at `Production`
+/// that the registry never admitted, because a card is plain data whose
+/// stage anyone can write. These tests start from a model already in
+/// production, which in a running process means a promotion the log
+/// recorded; they stage that as the restart path does, readmitting the card
+/// on the log's admission (tests may mint one; production may not). A card
+/// below production is registered as it is.
+trait AdmitForTest {
+    fn admit_for_test(&mut self, card: qip_ai::registry::ModelCard) -> qip_core::error::Result<()>;
+}
+
+impl AdmitForTest for qip_ai::registry::ModelRegistry {
+    fn admit_for_test(
+        &mut self,
+        mut card: qip_ai::registry::ModelCard,
+    ) -> qip_core::error::Result<()> {
+        if card.stage != qip_ai::registry::ModelStage::Production {
+            return self.register(card);
+        }
+        let digest = card
+            .artifact_digest
+            .get_or_insert_with(|| "0".repeat(64))
+            .clone();
+        let admission = qip_ai::registry::JournaledAdmission::minted_from_the_promotion_log(
+            &card.reference(),
+            &digest,
+        );
+        self.readmit_on_journaled_admission(card, admission)
+    }
+}
+
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
 ///
@@ -644,7 +675,7 @@ fn three_cells_holding_one_name_produce_a_concentration_recall() -> Result<()> {
             INSTRUMENT,
             dec!("1000"),
         )]);
-        last = Some(plane.ingest(report, switch.kill_switch_mut(), start())?);
+        last = Some(plane.ingest(&halt_gate(), report, switch.kill_switch_mut(), start())?);
     }
 
     let ingestion =
@@ -1105,7 +1136,7 @@ fn a_model_the_registry_refuses_demotes_the_strategy_it_drives_through_the_compo
         metrics: BTreeMap::new(),
         passed: true,
     });
-    cleared.register(card)?;
+    cleared.admit_for_test(card)?;
     cleared.require_for_decision(MODEL, later)?;
     let mut plane_a = plane()?;
     let id = strategy();
@@ -3303,7 +3334,12 @@ fn a_day_under_a_live_grant_that_settled_nothing_is_retained_and_a_day_after_it_
     // A report the cell sent while holding the grant, carrying no fill at all.
     let mut kill_switch = qip_risk_engine::autonomy::KillSwitch::new();
     let quiet = start().saturating_add(Duration::from_hours(1));
-    plane.ingest(CellReport::new(CELL, quiet), &mut kill_switch, quiet)?;
+    plane.ingest(
+        &halt_gate(),
+        CellReport::new(CELL, quiet),
+        &mut kill_switch,
+        quiet,
+    )?;
 
     // And one three days later, by which time the eight-hour grant has lapsed
     // and nothing has re-issued it.
@@ -3312,7 +3348,12 @@ fn a_day_under_a_live_grant_that_settled_nothing_is_retained_and_a_day_after_it_
         !issued.envelope().is_live(lapsed),
         "premise: the grant has expired by the second report"
     );
-    plane.ingest(CellReport::new(CELL, lapsed), &mut kill_switch, lapsed)?;
+    plane.ingest(
+        &halt_gate(),
+        CellReport::new(CELL, lapsed),
+        &mut kill_switch,
+        lapsed,
+    )?;
 
     let calendar = plane.realised_calendar(lapsed.saturating_add(Duration::from_days(1)));
     assert_eq!(
@@ -6267,6 +6308,7 @@ fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> 
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         start(),
@@ -6274,6 +6316,7 @@ fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> 
     // A cell that names no region derives nothing, however long it is silent:
     // it is unknown, not dark, and unknown already receives nothing.
     plane.ingest(
+        &halt_gate(),
         heard("cell-nowhere", "", start()),
         switch.kill_switch_mut(),
         start(),
@@ -6307,6 +6350,7 @@ fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> 
     // old but arrives now is heard now, because a silent cell's clock is
     // exactly what the centre cannot read.
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         past_window(),
@@ -6317,6 +6361,7 @@ fn a_region_silent_past_the_window_is_dark_on_the_next_read_and_not_before() -> 
     // than reporting a healthy fleet.
     let mut off = CentralPlane::new(&[7u8; 32], CentralConfig::default())?;
     off.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         start(),
@@ -6340,6 +6385,7 @@ fn a_report_from_a_dark_region_clears_it_and_each_transition_is_offered_until_an
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         start(),
@@ -6368,6 +6414,7 @@ fn a_report_from_a_dark_region_clears_it_and_each_transition_is_offered_until_an
     // the same door.
     let later = past_window().saturating_add(Duration::from_secs(1));
     plane.ingest(
+        &halt_gate(),
         heard("cell-lon-2", LON_REGION, start()),
         switch.kill_switch_mut(),
         later,
@@ -6451,6 +6498,7 @@ fn a_grant_into_a_dark_region_is_refused_naming_the_reading_and_admitted_once_th
     walk_to(&mut plane, &id, GateStage::Pilot)?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         start(),
@@ -6476,6 +6524,7 @@ fn a_grant_into_a_dark_region_is_refused_naming_the_reading_and_admitted_once_th
     );
 
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         past_window(),
@@ -6498,11 +6547,13 @@ fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_mov
     let mut plane = plane_with_dark_window()?;
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         start(),
     )?;
     plane.ingest(
+        &halt_gate(),
         heard(NYC_CELL, NYC_REGION, start()),
         switch.kill_switch_mut(),
         start(),
@@ -6530,6 +6581,7 @@ fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_mov
 
     // New York speaks again; London does not.
     plane.ingest(
+        &halt_gate(),
         heard(NYC_CELL, NYC_REGION, start()),
         switch.kill_switch_mut(),
         past_window(),
@@ -6581,6 +6633,7 @@ fn a_dark_regions_share_bound_is_frozen_at_its_last_lit_value_while_the_plan_mov
     // Once London speaks the plan's current figure applies again.
     let later = past_window().saturating_add(Duration::from_secs(1));
     plane.ingest(
+        &halt_gate(),
         heard(CELL, LON_REGION, start()),
         switch.kill_switch_mut(),
         later,
@@ -6661,6 +6714,7 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     let mut last = None;
     for ((cell, region), id) in cells.iter().zip(&ids) {
         last = Some(plane.ingest(
+            &halt_gate(),
             report_of(cell, region, id, start()),
             switch.kill_switch_mut(),
             start(),
@@ -6687,6 +6741,7 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     let mut last = None;
     for ((cell, region), id) in cells.iter().zip(&ids).skip(1) {
         last = Some(plane.ingest(
+            &halt_gate(),
             report_of(cell, region, id, now),
             switch.kill_switch_mut(),
             now,
@@ -6744,6 +6799,7 @@ fn after_a_region_goes_dark_no_derived_quantity_is_smaller_than_the_last_reports
     // the above having moved in the meantime.
     let later = now.saturating_add(Duration::from_secs(1));
     let cleared = plane.ingest(
+        &halt_gate(),
         report_of(CELL, LON_REGION, &ids[0], later),
         switch.kill_switch_mut(),
         later,
@@ -9887,6 +9943,7 @@ fn ingest_orders_at(
     }
     let mut switch = qip_risk_engine::autonomy::AutonomyController::new();
     plane.ingest(
+        &halt_gate(),
         CellReport::new(CELL, start())
             .with_orders(orders)
             .with_fills(fills),
@@ -10608,4 +10665,11 @@ fn a_plane_configured_with_an_authority_block_states_it_on_the_grant_it_issues()
     assert_eq!(stated.envelope().bounds(), Some(&bounds));
     assert_eq!(stated.approved().envelope().bounds(), Some(&bounds));
     Ok(())
+}
+
+/// A gate minted by hand for a test that drives the central plane directly.
+/// Production obtains it from `Platform::determine_book_decision`; a test of
+/// the plane is not a path an order takes (R12-RISK-3022).
+fn halt_gate() -> qip_risk::gate::DeterministicGate {
+    qip_risk::gate::DeterministicGate::minted_by_router_determination("test: reconciliation halt")
 }

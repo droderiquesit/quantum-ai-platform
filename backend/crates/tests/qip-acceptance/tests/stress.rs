@@ -95,6 +95,64 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
+/// R12-MODEL-4021: `ModelRegistry::promote` is private, and production is
+/// entered only by `promote_artifact` spending a measured promotion
+/// clearance. These tests are about what a production card does, not about
+/// how it was measured, so they stage the promotion as the kernel would: a
+/// passing record on fixture bytes named for the reference, the clearance
+/// that record earns (tests may mint one; production may not), and the real
+/// `promote_artifact`, whose own refusals still apply.
+trait PromoteCleared {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()>;
+}
+
+impl PromoteCleared for qip_ai::registry::ModelRegistry {
+    fn promote_cleared(
+        &mut self,
+        reference: &str,
+        at: qip_core::Timestamp,
+    ) -> qip_core::error::Result<()> {
+        let artifact = qip_ai::serving::ModelArtifact::new(
+            reference,
+            qip_ai::serving::ModelFormat::DistilledLinear,
+            serde_json::Value::String(format!("test fixture for {reference}")),
+        );
+        let tests = qip_ai::registry::PromotionTests {
+            artifact_digest: artifact.digest.clone(),
+            window: "test-fixture".to_string(),
+            rows: 1,
+            ran_at: at,
+            results: qip_ai::registry::PROMOTION_TESTS
+                .iter()
+                .map(|name| {
+                    (
+                        (*name).to_string(),
+                        qip_ai::registry::PromotionTest {
+                            passed: true,
+                            evidence: "test fixture".to_string(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        if self.get(reference).is_some() {
+            self.lodge_clearance(
+                qip_ai::registry::PromotionClearance::minted_by_measured_promotion_tests(
+                    reference,
+                    &tests,
+                    "test-fixture",
+                    None,
+                )?,
+            );
+        }
+        self.promote_artifact(&artifact, at).map(|_| ())
+    }
+}
+
 /// The liquidity every fixture in this file states, because nothing states it
 /// for them any more.
 ///
@@ -1722,7 +1780,7 @@ fn training_that_misses_its_bar_promotes_nothing_and_names_the_shortfall() -> Re
     )?;
 
     let refusal = registry
-        .promote(&reference, start())
+        .promote_cleared(&reference, start())
         .expect_err("a model with a failed evaluation was promoted");
     assert!(
         refusal.message().contains("passing evaluation"),
@@ -1753,7 +1811,7 @@ fn training_that_misses_its_bar_promotes_nothing_and_names_the_shortfall() -> Re
             passed: true,
         },
     )?;
-    registry.promote(&reference, start())?;
+    registry.promote_cleared(&reference, start())?;
     registry.require_for_decision(&reference, start())?;
 
     // And drift past the threshold takes it back out of service, naming the

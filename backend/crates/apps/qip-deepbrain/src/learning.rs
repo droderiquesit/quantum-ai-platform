@@ -1463,7 +1463,9 @@ impl LearningDesk {
                 // The same cap the live registry refused at, so a restored
                 // registry refuses where the run did: a replay that admitted
                 // what the run refused would not be a replay.
-                match self.registry.register(card.clone()) {
+                // R12-MODEL-4021: a card the log promoted comes back on the
+                // log's record of that promotion, never on its own say-so.
+                match platform.readmit_promoted_card(&mut self.registry, card.clone()) {
                     Ok(()) => restored += 1,
                     Err(refusal) => {
                         if self.cap_reported.insert(card.reference()) {
@@ -1950,14 +1952,27 @@ impl LearningDesk {
         // after the fit, with the move each one's next bar realised. A
         // failed test is written on the card and the promotion below refuses
         // naming it; a window the tests cannot run on is refused here.
-        if let Err(error) =
-            platform.test_model_for_promotion(&mut self.registry, &shadow.artifact, &scored, now)
-        {
+        // R12-MODEL-4021: the student this promotion would name to the
+        // cells is attacked by the same suite; one the clearance does not
+        // name is not named, and the teacher is promoted without it.
+        if let Err(error) = platform.test_model_and_student_for_promotion(
+            &mut self.registry,
+            &shadow.artifact,
+            &scored,
+            student,
+            now,
+        ) {
             return Ok(Some(PromotionOutcome::NotPromoted {
                 reference,
                 reason: format!("its promotion tests could not run: {}", error.message()),
             }));
         }
+        let student = student.filter(|model| {
+            self.registry
+                .clearance(&reference)
+                .and_then(qip_ai::registry::PromotionClearance::distilled_digest)
+                == Some(model.digest().as_str())
+        });
         // The bytes first (R12-MODEL-9003): a promotion whose artifact is not
         // stored could not be rescored after a restart, so a store that
         // refuses the write refuses the promotion. Rendered as the registry
@@ -2934,12 +2949,20 @@ impl LearningDesk {
         // code its features came from (MODEL-029).
         let lineage = FeatureLineage::of(bars, now).audited(audited_rows);
         let provenance = self.provenance.clone();
-        if let Some(card) = self.registry.get_mut(&baseline_registration.reference) {
-            lineage.record_on(card);
-            record_validation_scope(card, regime, &dataset)?;
-            record_subject(card, subject.as_str())?;
-            stamp_provenance(card, &provenance);
-            card.self_fitted = true;
+        if self
+            .registry
+            .get(&baseline_registration.reference)
+            .is_some()
+        {
+            self.registry
+                .amend(&baseline_registration.reference, |card| {
+                    lineage.record_on(card);
+                    record_validation_scope(card, regime, &dataset)?;
+                    record_subject(card, subject.as_str())?;
+                    stamp_provenance(card, &provenance);
+                    card.self_fitted = true;
+                    Ok(())
+                })?;
         }
         // Skill is judged by the evaluator from the predictions each class
         // made on the holdout tail, never read from the fit's own
@@ -3005,12 +3028,15 @@ impl LearningDesk {
                     "central-research",
                     now,
                 )?;
-                if let Some(card) = self.registry.get_mut(&registration.reference) {
-                    lineage.record_on(card);
-                    record_validation_scope(card, regime, &dataset)?;
-                    record_subject(card, subject.as_str())?;
-                    stamp_provenance(card, &provenance);
-                    card.self_fitted = true;
+                if self.registry.get(&registration.reference).is_some() {
+                    self.registry.amend(&registration.reference, |card| {
+                        lineage.record_on(card);
+                        record_validation_scope(card, regime, &dataset)?;
+                        record_subject(card, subject.as_str())?;
+                        stamp_provenance(card, &provenance);
+                        card.self_fitted = true;
+                        Ok(())
+                    })?;
                 }
                 registration
             }
@@ -3020,27 +3046,30 @@ impl LearningDesk {
         // tail the fit never saw (R12-MODEL-4006). A holdout too small for the
         // requested coverage leaves a stated limitation instead of a number
         // that would be a guess.
-        if let Some(card) = self.registry.get_mut(&registration.reference) {
-            match ConformalInterval::calibrate(&teacher, &holdout, CONFORMAL_ALPHA) {
-                Ok(interval) => {
-                    card.parameters.insert(
-                        "conformal_alpha".to_string(),
-                        format!("{}", interval.alpha()),
-                    );
-                    card.parameters.insert(
-                        "conformal_half_width".to_string(),
-                        format!("{}", interval.half_width()),
-                    );
-                    card.parameters.insert(
-                        "conformal_calibration_rows".to_string(),
-                        interval.calibration_rows().to_string(),
-                    );
+        if self.registry.get(&registration.reference).is_some() {
+            self.registry.amend(&registration.reference, |card| {
+                match ConformalInterval::calibrate(&teacher, &holdout, CONFORMAL_ALPHA) {
+                    Ok(interval) => {
+                        card.parameters.insert(
+                            "conformal_alpha".to_string(),
+                            format!("{}", interval.alpha()),
+                        );
+                        card.parameters.insert(
+                            "conformal_half_width".to_string(),
+                            format!("{}", interval.half_width()),
+                        );
+                        card.parameters.insert(
+                            "conformal_calibration_rows".to_string(),
+                            interval.calibration_rows().to_string(),
+                        );
+                    }
+                    Err(error) => card.limitations.push(format!(
+                        "no calibrated prediction interval: {}",
+                        error.message()
+                    )),
                 }
-                Err(error) => card.limitations.push(format!(
-                    "no calibrated prediction interval: {}",
-                    error.message()
-                )),
-            }
+                Ok(())
+            })?;
         }
 
         // Distil the teacher into the linear form the execution path is
@@ -3358,6 +3387,64 @@ mod tests {
     use super::*;
     use crate::features::ratio;
 
+    /// R12-MODEL-4021: `ModelRegistry::promote` is private, and production is
+    /// entered only by `promote_artifact` spending a measured promotion
+    /// clearance. These tests are about what a production card does, not about
+    /// how it was measured, so they stage the promotion as the kernel would: a
+    /// passing record on fixture bytes named for the reference, the clearance
+    /// that record earns (tests may mint one; production may not), and the real
+    /// `promote_artifact`, whose own refusals still apply.
+    trait PromoteCleared {
+        fn promote_cleared(
+            &mut self,
+            reference: &str,
+            at: qip_core::Timestamp,
+        ) -> qip_core::error::Result<()>;
+    }
+
+    impl PromoteCleared for qip_ai::registry::ModelRegistry {
+        fn promote_cleared(
+            &mut self,
+            reference: &str,
+            at: qip_core::Timestamp,
+        ) -> qip_core::error::Result<()> {
+            let artifact = qip_ai::serving::ModelArtifact::new(
+                reference,
+                qip_ai::serving::ModelFormat::DistilledLinear,
+                serde_json::Value::String(format!("test fixture for {reference}")),
+            );
+            let tests = qip_ai::registry::PromotionTests {
+                artifact_digest: artifact.digest.clone(),
+                window: "test-fixture".to_string(),
+                rows: 1,
+                ran_at: at,
+                results: qip_ai::registry::PROMOTION_TESTS
+                    .iter()
+                    .map(|name| {
+                        (
+                            (*name).to_string(),
+                            qip_ai::registry::PromotionTest {
+                                passed: true,
+                                evidence: "test fixture".to_string(),
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            if self.get(reference).is_some() {
+                self.lodge_clearance(
+                    qip_ai::registry::PromotionClearance::minted_by_measured_promotion_tests(
+                        reference,
+                        &tests,
+                        "test-fixture",
+                        None,
+                    )?,
+                );
+            }
+            self.promote_artifact(&artifact, at).map(|_| ())
+        }
+    }
+
     fn subject() -> ObjectId {
         ObjectId::from_string("OBJ0000000000000000000AAA")
     }
@@ -3505,6 +3592,109 @@ mod tests {
             }
         }
         Ok(Some(last))
+    }
+
+    /// R12-MODEL-4021, the reader's distilled-student finding: the promote
+    /// stage named its student to the cells on fidelity to the teacher
+    /// alone. It now runs the promotion tests with the student, so the
+    /// adversarial suite attacks the student's own outputs, and names a
+    /// student only when the clearance does. Premise first: the round
+    /// distilled a student, so a `None` below would be a finding, not an
+    /// absence.
+    ///
+    /// Mutation: pass `None` for the student to
+    /// `test_model_and_student_for_promotion` in `shadow_round` — the
+    /// clearance names no student, none is named, and the first
+    /// `assert_eq!` fires.
+    #[test]
+    fn the_promote_stage_names_a_distilled_student_only_after_the_attack_ran_on_it() -> Result<()> {
+        let mut platform = serving_platform()?;
+        let mut desk = learning_desk();
+        let bars = super::tests_support::learnable(400);
+        desk.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        // A student the fidelity policy admits, distilled from the round's
+        // own teacher with a vanishing ridge: the desk's fixture distils
+        // one the policy refuses, so without this the stage would name
+        // nothing and the test would prove nothing.
+        let (teacher, probe) = desk
+            .candidate
+            .as_ref()
+            .map(|candidate| (candidate.teacher.clone(), candidate.holdout.clone()))
+            .ok_or_else(|| Error::not_found("premise: a candidate"))?;
+        let faithful = distil(&teacher, &probe, StudentForm::Linear { ridge: 1e-12 }, 0.0)?;
+        assert!(
+            faithful.is_promotable(&FidelityPolicy::default()),
+            "premise: the student is faithful enough to be named: {:?}",
+            FidelityPolicy::default().shortfalls(faithful.fidelity())
+        );
+        let Some(PromotionOutcome::Shadowed { .. }) =
+            desk.promote_candidate(&mut platform, at())?
+        else {
+            return Err(Error::invalid("premise: the candidate entered shadow"));
+        };
+        if let Some(shadow) = desk.shadowing.get_mut(subject().as_str()) {
+            shadow.distillation = Some(faithful.clone());
+        }
+        let mut outcome = None;
+        for round in 1..=u64::from(MIN_SHADOW_ROUNDS) {
+            let later = at().saturating_add(qip_core::Duration::from_mins(round as i64));
+            let moved = super::tests_support::learnable(400 + SHADOW_STEP * round as usize)
+                [SHADOW_STEP * round as usize..]
+                .to_vec();
+            desk.maybe_learn(&subject(), &moved, REGIME, 1 + round, later)?;
+            outcome = desk.promote_candidate(&mut platform, later)?;
+            if !matches!(outcome, Some(PromotionOutcome::Shadowed { .. })) {
+                break;
+            }
+        }
+        let outcome = outcome.ok_or_else(|| Error::not_found("a promotion outcome"))?;
+        let PromotionOutcome::Promoted {
+            reference,
+            distilled,
+            ..
+        } = &outcome
+        else {
+            return Err(Error::invalid(format!(
+                "premise: the candidate was promoted: {}",
+                outcome.describe()
+            )));
+        };
+        let card = desk
+            .registry()
+            .get(reference)
+            .ok_or_else(|| Error::not_found("the promoted card"))?;
+        let attacked = card
+            .promotion_tests
+            .as_ref()
+            .and_then(|tests| {
+                tests
+                    .results
+                    .get(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST)
+            })
+            .cloned();
+        let digest = faithful.student().digest();
+        assert_eq!(
+            attacked.as_ref().map(|test| test.passed),
+            Some(true),
+            "the student the stage would name was not attacked: {attacked:?}"
+        );
+        assert!(
+            attacked
+                .as_ref()
+                .is_some_and(|test| test.evidence.starts_with(&format!("student {digest}:"))),
+            "the attack ran on another student than the one named: {attacked:?}"
+        );
+        assert_eq!(distilled.as_deref(), Some(digest.as_str()));
+        assert_eq!(
+            platform
+                .model_promotions()
+                .get(reference)
+                .and_then(|record| record.distilled.as_ref())
+                .map(|entry| entry.digest.clone()),
+            Some(digest),
+            "the signed record names a different student"
+        );
+        Ok(())
     }
 
     /// R12-EXPAND-6034: a challenger the learning desk promotes over the
@@ -5118,11 +5308,12 @@ mod tests {
                     )));
                 }
             };
-            if let Some(card) = desk.registry.get_mut(&incumbent) {
+            desk.registry.amend(&incumbent, |card| {
                 for regime in incumbent_regimes {
                     card.validated_regimes.insert((*regime).to_string());
                 }
-            }
+                Ok(())
+            })?;
             let later = at().saturating_add(qip_core::Duration::from_hours(2));
             desk.maybe_learn(
                 &subject(),
@@ -6245,7 +6436,11 @@ mod tests {
         // Promote it. Refused unless the fit actually cleared the skill bar,
         // which is the point: this cannot be staged for a model with no signal.
         completed_shadow(desk.registry_mut(), &reference)?;
-        if desk.registry_mut().promote(&reference, at()).is_err() {
+        if desk
+            .registry_mut()
+            .promote_cleared(&reference, at())
+            .is_err()
+        {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach the drift \
                  branch; the fixture must produce a learnable series",
@@ -6298,7 +6493,11 @@ mod tests {
             .ok_or_else(|| Error::not_found("a registration"))?
             .reference;
         completed_shadow(desk.registry_mut(), &reference)?;
-        if desk.registry_mut().promote(&reference, at()).is_err() {
+        if desk
+            .registry_mut()
+            .promote_cleared(&reference, at())
+            .is_err()
+        {
             return Err(Error::invalid(
                 "the fit did not clear the skill bar, so this test cannot reach a promoted card",
             ));

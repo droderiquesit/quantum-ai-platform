@@ -55,7 +55,9 @@
 //! the model (ADR 0043).
 
 use crate::platform::Platform;
-use qip_ai::registry::{ModelRegistry, PublishedArtifact};
+use qip_ai::registry::{
+    JournaledAdmission, ModelCard, ModelRegistry, ModelStage, PublishedArtifact,
+};
 use qip_ai::serving::{ModelArtifact, ModelFormat, ModelProvider, ServedModel};
 use qip_contracts::policy::{InlineModel, ModelManifest, Slot};
 use qip_core::Timestamp;
@@ -310,6 +312,71 @@ impl ModelPromotion {
             self.stages.join("\u{1f}")
         )
     }
+
+    /// Whether this record carries a stage line for every one of
+    /// [`qip_ai::registry::PROMOTION_TESTS`] (R12-MODEL-4021): the mark that
+    /// the promotion it records spent a clearance minted on all of them,
+    /// [`qip_ai::registry::ADVERSARIAL_TEST`] included.
+    ///
+    /// `promote_model_from` writes one `"{name}: {evidence} on {window}"`
+    /// line per test, read off the clearance's results, into the signed
+    /// stages; a rollback copies the stages of the promotion it restores. A
+    /// record written by a build before the adversarial test was a promotion
+    /// test has no `adversarial:` line, and readmitting its card after a
+    /// restart would return a model nobody attacked to production. Matched
+    /// on the delimited name before the first `": "`, never as a substring,
+    /// because `distilled_adversarial` contains `adversarial`.
+    ///
+    /// A record that names a distilled student must also carry a
+    /// [`qip_ai::registry::DISTILLED_ADVERSARIAL_TEST`] line: the student is
+    /// the model the cells run inline, and until the round-81 review no
+    /// record could show it had been attacked — `promote_model_from` wrote
+    /// lines for the teacher's tests alone, so a student checked only for
+    /// fidelity and one the suite attacked read the same on the log.
+    pub fn records_every_promotion_test(&self) -> bool {
+        let recorded = |name: &str| {
+            self.stages
+                .iter()
+                .any(|stage| stage.split_once(": ").is_some_and(|(head, _)| head == name))
+        };
+        qip_ai::registry::PROMOTION_TESTS
+            .iter()
+            .all(|name| recorded(name))
+            && (self.distilled.is_none() || recorded(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST))
+    }
+}
+
+/// The signed stage line a promotion naming a distilled student carries for
+/// the student's own attack, read off the promotion tests the promoted card
+/// holds, or the refusal (R12-MODEL-4021, round-81 review).
+///
+/// Apart from [`Platform::promote_model_from`] so that its refusal can be
+/// tested at all, which the second round-81 review found it never had been.
+/// Through the promotion no clearance the registry mints reaches it:
+/// `PromotionClearance::minted_by_measured_promotion_tests` refuses to name a
+/// student without a passing `distilled_adversarial` result,
+/// `promote_model_from` refuses a student its clearance does not name, and
+/// `ModelRegistry::promote_artifact` writes the clearance's own results onto
+/// the card read here. It is the promotion's own refusal to sign a line
+/// saying a student was attacked when the results in front of it do not say
+/// so, and it stays for the day one of those three changes.
+pub(crate) fn student_attack_stage(
+    reference: &str,
+    tests: &qip_ai::registry::PromotionTests,
+) -> Result<String> {
+    let name = qip_ai::registry::DISTILLED_ADVERSARIAL_TEST;
+    let test = tests
+        .results
+        .get(name)
+        .filter(|test| test.passed)
+        .ok_or_else(|| {
+            Error::denied(format!(
+                "{reference} is not promoted naming a distilled student: its card holds no \
+                 passing {name} test to record; run the promotion tests with the student \
+                 before naming it"
+            ))
+        })?;
+    Ok(format!("{name}: {} on {}", test.evidence, tests.window))
 }
 
 /// Shadow rounds a self-fitted model must win before it may be promoted: the
@@ -764,6 +831,17 @@ fn evaluation_evidence(registry: &ModelRegistry, reference: &str) -> Result<Stri
     ))
 }
 
+/// The promoted set a restarted process rebuilds from the log, and the
+/// records it refused to put back (R12-MODEL-4021).
+#[derive(Debug, Default)]
+pub(crate) struct ResumedPromotions {
+    /// What the `trained_models` slot is produced from after the restart.
+    pub(crate) promoted: BTreeMap<String, ModelPromotion>,
+    /// By reference, why a record for it was not put back. A reference a
+    /// later, complete record restored again is not listed.
+    pub(crate) quarantined: BTreeMap<String, String>,
+}
+
 /// Rebuild the promoted set from the log alone, in log order, applying
 /// each record exactly as [`Platform::promote_model`] applied it.
 ///
@@ -772,17 +850,60 @@ fn evaluation_evidence(registry: &ModelRegistry, reference: &str) -> Result<Stri
 /// does not hold as built stops the restart, rather than putting back a
 /// model the live seam would refuse. No legitimate record of that kind can
 /// exist today (ADR 0150 decision 5), so the refusal names the record.
-/// [`Platform::rollback_model`] restores a record from the same log and
-/// needs no check of its own: every record it can read either passed
-/// [`Platform::promote_model_from`] in this process or passed this one at
-/// start.
-pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<BTreeMap<String, ModelPromotion>> {
-    let mut promoted = BTreeMap::new();
+///
+/// And the same test-record check [`Platform::readmit_promoted_card`] makes
+/// (R12-MODEL-4021, round-81 review). Until it, the card door refused a
+/// record from a build before the adversarial test was a promotion test
+/// while this function put the same record back in the promoted set, and
+/// [`Platform::model_manifest_targeted`] named its distilled student to the
+/// cells from there: an unattacked model back on the manifest after a
+/// restart, with its card refused. Such a record is quarantined rather than
+/// stopping the restart, because a log that legitimately holds one from an
+/// older build would otherwise never start again: its displacements still
+/// apply (the models it retired stay retired), it is not inserted, and it
+/// is listed in [`ResumedPromotions::quarantined`], which assembly reports
+/// as a capture problem — never dropped silently.
+///
+/// [`Platform::rollback_model`] restores a record from the same log and makes
+/// the same check on it, so a rollback never writes a record this function
+/// would quarantine. It once relied on the card door instead — on a restarted
+/// desk refilling its registry through [`Platform::readmit_promoted_card`],
+/// which refuses a quarantined record's card — and a registry filled some
+/// other way was held by nothing (second round-81 review).
+pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<ResumedPromotions> {
+    let mut resumed = ResumedPromotions::default();
     for record in promotions_in(log)? {
         require_restorable(&record)?;
-        apply_promotion(&mut promoted, record);
+        if record.records_every_promotion_test() {
+            resumed.quarantined.remove(&record.reference);
+            apply_promotion(&mut resumed.promoted, record);
+        } else {
+            for displaced in &record.displaced {
+                resumed.promoted.remove(displaced);
+            }
+            resumed.quarantined.insert(
+                record.reference.clone(),
+                format!(
+                    "the promotion record of {} at artifact {} journaled at {} does not show \
+                     every promotion test ({}{}); it is not restored to the promoted set — \
+                     promote it again through the tests",
+                    record.reference,
+                    record.artifact_digest,
+                    record.at.to_rfc3339(),
+                    qip_ai::registry::PROMOTION_TESTS.join(", "),
+                    if record.distilled.is_some() {
+                        format!(
+                            ", and {} for the student it names",
+                            qip_ai::registry::DISTILLED_ADVERSARIAL_TEST
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
+            );
+        }
     }
-    Ok(promoted)
+    Ok(resumed)
 }
 
 /// The live seam's workload check, for a promotion read back from the log.
@@ -1035,6 +1156,10 @@ impl Platform {
     /// in `registry` (ADR 0392, R12-MODEL-10202). The promotion that follows
     /// refuses without them. See
     /// [`crate::central::models::run_promotion_tests`].
+    ///
+    /// The tests run through this platform's provider, the provider
+    /// [`Self::promote_model_from`] serves through, so the clearance a pass
+    /// mints is one this platform accepts (R12-MODEL-4021).
     pub fn test_model_for_promotion(
         &self,
         registry: &mut ModelRegistry,
@@ -1042,13 +1167,80 @@ impl Platform {
         recorded: &qip_training::dataset::TrainingDataset,
         now: Timestamp,
     ) -> Result<qip_ai::registry::PromotionTests> {
-        crate::central::models::run_promotion_tests(
+        self.test_model_and_student_for_promotion(registry, artifact, recorded, None, now)
+    }
+
+    /// [`Self::test_model_for_promotion`] for a promotion that will name
+    /// `student` to the cells: the student is attacked by the same
+    /// adversarial suite, and the clearance names it only if it held
+    /// (R12-MODEL-4021).
+    pub fn test_model_and_student_for_promotion(
+        &self,
+        registry: &mut ModelRegistry,
+        artifact: &ModelArtifact,
+        recorded: &qip_training::dataset::TrainingDataset,
+        student: Option<&DistilledModel>,
+        now: Timestamp,
+    ) -> Result<qip_ai::registry::PromotionTests> {
+        crate::central::models::run_promotion_tests_with_student(
             self.model_provider.as_ref(),
             registry,
             artifact,
             recorded,
+            student,
             now,
         )
+    }
+
+    /// Put `card` back into `registry` at the stage the promotion log gives
+    /// it (R12-MODEL-4021): the restart path a desk refills its registry by.
+    ///
+    /// A card at `Production`, or a retired card carrying the bytes it was
+    /// promoted with, is readmitted only on a promotion record on this
+    /// platform's log naming the same reference at the same artifact digest;
+    /// the [`JournaledAdmission`] is minted here and nowhere else in
+    /// production. Any other card is registered as it is, which the registry
+    /// refuses at `Production`. A card read back from storage is data: what
+    /// admits it is the log's record of a promotion that spent a clearance.
+    pub fn readmit_promoted_card(
+        &self,
+        registry: &mut ModelRegistry,
+        card: ModelCard,
+    ) -> Result<()> {
+        let reference = card.reference();
+        let Some(digest) = card.artifact_digest.clone() else {
+            return registry.register(card);
+        };
+        if !matches!(card.stage, ModelStage::Production | ModelStage::Retired) {
+            return registry.register(card);
+        }
+        let records: Vec<ModelPromotion> = promotions_in(self.event_log())?
+            .into_iter()
+            .filter(|record| record.reference == reference && record.artifact_digest == digest)
+            .collect();
+        if records.is_empty() {
+            return Err(Error::denied(format!(
+                "{reference} is not readmitted at artifact {digest}: no promotion record on the \
+                 log promoted it with those bytes"
+            )));
+        }
+        // A record from a build whose promotion tests did not include the
+        // adversarial attack is not a clearance this build would mint: the
+        // model it names was never attacked, and readmitting it would put an
+        // unattacked model back in production on restart.
+        if !records
+            .iter()
+            .any(ModelPromotion::records_every_promotion_test)
+        {
+            return Err(Error::denied(format!(
+                "{reference} is not readmitted at artifact {digest}: the log's promotion record \
+                 does not show every promotion test ({}) passed; promote it again through the \
+                 tests",
+                qip_ai::registry::PROMOTION_TESTS.join(", ")
+            )));
+        }
+        let admission = JournaledAdmission::minted_from_the_promotion_log(&reference, &digest);
+        registry.readmit_on_journaled_admission(card, admission)
     }
 
     /// Every promotion this process holds, by reference, in reference order.
@@ -1064,6 +1256,14 @@ impl Platform {
 
     pub fn model_promotions(&self) -> &BTreeMap<String, ModelPromotion> {
         &self.model_promotions
+    }
+
+    /// The promotion records this process's restart refused to put back into
+    /// [`Self::model_promotions`], by reference, with why (R12-MODEL-4021).
+    /// Empty unless the log holds a record that does not show every promotion
+    /// test — or names a student without the student's attack.
+    pub fn quarantined_model_promotions(&self) -> &BTreeMap<String, String> {
+        &self.quarantined_promotions
     }
 
     /// Name the desk that moves the production alias in this process
@@ -1303,6 +1503,35 @@ impl Platform {
             )));
         }
         let name = card.name.clone();
+        // R12-MODEL-4021: the clearance was measured through this platform's
+        // provider — the one that just served the bytes above — and on the
+        // student this promotion names, if any. A clearance measured through
+        // another provider measured some other arithmetic; a student it does
+        // not name was never attacked.
+        if let Some(clearance) = registry.clearance(&artifact.reference) {
+            if clearance.measured_through() != self.model_provider.name() {
+                return Err(Error::denied(format!(
+                    "{} is not promoted: its promotion clearance was measured through provider \
+                     {} and this platform serves it through {}; run the promotion tests \
+                     through the provider that serves it",
+                    artifact.reference,
+                    clearance.measured_through(),
+                    self.model_provider.name()
+                )));
+            }
+            if let Some(student) = distilled
+                && clearance.distilled_digest() != Some(student.digest().as_str())
+            {
+                return Err(Error::denied(format!(
+                    "{} is not promoted naming the distilled student {}: its promotion clearance \
+                     names {}; a student is named to the cells only once the adversarial suite \
+                     ran on it",
+                    artifact.reference,
+                    student.digest(),
+                    clearance.distilled_digest().unwrap_or("no student")
+                )));
+            }
+        }
         let desk = self.require_model_desk(&artifact.reference, "promoted")?;
         let mut scratch = registry.clone();
         let published = scratch.promote_artifact(artifact, now)?;
@@ -1396,6 +1625,16 @@ impl Platform {
             })?;
             stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
         }
+        // R12-MODEL-4021 (round-81 review): a promotion that names a student
+        // names the model the cells run inline, so the signed record carries
+        // what the student's own attack measured — the line
+        // `run_promotion_tests_with_student` wrote under the same default
+        // policy, on the same rows, read off the card like the four above.
+        // Without it no record could show a named student was attacked, and
+        // a restart could not tell one that was from one that was not.
+        if distilled.is_some() {
+            stages.push(student_attack_stage(&artifact.reference, tests)?);
+        }
         stages.push(format!("verifier: {verified}"));
         // ADR 0480 (R12-MODEL-7022): a microstructure card's distillate is
         // named to a cell only under a verified release pack. Read off the
@@ -1449,8 +1688,10 @@ impl Platform {
     /// it was first promoted under (which is the digest that passed the gate,
     /// and which [`Self::promote_model_from`] guarantees is the only one that
     /// reference ever carried). A predecessor the registry will not
-    /// reactivate (drifted itself, never carried an artifact) is skipped for
-    /// the one before it. Same discipline as a promotion: a scratch registry,
+    /// reactivate (drifted itself, never carried an artifact), or whose
+    /// record does not show every promotion test
+    /// ([`ModelPromotion::records_every_promotion_test`]), is skipped for the
+    /// one before it. Same discipline as a promotion: a scratch registry,
     /// the record journalled first, then adopted, so a refused rollback leaves
     /// the log and the registry as they were. Returns the reactivated
     /// reference.
@@ -1489,6 +1730,34 @@ impl Platform {
                 refusals.push(format!("{predecessor} has no promotion record in the log"));
                 continue;
             };
+            // R12-MODEL-4021 (second round-81 review): the rollback record
+            // copies the stages and the student of the record it restores,
+            // so it shows every promotion test exactly when that record
+            // does. Restoring one that does not would put a model nobody
+            // attacked — or a student nobody attacked — back on the manifest
+            // the cells read, in this process, and journal a record the
+            // next restart quarantines. This was left to the card door, which
+            // holds only a registry refilled through `readmit_promoted_card`;
+            // the check is the rollback's own now, on the record it writes.
+            if !original.records_every_promotion_test() {
+                refusals.push(format!(
+                    "{predecessor}'s promotion record at artifact {} does not show every \
+                     promotion test ({}{}), so a rollback to it would restore a model the \
+                     record does not show was attacked; promote a new version through the \
+                     tests instead",
+                    original.artifact_digest,
+                    qip_ai::registry::PROMOTION_TESTS.join(", "),
+                    if original.distilled.is_some() {
+                        format!(
+                            ", and {} for the student it names",
+                            qip_ai::registry::DISTILLED_ADVERSARIAL_TEST
+                        )
+                    } else {
+                        String::new()
+                    }
+                ));
+                continue;
+            }
             let mut scratch = registry.clone();
             if let Err(error) = scratch.reactivate(predecessor, now) {
                 refusals.push(error.message().to_string());

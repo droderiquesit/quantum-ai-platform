@@ -507,10 +507,12 @@ fn a_model_is_judged_against_its_own_subjects_regime_crossing_and_not_another_su
             registration.passed,
             "premise: the fit cleared the skill bar"
         );
+        registry.amend(&registration.reference, |card| {
+            record_subject(card, subject)
+        })?;
         let card = registry
-            .get_mut(&registration.reference)
+            .get(&registration.reference)
             .unwrap_or_else(|| panic!("premise: the card is registered"));
-        record_subject(card, subject)?;
         assert_eq!(
             subject_of(card),
             Some(subject),
@@ -573,10 +575,9 @@ fn a_card_is_due_a_renewed_evaluation_only_until_it_is_evaluated_after_its_subje
             start(),
         )?;
         tested(&mut registry, &teacher)?;
-        let card = registry
-            .get_mut(&registration.reference)
-            .unwrap_or_else(|| panic!("premise: the card is registered"));
-        record_subject(card, subject)?;
+        registry.amend(&registration.reference, |card| {
+            record_subject(card, subject)
+        })?;
         Ok((registry, registration.reference))
     };
 
@@ -654,7 +655,7 @@ fn re_verifying_a_production_model_journals_the_verdict_and_reports_a_refutation
     )?;
     tested(&mut registry, &teacher)?;
     let reference = registration.reference.clone();
-    record_subject(registry.get_mut(&reference).expect("the card"), "obj-BBB")?;
+    registry.amend(&reference, |card| record_subject(card, "obj-BBB"))?;
 
     let unpromoted = platform
         .reverify_model(&registry, &reference, registered_at)
