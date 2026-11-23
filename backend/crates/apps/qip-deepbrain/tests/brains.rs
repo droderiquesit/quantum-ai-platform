@@ -42,7 +42,7 @@ fn every_agent_the_platform_convenes_and_both_ambient_brains_have_a_validated_en
         "premise: the organisation convened its roster: {ids:?}"
     );
 
-    let registry = standard(roster).expect("the node's registry builds");
+    let registry = standard(platform.organisation()).expect("the node's registry builds");
     for id in &ids {
         let spec = registry
             .get(&format!("organisation/{id}"))
@@ -94,7 +94,7 @@ fn an_entry_missing_a_declared_field_or_registered_twice_is_refused() {
 #[test]
 fn removing_an_ambient_brain_drops_its_scope_from_the_registry() {
     let platform = platform();
-    let registry = standard(platform.organisation().roster()).unwrap();
+    let registry = standard(platform.organisation()).unwrap();
     assert!(
         registry.scopes().contains(ATTENTION_ROUTING),
         "premise: covered"
@@ -132,7 +132,7 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
         REQUIRED_SCOPES, WORLD_MODEL_ARBITRATION, WORLD_MODEL_ARBITRATION_BRAIN,
     };
     let platform = platform();
-    let registry = standard(platform.organisation().roster()).unwrap();
+    let registry = standard(platform.organisation()).unwrap();
     let spec = registry
         .get(WORLD_MODEL_ARBITRATION_BRAIN)
         .expect("the arbitration brain is in the production registry");
@@ -164,45 +164,90 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
     );
 }
 
-/// R12-REASON-3026: the registry the node starts on refuses to be used without
-/// the Symbolic Reasoning Brain. The entry is derived from a manifest on the
-/// running roster, so it exists only because the production organisation
-/// constructs the specialist; removing it leaves `symbolic-reasoning`
-/// uncovered and `require_coverage` refuses naming the scope.
+/// R12-REASON-3026: the registry the node starts on covers
+/// `symbolic-reasoning` only because the production organisation constructs
+/// the Symbolic Reasoning Brain, and an organisation built from the same
+/// production parts without `standard_late_agents` is refused at start-up.
 ///
-/// Mutation: in `qip_investment_agents::manifests::symbolic_reasoning_brain`,
-/// replace the `"symbolic-reasoning"` competency with another string --
-/// `standard` then refuses to build, naming the missing scope.
+/// The removal runs through the production builders, not
+/// `BrainRegistry::without`, which no running path calls: the roster still
+/// holds the reviewed manifest in the second organisation, so a registry read
+/// off the roster alone would still list the entry and admit the node. The
+/// earlier form of this test removed the entry by hand and could not see that.
+///
+/// Mutations: in `qip_investment_agents::chief::standard_late_agents`, return
+/// an empty list -- the platform's own organisation constructs no symbolic
+/// agent and `standard(platform.organisation())` refuses, so the first
+/// `expect` fails; in `brains::standard`, drop the `constructs` filter -- the
+/// organisation without late agents is admitted and the `expect_err` fails.
 #[test]
 fn removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage() {
     use qip_deepbrain::brains::{REQUIRED_SCOPES, SYMBOLIC_REASONING, SYMBOLIC_REASONING_BRAIN};
+    use qip_investment_agents::chief::{
+        Organisation, standard_agents, standard_arbiters, standard_late_agents,
+    };
+    use qip_investment_agents::{Desk, ids, roster};
+    use std::sync::Arc;
+
     let platform = platform();
-    let registry = standard(platform.organisation().roster()).unwrap();
+    // `standard` is what `assembly::assemble` runs on the platform's own
+    // organisation, so its refusal is the node's refusal to start.
+    let registry =
+        standard(platform.organisation()).expect("the production organisation's registry builds");
+    assert!(
+        platform.organisation().constructs(ids::SYMBOLIC_REASONING),
+        "the running organisation constructs the symbolic brain"
+    );
     let spec = registry
         .get(SYMBOLIC_REASONING_BRAIN)
         .expect("the symbolic brain is in the production registry");
-    assert!(
-        platform
-            .organisation()
-            .roster()
-            .iter()
-            .any(|manifest| format!("organisation/{}", manifest.id) == spec.id),
-        "the symbolic entry is derived from a manifest on the running roster"
+    assert_eq!(
+        spec.competency_domains.first().map(String::as_str),
+        Some(SYMBOLIC_REASONING)
     );
-    assert!(registry.scopes().contains(SYMBOLIC_REASONING));
     assert!(REQUIRED_SCOPES.contains(&SYMBOLIC_REASONING));
-    assert!(registry.require_coverage().is_ok(), "premise: covered");
 
-    let without = registry.without(SYMBOLIC_REASONING_BRAIN);
+    let t = Timestamp::from_secs(1_760_000_000);
+    let desk = Arc::new(Desk::empty(t));
+    let build = |late: bool| {
+        let organisation = Organisation::new(
+            roster(t),
+            standard_agents(desk.clone(), t, Vec::new(), false),
+            qip_agents::runtime::AgentHost::new(1),
+            t,
+        )
+        .unwrap()
+        .with_arbiters(standard_arbiters(desk.clone(), t))
+        .unwrap();
+        if late {
+            organisation
+                .with_late_agents(standard_late_agents(desk.clone(), t))
+                .unwrap()
+        } else {
+            organisation
+        }
+    };
+
+    let whole = build(true);
+    assert!(whole.constructs(ids::SYMBOLIC_REASONING));
     assert!(
-        !without.scopes().contains(SYMBOLIC_REASONING),
-        "another brain still claims symbolic reasoning"
+        standard(&whole).is_ok(),
+        "premise: the production parts with the late agents are admitted"
     );
-    let refused = without
-        .require_coverage()
-        .expect_err("a registry without the symbolic brain is refused");
+
+    let without = build(false);
     assert!(
-        refused.message().contains(SYMBOLIC_REASONING),
+        !without.constructs(ids::SYMBOLIC_REASONING),
+        "premise: nothing else constructs the symbolic brain"
+    );
+    assert!(
+        without.roster().get(ids::SYMBOLIC_REASONING).is_some(),
+        "premise: the reviewed manifest is still on the roster"
+    );
+    let refused = standard(&without)
+        .expect_err("a node whose organisation does not construct the symbolic brain is refused");
+    assert!(
+        refused.message().contains("[\"symbolic-reasoning\"]"),
         "{}",
         refused.message()
     );
@@ -220,7 +265,7 @@ fn removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage() {
 fn a_registry_without_the_causal_agency_brain_is_refused_naming_its_scope() {
     use qip_deepbrain::brains::REQUIRED_SCOPES;
     let platform = platform();
-    let registry = standard(platform.organisation().roster()).unwrap();
+    let registry = standard(platform.organisation()).unwrap();
     assert!(registry.get(CAUSAL_AGENCY).is_some(), "premise: registered");
     assert!(REQUIRED_SCOPES.contains(&INTERVENTION_PLANNING));
     assert!(registry.require_coverage().is_ok(), "premise: covered");

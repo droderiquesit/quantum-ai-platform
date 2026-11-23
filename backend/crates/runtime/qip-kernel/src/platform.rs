@@ -12930,6 +12930,16 @@ impl Platform {
     /// every scope's state as `qip_organisation_scope_covered`, 1 or 0.
     fn record_scopes_reported(&mut self, report: &qip_investment_agents::OrganisationReport) {
         self.scopes_reported.extend(report.covered_scopes());
+        self.publish_scopes_reported();
+    }
+
+    /// Publish every scope's state for the cycle so far as
+    /// `qip_organisation_scope_covered`, 1 or 0. Called once at the top of
+    /// REASON as well as after each report, so a cycle whose queue held no
+    /// work writes 0 for every scope: written only beside a report, the gauge
+    /// kept the 1 of the last cycle that reasoned through every quiet cycle
+    /// after it, which is coverage claimed for a stage that did not run.
+    fn publish_scopes_reported(&mut self) {
         for scope in qip_investment_agents::coverage::Scope::ALL {
             self.telemetry.metrics.gauge(
                 names::ORGANISATION_SCOPE_COVERED,
@@ -18282,6 +18292,7 @@ impl Platform {
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
         // Coverage is of this cycle's REASON stage only (R12-REASON-3026).
         self.scopes_reported.clear();
+        self.publish_scopes_reported();
         let expired = self.expired_manifests(now);
         let roster = self.organisation.roster().len();
         self.telemetry.metrics.gauge(
@@ -38774,6 +38785,61 @@ mod self_model_tests {
                 }))
             })
             .collect()
+    }
+
+    /// R12-REASON-3026. A REASON stage with nothing in its queue covers no
+    /// scope, and says so on `qip_organisation_scope_covered`: after a cycle
+    /// that reported symbolic reasoning, a quiet REASON stage leaves the
+    /// record empty and writes 0 to every scope's series.
+    ///
+    /// A unit test, because the fixture's tape re-detects its opportunity on
+    /// every cycle, so no `run_cycle` over it is quiet; the queue is emptied
+    /// here and `stage_reason` run directly, which is the seam the gauge
+    /// is written at.
+    ///
+    /// The failure this guards: the gauge was written only beside a report,
+    /// so after a quiet stage the series kept reading the 1 of the last
+    /// cycle that reasoned, coverage claimed for a stage that did not run.
+    ///
+    /// Mutation: drop the `publish_scopes_reported` call at the top of
+    /// `stage_reason` -- the symbolic series still reads 1.
+    #[test]
+    fn a_quiet_reason_stage_writes_every_scope_uncovered() {
+        use qip_investment_agents::coverage::Scope;
+        let gauge = |platform: &Platform, scope: Scope| {
+            platform.telemetry.metrics.snapshot().gauge(
+                names::ORGANISATION_SCOPE_COVERED,
+                &labels([("scope", scope.as_str())]),
+            )
+        };
+        let mut platform = Platform::new(
+            PlatformConfig::default(),
+            qip_core::Context::deterministic(start(), PlatformConfig::default().seed).0,
+            Telemetry::silent(),
+            objects(),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles");
+        platform.observe(tape());
+        platform.run_cycle(start());
+        // Premise: the reasoning cycle reported symbolic reasoning.
+        assert!(platform.scopes_reported.contains(&Scope::SymbolicReasoning));
+        assert_eq!(gauge(&platform, Scope::SymbolicReasoning), Some(1.0));
+
+        platform.queue.clear();
+        let lineage = Lineage::root(CorrelationId::from_string("quiet"), "kernel/test");
+        let outcome =
+            platform.stage_reason(start().saturating_add(Duration::from_mins(5)), &lineage);
+        // Premise: the stage really was quiet.
+        assert_eq!(outcome.detail, "nothing in the queue to reason about");
+        assert!(
+            platform.scopes_reported.is_empty(),
+            "{:?}",
+            platform.scopes_reported
+        );
+        for scope in Scope::ALL {
+            assert_eq!(gauge(&platform, scope), Some(0.0), "{scope:?}");
+        }
     }
 
     fn reasoning_platform() -> Platform {

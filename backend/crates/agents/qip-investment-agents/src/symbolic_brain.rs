@@ -30,22 +30,45 @@ use std::sync::Arc;
 /// The input every fact this agent states is computed from.
 const SOURCE: &[&str] = &["symbolic-derivation"];
 
-/// How many reasoners produced a conclusion rather than a refusal.
-fn reasoners_derived(view: &SymbolicView) -> usize {
+/// Each of the six reasoners, by the fact label stated when it produced a
+/// conclusion rather than a refusal, in the order the module doc names them.
+///
+/// The label is stated only for a reasoner that derived, and coverage reads
+/// the label's presence (`coverage::Scope::SymbolicOntology` and its five
+/// siblings), so a refusal is a gap in the scope it belongs to rather than a
+/// zero inside a scope that still reads covered.
+fn reasoners(view: &SymbolicView) -> [(&'static str, &'static str, bool); 6] {
     [
-        view.rules_eligible.is_some(),
+        (
+            "ontology",
+            "ontology_derived",
+            view.subject_type.is_some() || view.facts_inferred.is_some(),
+        ),
         // The timeline derived only if it held at least one link: no link
         // asked is nothing derived, and every link refused is the temporal
         // reasoner refusing, not ordering.
-        view.timeline_links > view.timeline_links_refused,
-        view.claim_probability.is_some(),
-        view.blocking_constraints.is_some(),
-        view.causal_explanations.is_some() || view.causal_reach.is_some(),
-        view.subject_type.is_some() || view.facts_inferred.is_some(),
+        (
+            "temporal",
+            "temporal_derived",
+            view.timeline_links > view.timeline_links_refused,
+        ),
+        (
+            "causal",
+            "causal_derived",
+            view.causal_explanations.is_some() || view.causal_reach.is_some(),
+        ),
+        ("rule", "rule_derived", view.rules_eligible.is_some()),
+        (
+            "probabilistic",
+            "probabilistic_derived",
+            view.claim_probability.is_some(),
+        ),
+        (
+            "constraint",
+            "constraint_derived",
+            view.blocking_constraints.is_some(),
+        ),
     ]
-    .into_iter()
-    .filter(|derived| *derived)
-    .count()
 }
 
 /// Reads the kernel's latest symbolic derivation.
@@ -78,7 +101,13 @@ impl Agent for SymbolicReasoningAnalyst {
             ));
         }
 
-        let derived = reasoners_derived(&view);
+        let kinds = reasoners(&view);
+        let derived = kinds.iter().filter(|(_, _, held)| *held).count();
+        let refused: Vec<&str> = kinds
+            .iter()
+            .filter(|(_, _, held)| !*held)
+            .map(|(kind, _, _)| *kind)
+            .collect();
         let rules = match view.rules_eligible {
             Some(true) => "eligible",
             Some(false) => "not eligible",
@@ -117,6 +146,13 @@ impl Agent for SymbolicReasoningAnalyst {
                 .to_string(),
             "advisory: nothing here sizes or sends".to_string(),
         ];
+        if !refused.is_empty() {
+            caveats.push(format!(
+                "no conclusion from the {} reasoner(s): their scopes are not covered by this \
+                 finding",
+                refused.join(", ")
+            ));
+        }
         if !view.agrees_with_review {
             caveats.push("the rule pack's eligibility disagrees with the review's approval".into());
         }
@@ -164,6 +200,13 @@ impl Agent for SymbolicReasoningAnalyst {
                     .collect(),
             )
             .caveats(caveats);
+        // One flag per reasoner that derived, and none for one that refused:
+        // the flag's presence is what covers that reasoner's scope.
+        for (_, label, held) in kinds {
+            if held {
+                builder = builder.fact(computed(ctx, label, 1.0, "flag", SOURCE));
+            }
+        }
         // Each figure below is stated only where its reasoner produced it: a
         // probability nobody computed would read as a coin flip.
         if let Some(eligible) = view.rules_eligible {
