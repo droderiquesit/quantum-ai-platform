@@ -99,6 +99,7 @@ pub mod quantum_routing;
 pub mod quote_loop;
 pub mod reconciliation_breaks;
 pub mod references;
+mod refusal_seam;
 pub mod regime_allocation;
 pub mod regime_transition;
 pub mod replay_divergence;

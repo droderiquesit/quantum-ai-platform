@@ -928,18 +928,10 @@ pub struct Platform {
     /// reconciliation halt. Each function that makes one demands the gate the
     /// routing mints; this is the record of which routing that was.
     hard_limit_routings: BTreeMap<HardLimitDecision, String>,
-    /// The book-decision subjects [`Self::determine_book_decision`] refuses,
-    /// in this crate's unit tests and nowhere else (round-81 review).
-    ///
-    /// `Router::determine` refuses only a blank subject or an invalid policy,
-    /// and the platform's router is `Router::default` with no setter, so every
-    /// arm that answers a refused routing was unreachable — written, reviewed,
-    /// and run by nothing. `#[cfg(test)]` is the whole of the seam's reach: an
-    /// integration test, a composition root and a deployed binary compile a
-    /// `Platform` without the field, so no configuration can make a production
-    /// routing refuse, and none can make one succeed that would not.
-    #[cfg(test)]
-    refused_book_decisions: BTreeSet<String>,
+    /// What [`Self::determine_book_decision`] consults before the router:
+    /// the subjects a unit test asked it to refuse, and nothing in any other
+    /// build (round-81 review). See `crate::refusal_seam`.
+    refused_book_decisions: crate::refusal_seam::RefusedBookDecisions,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -7131,8 +7123,7 @@ impl Platform {
             pretrade_routing: None,
             monitor_routing: None,
             hard_limit_routings: BTreeMap::new(),
-            #[cfg(test)]
-            refused_book_decisions: BTreeSet::new(),
+            refused_book_decisions: crate::refusal_seam::RefusedBookDecisions::default(),
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
             routing_reputation: routing_reputation_resumed,
@@ -18164,22 +18155,10 @@ impl Platform {
     /// label the record and choose nothing, because the `Required` arm consults
     /// no ladder.
     pub fn determine_book_decision(&self, subject: &str) -> Result<DeterministicRouting> {
-        #[cfg(test)]
-        if self.refused_book_decisions.contains(subject) {
-            return Err(Error::denied(format!(
-                "the unit test's router refuses '{subject}'; this refusal exists only under \
-                 #[cfg(test)]"
-            )));
+        if let Some(refusal) = self.refused_book_decisions.refusal(subject) {
+            return Err(refusal);
         }
         self.cost_router.determine(subject, self.book_conditions())
-    }
-
-    /// Make [`Self::determine_book_decision`] refuse `subject` from now on, so
-    /// a unit test can drive the arm that answers a refused routing. Test-only;
-    /// see the field.
-    #[cfg(test)]
-    fn refuse_book_decision(&mut self, subject: impl Into<String>) {
-        self.refused_book_decisions.insert(subject.into());
     }
 
     /// The rationale of the gate the last decision of `kind` was made under,
@@ -32783,6 +32762,13 @@ impl Platform {
     pub(crate) fn replace_event_log(&mut self, event_log: EventLog) {
         self.event_log = event_log;
     }
+
+    /// Make [`Self::determine_book_decision`] refuse `subject` from now on, so
+    /// a unit test can drive the arm that answers a refused routing
+    /// (round-81 review, R12-RISK-3022). See `crate::refusal_seam`.
+    pub(crate) fn refuse_book_decision(&mut self, subject: impl Into<String>) {
+        self.refused_book_decisions.refuse(subject);
+    }
 }
 
 /// The universe the unit-test platforms below trade in: the symbols named, listed.
@@ -34092,7 +34078,10 @@ mod decide_tests {
         name: &str,
         records: Vec<crate::model_serving::ModelPromotion>,
     ) -> (Platform, std::path::PathBuf) {
-        let directory = std::env::temp_dir().join(format!(
+        // Not the environment's temp directory, for the reason
+        // `dormancy_boot_log_path` gives: `architecture.rs` refuses the
+        // process environment in any `src/` file's text, tests included.
+        let directory = std::path::PathBuf::from("/tmp").join(format!(
             "qip-kernel-{name}-{}-{}",
             std::process::id(),
             Timestamp::from_secs(1_760_000_000).as_nanos()
