@@ -64,14 +64,21 @@ written by the code, not read from the router, and coverage came from holding
 a router rather than from what it routed, which is the registration-style
 coverage the ruling itself rejects. That is decision 4's own reasoning.
 
-So the order of authority is settled this way, and the owner should say if it
-is wrong. The 2026-10-31 rulings were made by the orchestrator under the
-owner's delegation of that day. ADR 0725 was accepted by the owner directly,
-later, by merging the pull request that offered it "as written", and it
-decides the quiet sweep explicitly and for a stated reason. The owner's direct
-and later acceptance governs: **a quiet sweep composes no finding**, and the
-code is back to doing exactly that. The ruling's "one per round" is read as one
-per round in which the router routed something.
+**This is not settled, and it is the owner's to settle.** A first reading
+here held that the owner's direct acceptance of ADR 0725 outranks the
+2026-10-31 ruling, because that ruling was written by the orchestrator under
+delegation. Two readers refuted that too, and they are right: the owner's
+words of 2026-10-31 were "You can make all my decisions go", ADR 0725 itself
+calls the ruling the owner's, and nothing in the repository ranks one owner
+act above the other. The code is at ADR 0725 decision 4 (a quiet sweep
+composes no finding), because that is what is on `main` and both attempts to
+change it were refuted. R12-AMBIENT-3027 stays PARTIAL until the owner says
+which governs:
+
+| Choice | What follows |
+|---|---|
+| ADR 0725 decision 4 governs | A quiet sweep composes no finding, and its gauge reads 0 like a removed router. The row closes on the code as it stands |
+| The ruling governs: one finding per round | The router must be consulted on every round, so that a quiet round's finding reports something the router measured, not a zero the code wrote. That is a design change to the router and an amendment to ADR 0725, and both come back for acceptance |
 
 ## What this file does not do
 
