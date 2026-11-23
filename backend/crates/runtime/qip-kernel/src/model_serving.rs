@@ -312,6 +312,29 @@ impl ModelPromotion {
             self.stages.join("\u{1f}")
         )
     }
+
+    /// Whether this record carries a stage line for every one of
+    /// [`qip_ai::registry::PROMOTION_TESTS`] (R12-MODEL-4021): the mark that
+    /// the promotion it records spent a clearance minted on all of them,
+    /// [`qip_ai::registry::ADVERSARIAL_TEST`] included.
+    ///
+    /// `promote_model_from` writes one `"{name}: {evidence} on {window}"`
+    /// line per test, read off the clearance's results, into the signed
+    /// stages; a rollback copies the stages of the promotion it restores. A
+    /// record written by a build before the adversarial test was a promotion
+    /// test has no `adversarial:` line, and readmitting its card after a
+    /// restart would return a model nobody attacked to production. Matched
+    /// on the delimited name before the first `": "`, never as a substring,
+    /// because `distilled_adversarial` contains `adversarial`.
+    pub fn records_every_promotion_test(&self) -> bool {
+        qip_ai::registry::PROMOTION_TESTS.iter().all(|name| {
+            self.stages.iter().any(|stage| {
+                stage
+                    .split_once(": ")
+                    .is_some_and(|(head, _)| head == *name)
+            })
+        })
+    }
 }
 
 /// Shadow rounds a self-fitted model must win before it may be promoted: the
@@ -1095,13 +1118,29 @@ impl Platform {
         if !matches!(card.stage, ModelStage::Production | ModelStage::Retired) {
             return registry.register(card);
         }
-        let promoted = promotions_in(self.event_log())?
+        let records: Vec<ModelPromotion> = promotions_in(self.event_log())?
             .into_iter()
-            .any(|record| record.reference == reference && record.artifact_digest == digest);
-        if !promoted {
+            .filter(|record| record.reference == reference && record.artifact_digest == digest)
+            .collect();
+        if records.is_empty() {
             return Err(Error::denied(format!(
                 "{reference} is not readmitted at artifact {digest}: no promotion record on the \
                  log promoted it with those bytes"
+            )));
+        }
+        // A record from a build whose promotion tests did not include the
+        // adversarial attack is not a clearance this build would mint: the
+        // model it names was never attacked, and readmitting it would put an
+        // unattacked model back in production on restart.
+        if !records
+            .iter()
+            .any(ModelPromotion::records_every_promotion_test)
+        {
+            return Err(Error::denied(format!(
+                "{reference} is not readmitted at artifact {digest}: the log's promotion record \
+                 does not show every promotion test ({}) passed; promote it again through the \
+                 tests",
+                qip_ai::registry::PROMOTION_TESTS.join(", ")
             )));
         }
         let admission = JournaledAdmission::minted_from_the_promotion_log(&reference, &digest);

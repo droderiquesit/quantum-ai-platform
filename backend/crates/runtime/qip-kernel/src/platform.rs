@@ -33613,6 +33613,129 @@ mod decide_tests {
         );
     }
 
+    /// R12-MODEL-4021, the restart door read against the log. A promotion
+    /// record from a build before the adversarial attack was a promotion
+    /// test names a model nobody attacked; readmitting its card on restart
+    /// would put that model back in production without a clearance this
+    /// build would mint. So the record must carry a stage line for every
+    /// promotion test, matched on the delimited name: the legacy record here
+    /// also carries `distilled_adversarial`, which a substring match on
+    /// `adversarial` would take for the teacher's attack. And the record must
+    /// name the card's own reference at the card's own bytes: a card at
+    /// another digest, or another reference at the promoted digest, is
+    /// refused while a matching record is on the log, which is what an
+    /// empty-log test cannot show.
+    ///
+    /// Mutations: drop the `records_every_promotion_test` check in
+    /// `readmit_promoted_card` (the legacy card is readmitted); match the
+    /// test name as a substring (likewise); drop `record.artifact_digest ==
+    /// digest` (the card at other bytes is readmitted); drop
+    /// `record.reference == reference` (the other reference is readmitted).
+    #[test]
+    fn a_card_is_readmitted_only_on_a_record_of_its_own_bytes_that_shows_every_promotion_test() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, ModelProducer, ModelPromotion};
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST,
+            DISTILLED_ADVERSARIAL_TEST, ModelCard, ModelRegistry, ModelStage, PROMOTION_TESTS,
+            REPLAY_TEST, RISK_ENVELOPE_TEST,
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let digest = "a".repeat(64);
+        let record = |reference: &str, stages: Vec<String>| ModelPromotion {
+            reference: reference.to_string(),
+            name: "bar-linear".to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: digest.clone(),
+            arity: 2,
+            distilled: None,
+            displaced: Vec::new(),
+            producer: ModelProducer::TrainingPipeline,
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages,
+            rollback_parent: None,
+            signature: None,
+            at: now,
+        };
+        let card = |version: &str, bytes: &str| {
+            let mut card = ModelCard::new(
+                qip_core::ModelId::from_string(format!("m-{version}")),
+                "bar-linear",
+                version,
+                "desk",
+                now,
+            );
+            card.stage = ModelStage::Production;
+            card.artifact_digest = Some(bytes.to_string());
+            card
+        };
+        let line = |name: &str| format!("{name}: measured on window w");
+        let legacy: Vec<String> = [
+            REPLAY_TEST,
+            CALIBRATION_TEST,
+            CLASSICAL_BASELINE_TEST,
+            RISK_ENVELOPE_TEST,
+            DISTILLED_ADVERSARIAL_TEST,
+        ]
+        .iter()
+        .map(|name| line(name))
+        .collect();
+        let full: Vec<String> = PROMOTION_TESTS.iter().map(|name| line(name)).collect();
+        // Premises: the legacy record lacks exactly the teacher's attack,
+        // and the full one carries every test.
+        assert!(PROMOTION_TESTS.contains(&ADVERSARIAL_TEST));
+        assert!(!legacy.contains(&line(ADVERSARIAL_TEST)));
+        assert!(!record("x@1", legacy.clone()).records_every_promotion_test());
+        assert!(record("x@1", full.clone()).records_every_promotion_test());
+
+        let mut platform = small_book_platform();
+        platform
+            .journal_record(record("bar-linear@1", legacy), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("1", &digest))
+            .expect_err("a card whose record shows no adversarial test was readmitted");
+        assert!(
+            refused
+                .message()
+                .contains("does not show every promotion test"),
+            "{}",
+            refused.message()
+        );
+
+        platform
+            .journal_record(record("bar-linear@2", full), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let mut restarted = ModelRegistry::new();
+        platform
+            .readmit_promoted_card(&mut restarted, card("2", &digest))
+            .expect("a card on a record showing every test is readmitted");
+        assert!(restarted.admitted_at("bar-linear@2", &digest));
+
+        let other_bytes = "b".repeat(64);
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("2", &other_bytes))
+            .expect_err("a card at bytes the log never promoted was readmitted");
+        assert!(
+            refused
+                .message()
+                .contains("no promotion record on the log promoted it with those bytes"),
+            "{}",
+            refused.message()
+        );
+        let refused = platform
+            .readmit_promoted_card(&mut ModelRegistry::new(), card("3", &digest))
+            .expect_err("a reference the log never promoted was readmitted at its bytes");
+        assert!(
+            refused
+                .message()
+                .contains("no promotion record on the log promoted it with those bytes"),
+            "{}",
+            refused.message()
+        );
+    }
+
     /// R12-WORLD-9035: the cycle grows a future tree from the held world
     /// events, partitioned by each event's class, and the next cycle's bars
     /// reweight and prune it while every family stays a distribution and the

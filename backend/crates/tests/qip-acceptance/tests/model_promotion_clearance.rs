@@ -368,3 +368,102 @@ fn the_proofs_cannot_be_copied_or_decoded_and_the_deep_brain_obtains_them() {
         "the deep brain's restore registers a card without the log's admission"
     );
 }
+
+/// The trait each hand-written `impl … for <ty>` in `text` implements, by
+/// its last path segment with generics stripped, for every `impl` whose
+/// self type's last segment is `ty`; and how many trait impls were read.
+fn trait_impls_for(text: &str, ty: &str) -> (Vec<String>, usize) {
+    let last_segment = |path: &str| -> String {
+        let path = path.split('<').next().unwrap_or(path);
+        path.rsplit("::").next().unwrap_or(path).trim().to_string()
+    };
+    let mut found = Vec::new();
+    let mut read = 0;
+    for at in token_offsets(text, "impl") {
+        let Some(open) = text[at..].find('{') else {
+            continue;
+        };
+        let header = text[at + "impl".len()..at + open]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let header = header.split(" where ").next().unwrap_or(&header);
+        let Some((implemented, self_type)) = header.rsplit_once(" for ") else {
+            continue;
+        };
+        read += 1;
+        if last_segment(self_type) != ty {
+            continue;
+        }
+        let implemented = implemented.trim();
+        // `impl<'de> Deserialize<'de> for …`: drop the impl's own generics.
+        let implemented = if implemented.starts_with('<') {
+            let mut depth = 0usize;
+            let mut end = implemented.len();
+            for (index, character) in implemented.char_indices() {
+                match character {
+                    '<' => depth += 1,
+                    '>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = index + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            implemented[end..].trim()
+        } else {
+            implemented
+        };
+        found.push(last_segment(implemented));
+    }
+    (found, read)
+}
+
+/// R12-MODEL-4021: the derive check above reads the nearest `#[derive]`
+/// only, so a hand-written `impl Clone for PromotionClearance` or
+/// `impl<'de> Deserialize<'de> for JournaledAdmission` anywhere in
+/// production code would hand out a proof the constructor never minted and
+/// pass it. Every trait implemented by hand for either proof, in any
+/// production source, must be one that neither copies, defaults, converts
+/// nor decodes one.
+///
+/// Mutations: add `impl Clone for PromotionClearance { … }` to the registry
+/// — the allow-list assertion fires; add
+/// `impl<'de> serde::Deserialize<'de> for JournaledAdmission` — likewise.
+#[test]
+fn no_hand_written_impl_copies_converts_or_decodes_a_proof() {
+    const HARMLESS: [&str; 4] = ["Debug", "Display", "PartialEq", "Eq"];
+    // Premise: the reader sees the shapes it must refuse.
+    let fixture = "impl Clone for PromotionClearance {\n}\nimpl<'de> serde::Deserialize<'de> \
+                   for qip_ai::registry::JournaledAdmission where X: Y {\n}\n";
+    assert_eq!(
+        trait_impls_for(fixture, "PromotionClearance").0,
+        vec!["Clone".to_string()]
+    );
+    assert_eq!(
+        trait_impls_for(fixture, "JournaledAdmission").0,
+        vec!["Deserialize".to_string()]
+    );
+    let sources = production_sources();
+    let mut read = 0;
+    for ty in ["PromotionClearance", "JournaledAdmission"] {
+        for (path, text) in &sources {
+            let (traits, seen) = trait_impls_for(text, ty);
+            read += seen;
+            for implemented in traits {
+                assert!(
+                    HARMLESS.contains(&implemented.as_str()),
+                    "{path} implements `{implemented}` for `{ty}` by hand; a proof that can be \
+                     copied, defaulted, converted or decoded is held without the constructor"
+                );
+            }
+        }
+    }
+    assert!(
+        read > 100,
+        "premise: the scan read the workspace's trait impls, and it read {read}"
+    );
+}

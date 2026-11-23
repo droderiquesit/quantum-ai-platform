@@ -6220,4 +6220,67 @@ mod tests {
         );
         Ok(())
     }
+    /// R12-MODEL-4021, on the arm `main.rs` ships. The committed deep brain
+    /// builds this engine through `EvolutionEngine::over_synthetic` with
+    /// `EvolutionConfig::default()` (and so `LearningConfig::default()`), and
+    /// every learning round it runs hands its candidate to the promote stage.
+    /// On the synthetic exchange's default walk no fit clears the skill bar,
+    /// so the stage refuses each candidate before the adversarial attack and
+    /// the promotion clearance are reached, and nothing enters production.
+    /// This pins the half that holds on committed configuration — the stage
+    /// runs every round and promotes nothing unattacked — and says plainly
+    /// that the attack itself is not reached on this arm.
+    ///
+    /// Mutation: drop `round.promotion = self.learning.promote_candidate(..)`
+    /// from `maybe_learn` — every round's promotion is `None` and the
+    /// stage assertion fires.
+    #[test]
+    fn the_shipped_synthetic_arm_hands_every_round_to_the_promote_stage_and_promotes_nothing()
+    -> Result<()> {
+        let mut platform = platform()?;
+        let mut engine = engine_with(EvolutionConfig::default());
+        let mut now = start();
+        for _ in 0..((engine.config.minimum_bars as i64 + 30) * 6) {
+            now = now.saturating_add(Duration::from_mins(1));
+            engine.sense(&mut platform, now)?;
+        }
+        let mut rounds = Vec::new();
+        for cycle in 1..=24u64 {
+            if let Some(round) = engine.maybe_learn(&mut platform, cycle, now)? {
+                rounds.push(round);
+            }
+            for _ in 0..30 {
+                now = now.saturating_add(Duration::from_mins(1));
+                engine.sense(&mut platform, now)?;
+            }
+        }
+        // Premise: the default cadence ran rounds that fitted something.
+        assert_eq!(rounds.len(), 3, "every eighth of 24 cycles is a round");
+        for round in &rounds {
+            assert!(
+                round.refused_by_door.is_none(),
+                "premise: the synthetic stream was admitted: {:?}",
+                round.refused_by_door
+            );
+            assert!(
+                round.registration.is_some(),
+                "premise: the round fitted and registered a candidate"
+            );
+            assert!(
+                matches!(
+                    round.promotion,
+                    Some(crate::learning::PromotionOutcome::NotPromoted { .. })
+                ),
+                "the round's candidate did not reach the promote stage, or it promoted: {:?}",
+                round.promotion
+            );
+        }
+        assert!(
+            platform.model_promotions().is_empty(),
+            "a model reached production on the shipped synthetic arm: {:?}",
+            platform.model_promotions().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(engine.learning_stats().promoted, 0);
+        Ok(())
+    }
 }
