@@ -624,25 +624,31 @@
   },
   {
     "id": "R12-REASON-3026",
-    "status": "PARTIAL",
-    "current": "Reasoners (rules, temporal, network, constraint, lifecycle) exist and are tested, and the kernel runs them in REASON (reason_symbolically). No agent in the organisation wraps them.",
+    "status": "COMPLETE",
+    "current": "SymbolicReasoningAnalyst sits in the production roster (chief.rs standard_late_agents), built by Organisation::standard from Platform::with_model_provider on qip-api, qip-fastbrain and qip-deepbrain with no configuration gate. stage_reason runs reason_symbolically (rules, temporal, causal abduce/intervene, probabilistic posterior, constraint acting, ontology typing) and journals the derivation, then dispatch_late hands it to the analyst, whose finding carries the derivation and its machine-checkable constraint ids. Coverage is one scope per kind of reasoning (SymbolicOntology, SymbolicTemporal, SymbolicCausal, SymbolicRule, SymbolicProbabilistic, SymbolicConstraint), each covered only where that reasoner derived, and record_scopes_reported writes every scope's gauge on every REASON stage, zero on a quiet one. The deep brain refuses to start when its organisation did not construct the analyst (brains::standard).",
     "evidence": [
-      "backend/crates/runtime/qip-kernel/src/platform.rs:13574 reason_symbolically: the kernel runs the reasoners in REASON",
-      "backend/crates/agents/qip-investment-agents/src/chief.rs:370 standard_agents: no symbolic agent",
-      "backend/crates/tests/qip-acceptance/tests/architecture.rs:1777 anchor requiring qip-investment-agents -> qip-reasoning-engine to stay a dev-only edge"
+      "backend/crates/agents/qip-investment-agents/src/chief.rs:761 standard_late_agents constructs SymbolicReasoningAnalyst",
+      "backend/crates/agents/qip-investment-agents/src/coverage.rs:124-168 one Scope per kind of symbolic reasoning",
+      "backend/crates/runtime/qip-kernel/src/platform.rs reason_symbolically (stage_reason) and record_scopes_reported (every REASON stage)",
+      "backend/crates/apps/qip-deepbrain/src/brains.rs:326 standard refuses a node whose organisation did not construct the symbolic brain",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:2669 each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:2495 the_cycles_own_panel_report_carries_a_symbolic_finding_for_the_hypothesis_just_reasoned",
+      "backend/crates/runtime/qip-kernel/tests/symbolic_federation.rs:2569 a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported",
+      "backend/crates/agents/qip-investment-agents/tests/organisation.rs:5097 removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage",
+      "backend/crates/apps/qip-deepbrain/tests/brains.rs:184 removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage"
     ],
-    "gap": "2026-11-23 (orchestrator, round 80): the 'No symbolic agent' text below is stale. SymbolicReasoningAnalyst sits in chief.rs standard_late_agents, and stage_reason reaches it on qip-api, qip-fastbrain and qip-deepbrain with no configuration gate; a callers reader did not refute that. A tests reader refuted the row on six grounds code can fix: (1) coverage.rs Scope::SymbolicReasoning counts covered when the label reasoners_derived is present, and symbolic_brain.rs analyse emits it even at zero, so a derivation in which all six reasoners refused reads as covered, untested; (2) the six reasoning kinds share one scope, so one kind's blind spot is not reported; (3) qip-deepbrain tests/brains.rs proves removal with registry.without on a manifest-built registry, so deleting the analyst from standard_late_agents fails nothing; (4) constraint evidence is asserted only with fixture ids, never the ids symbolic_stage.rs acting emits in a cycle; (5) record_scopes_reported runs only when the queue holds work, so qip_organisation_scope_covered stays 1 after a quiet cycle; (6) organisation.rs's test doc names a mutation against standard_agents that no longer applies. No symbolic agent. qip-investment-agents cannot ship against qip-reasoning-engine: an acceptance anchor (architecture.rs:1777) requires that edge to stay dev-only. Needs an injected seam — a trait in this crate the kernel implements over its symbolic stage, passed into the organisation — so closing it needs a platform.rs call-site change.",
+    "gap": "",
     "implemented": true,
     "tested": true,
-    "integrated": false,
+    "integrated": true,
     "deployable": false,
     "e2e": false,
     "depends_on": [],
     "blocked_by": "",
-    "verification": "cargo test -p qip-investment-agents --test organisation",
+    "verification": "cargo test -p qip-kernel --test symbolic_federation; cargo test -p qip-investment-agents --test organisation; cargo test -p qip-deepbrain --test brains",
     "work_item": "",
     "size": "L",
-    "notes": "Lane L16, 2026-10-18: re-graded from the code, nothing closed. The stale \"none is called by the kernel\" text is corrected."
+    "notes": "Regraded PARTIAL->COMPLETE 2026-11-23 (orchestrator, round 80) on commits fa600c3e3 and a5114376b, after two independent readers (production-reach lens and test-strength lens) both failed to refute on rework 1. The first build was refuted by the tests lens on three code-fixable grounds (series names read back through Scope::as_str; removal shown only through BrainRegistry::without; a documented mutation that could not fire), all fixed in a5114376b. Mutations, each restored: standard_late_agents emptied fails brains.rs ('no registered brain covers [\"symbolic-reasoning\"]') and organisation.rs; brains.rs never marking an entry unbuilt fails 'a node whose organisation does not construct the symbolic brain is refused'; SymbolicTemporal mapped to symbolic_ontology fails the cycle test (left None right Some(1.0)); a rule entry forced false fails organisation.rs (left Some(5.0) right Some(6.0)). Disclosed by both readers and not a refutation: symbolic_brain.rs marks causal derived whenever CausalGraph::abduce or ::intervene returns Ok, which on an edgeless graph is Derived with no candidates, so SymbolicCausal can read covered with zero causal content; a follow-up to count it only with a candidate is queued. The replay checker symbolic_stage.rs verify has only a qip-cli caller; derive_under solves the constraint problem inside the deployed REASON stage. deployable stays false: nothing is deployed (decision 39). Superseded gap: 2026-11-23 (orchestrator, round 80): the 'No symbolic agent' text below is stale. SymbolicReasoningAnalyst sits in chief.rs standard_late_agents, and stage_reason reaches it on qip-api, qip-fastbrain and qip-deepbrain with no configuration gate; a callers reader did not refute that. A tests reader refuted the row on six grounds code can fix: (1) coverage.rs Scope::SymbolicReasoning counts covered when the label reasoners_derived is present, and symbolic_brain.rs analyse emits it even at zero, so a derivation in which all six reasoners refused reads as covered, untested; (2) the six reasoning k"
   },
   {
     "id": "R12-AMBIENT-3027",
