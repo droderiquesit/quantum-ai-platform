@@ -5085,10 +5085,14 @@ fn desk_with_a_symbolic_derivation(view: qip_investment_agents::desk::SymbolicVi
 /// concluded — and removing it drops symbolic reasoning, and each of the six
 /// per-kind scopes, from coverage.
 ///
-/// Mutations: return an empty list from `standard_late_agents` (the premise
-/// finding is missing); count the refused links as held (the
-/// `timeline_links_refused` figure moves); report a refused reasoner as
-/// derived (`reasoners_derived` moves).
+/// Mutations, each run: return an empty list from `standard_late_agents`
+/// (the premise finding is missing); in `symbolic_brain.rs::reasoners`, make
+/// the rule entry `false` — the fixture's rule reasoner derived, so
+/// `reasoners_derived` reads 5, not 6. The fixture has every reasoner
+/// derived, so a mutation that reports a *refused* reasoner as derived cannot
+/// fire here; that direction is held by
+/// `a_derivation_in_which_every_reasoner_refused_covers_no_symbolic_scope`
+/// and the per-kind test below.
 #[test]
 fn removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage() -> Result<()> {
     let desk = desk_with_a_symbolic_derivation(a_symbolic_derivation());

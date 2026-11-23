@@ -54,7 +54,7 @@ pub fn assemble(inputs: Inputs) -> Result<Assembled> {
         inputs.language_model,
         Box::new(qip_training::serve::InTreeProvider),
     )?;
-    let brains = brains::standard(platform.organisation().roster())?;
+    let brains = brains::standard(platform.organisation())?;
     let provenance = trust::harden_central(
         &mut platform,
         inputs.envelope_key.as_deref(),

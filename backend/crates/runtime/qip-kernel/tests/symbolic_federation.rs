@@ -2654,8 +2654,17 @@ fn kinds_derived(
 /// The failure this guards: the six kinds shared one scope, and the gauge for
 /// it read 1 whatever any one reasoner did.
 ///
-/// Mutation: in `symbolic_brain.rs::reasoners`, make the rule entry `false`
-/// — the rule series reads 0 against a derivation whose pack evaluated.
+/// Each series is read by the literal label an operator charts, never
+/// through `Scope::as_str`, which is the mapping under test: read through it,
+/// mapping `SymbolicTemporal` to `"symbolic_ontology"` passed, and an operator
+/// would have had no temporal series at all. The seven literals are asserted
+/// distinct, and every one is asserted written.
+///
+/// Mutations: in `symbolic_brain.rs::reasoners`, make the rule entry `false`
+/// — the rule series reads 0 against a derivation whose pack evaluated; in
+/// `coverage.rs::Scope::as_str`, map `SymbolicTemporal` to
+/// `"symbolic_ontology"` — the `"symbolic_temporal"` series is never written
+/// and reads `None`.
 #[test]
 fn each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle() -> Result<()> {
     use qip_investment_agents::coverage::Scope;
@@ -2668,15 +2677,38 @@ fn each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle() -> Res
         "premise: at least one reasoner derived in the cycle"
     );
     let snapshot = platform.telemetry().metrics.snapshot();
-    let gauge = |scope: Scope| {
+    let gauge = |series: &str| {
         snapshot.gauge(
             names::ORGANISATION_SCOPE_COVERED,
-            &qip_observability::metrics::labels([("scope", scope.as_str())]),
+            &qip_observability::metrics::labels([("scope", series)]),
         )
     };
+    let series = |scope: Scope| match scope {
+        Scope::SymbolicOntology => "symbolic_ontology",
+        Scope::SymbolicTemporal => "symbolic_temporal",
+        Scope::SymbolicCausal => "symbolic_causal",
+        Scope::SymbolicRule => "symbolic_rule",
+        Scope::SymbolicProbabilistic => "symbolic_probabilistic",
+        Scope::SymbolicConstraint => "symbolic_constraint",
+        other => panic!("not a kind of symbolic reasoning: {other:?}"),
+    };
+    let literals: std::collections::BTreeSet<&str> =
+        kinds.iter().map(|(scope, _)| series(*scope)).collect();
+    assert_eq!(kinds.len(), 6, "premise: six kinds of symbolic reasoning");
+    assert_eq!(
+        literals.len(),
+        6,
+        "two kinds share one series: {literals:?}"
+    );
+    assert!(!literals.contains("symbolic_reasoning"));
+    assert_eq!(
+        gauge("symbolic_reasoning"),
+        Some(1.0),
+        "the aggregate series reads 1 when any kind derived"
+    );
     for (scope, derived) in kinds {
         assert_eq!(
-            gauge(scope),
+            gauge(series(scope)),
             Some(if derived { 1.0 } else { 0.0 }),
             "{scope:?}: derived {derived}"
         );
