@@ -318,11 +318,16 @@ pub fn meta_brain(reviewed_at: Timestamp) -> AgentManifest {
         "measures which specialists are reliable in which regime, allocates research attention by that record, and resolves a contested panel by re-weighing its findings by their authors' records",
         reviewed_at,
     )
+    // Research memory and nothing else (ADR 0466, decision 2). The models'
+    // record by regime is handed with the panel (`PanelView::model_records`,
+    // ADR 0724), never reached through the model-registry gate: that gate
+    // opens the whole `ModelsView`, which this agent has no use for.
     .with_capabilities(CapabilitySet::of([Capability::ReadResearchMemory]))
     .with_owner(owners::QUANTITATIVE)
     .escalating_to(ids::CHIEF)
     .with_competencies(vec![
         "per-(agent, regime) hit rates over resolved calls".into(),
+        "per-(model, regime) mean Brier over the tournament's scored forecasts".into(),
         "attention weights proportional to the record in the regime in force".into(),
         "a reliability-weighted balance over a contested panel".into(),
     ])

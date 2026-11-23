@@ -1543,6 +1543,12 @@ pub mod names {
     pub const TICK_CAMPAIGNS_OPENED: &str = "qip_tick_campaigns_opened_total";
     /// Ambient attention decisions, by pathway and disposition.
     pub const AMBIENT_ATTENTION: &str = "qip_ambient_attention_total";
+    /// One series per `qip_investment_agents::coverage::AmbientScope`: 1 when
+    /// the sweep composed an informative finding evidencing that scope, 0
+    /// when it did not (R12-AMBIENT-3027, ADR 0725). Written every sweep, so
+    /// a deep brain whose attention router returned nothing reads 0 rather
+    /// than keeping the last sweep's 1.
+    pub const AMBIENT_SCOPE_COVERED: &str = "qip_ambient_scope_covered";
     /// R12-OBS-7132: the action guard's verdict on one channel-health
     /// dimension, by `channel`, `dimension` and `outcome`. Recorded from the
     /// verdicts the guard decided on, never from a re-run of the checks, by

@@ -3251,7 +3251,7 @@
       "backend/crates/services/qip-brokers",
       ".github/workflows/ci.yml:27-481 jobs format, lint, test, dependency-policy, security-audit, trivy, sbom, infrastructure, secrets"
     ],
-    "gap": "Several §27 contracts missing; observability not ingested.",
+    "gap": "Several §27 contracts missing; observability not ingested. 2026-11-22: a read-only triage called this row already met and two independent readers on 2026-11-22, who read the code and ran no test, refuted that. The foundations that do not yet stand: the ledger daemon is never built by the deploy workflow (its image matrix names qip-api, qip-fastbrain, qip-deepbrain, qip-edge-node and the portal) and the ledgerd variable is null in every environment, so no deployed process holds a ledger; two canonical contracts (Episode, RiskEnvelope) have no user outside qip-contracts, and fifteen R12-CONTRACT rows are still PARTIAL; metric collection and every alert policy are off in every committed configuration, so observability is emission only; the venue adapter's conformance test asserts through submit_declared, which no production code calls; and docs/architecture/phase-register.json records phase 0 as entered, not exited. Building the ledger image means editing the deploy workflow, a protected path.",
     "implemented": true,
     "tested": true,
     "integrated": false,

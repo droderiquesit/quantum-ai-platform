@@ -229,6 +229,31 @@ pub struct PanelView {
     pub findings: Vec<AgentFinding>,
     /// Whether the panel disagreed in direction ([`OrganisationReport::is_contested`]).
     pub contested: bool,
+    /// Every forecaster's record in every regime the model tournament has
+    /// scored it in (R12-AMBIENT-3024, ADR 0724), as the caller last handed
+    /// it through [`Organisation::hand_model_records`]. Handed for the reason
+    /// the findings are: an arbiter that needed the model-registry capability
+    /// to read it would hold the whole `ModelsView` for the sake of one list.
+    /// Empty where the caller handed none.
+    pub model_records: Vec<ModelRegimeRecord>,
+}
+
+/// One forecaster's resolved record in one regime (R12-AMBIENT-3024): the
+/// regime is the one its questions were *opened* in, so a record earned in a
+/// calm tape is never read as a record in a stressed one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelRegimeRecord {
+    /// The tournament's name for it: `detector:<class>`, `analyst:<agent>`,
+    /// `model:<reference>`.
+    pub model: String,
+    /// `{market}/{volatility}`, as `Platform::regime_context` keys it.
+    pub regime: String,
+    /// Mean Brier over the forecasts scored in this regime. Lower is better;
+    /// a coin scores 0.25 on a binary question.
+    pub mean_brier: f64,
+    /// How many scored forecasts the mean is over. Never zero: a cell with
+    /// no scored forecast is absent, not recorded at a default.
+    pub scored: usize,
 }
 
 /// An agent that runs after the panel, with the panel's findings in hand.
@@ -278,6 +303,9 @@ pub struct Organisation {
     /// Agents run after the panel with its findings (ADR 0466). Rostered
     /// like every agent; never run in the first phase.
     arbiters: Vec<Arc<dyn Arbiter>>,
+    /// What the second phase hands every arbiter beside the panel's findings
+    /// (ADR 0724): see [`Self::hand_model_records`].
+    model_records: Vec<ModelRegimeRecord>,
     /// Agents that run after the kernel's own derivation, not after the panel
     /// (R12-REASON-3026): see [`Self::dispatch_late`].
     late: Vec<Arc<dyn Agent>>,
@@ -329,6 +357,7 @@ impl Organisation {
             roster,
             agents,
             arbiters: Vec::new(),
+            model_records: Vec::new(),
             late: Vec::new(),
             host,
             audit: AuditTrail::new(),
@@ -465,6 +494,17 @@ impl Organisation {
         self.roster.review(now)
     }
 
+    /// Replace the model tournament's per-(model, regime) record the second
+    /// phase hands every arbiter (R12-AMBIENT-3024, ADR 0724).
+    ///
+    /// Replaced whole, never merged: the caller rebuilds it from the
+    /// tournament before each dispatch, so what an arbiter reads cannot
+    /// disagree with the tournament it describes. No panel agent sees it —
+    /// only a [`PanelView`] carries it, and only an arbiter is given one.
+    pub fn hand_model_records(&mut self, records: Vec<ModelRegimeRecord>) {
+        self.model_records = records;
+    }
+
     /// Dispatch a brief to every agent that accepts it.
     ///
     /// Failure is isolated per agent: one agent erroring does not stop the
@@ -512,6 +552,7 @@ impl Organisation {
             let panel = PanelView {
                 findings: collected.findings.clone(),
                 contested: collected.is_contested(),
+                model_records: self.model_records.clone(),
             };
             for arbiter in &self.arbiters {
                 let arbitration = Arbitration {

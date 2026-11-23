@@ -225,7 +225,9 @@ impl Scope {
             Self::ManagementGuidance => &["guidance_gap", "guidance_outstanding"],
             Self::CapitalStructure => &["net_debt", "net_leverage", "debt_due_within_year"],
             Self::AttentionAllocation => &["attention_allocated"],
-            Self::RegimeReliability => &["regime_reliability_cells"],
+            Self::RegimeReliability => {
+                &["regime_reliability_cells", "model_regime_reliability_cells"]
+            }
             Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
             Self::SymbolicReasoning => &["reasoners_derived"],
@@ -257,6 +259,74 @@ pub fn covered_by<'a>(findings: impl IntoIterator<Item = &'a AgentFinding>) -> B
         .filter(|finding| finding.status.is_informative())
         .collect();
     Scope::ALL
+        .into_iter()
+        .filter(|scope| findings.iter().any(|f| scope.is_evidenced_in(f)))
+        .collect()
+}
+
+/// A scope an always-on ambient brain covers (ADR 0725).
+///
+/// Kept beside [`Scope`] and out of [`Scope::ALL`] on purpose. The Desk's
+/// scopes are evidenced by the organisation's findings on a brief, and the
+/// organisation tests assert each is covered by the standard organisation
+/// and dropped when its agent is removed. An ambient brain has no brief and
+/// no seat on the roster: it reads a research sweep. Adding its scope to
+/// `Scope::ALL` would either fail that test for a reason no Desk agent can
+/// fix, or tempt somebody to make a Desk agent emit the label, which is a
+/// coverage claim about a brain that did not run.
+///
+/// The rule is the same one as for the Desk: covered only by a number, in an
+/// informative finding, under a whole label. A Brain Registry entry records a
+/// brain and is deliberately not consulted here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmbientScope {
+    /// Always-on attention routing: surprise, opportunity, risk and
+    /// assumption signals decided into specialist, research and reflex
+    /// pathways (R12-AMBIENT-3027). Evidenced only by the finding the deep
+    /// brain composes from the attention events of one sweep.
+    AttentionRouting,
+}
+
+impl AmbientScope {
+    /// Every ambient scope, in declaration order.
+    pub const ALL: [AmbientScope; 1] = [AmbientScope::AttentionRouting];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AttentionRouting => "attention_routing",
+        }
+    }
+
+    /// The fact labels whose presence in an informative finding evidences
+    /// this scope. Matched whole, like [`Scope::evidenced_by`].
+    pub fn evidenced_by(self) -> &'static [&'static str] {
+        match self {
+            Self::AttentionRouting => &["attention_routing"],
+        }
+    }
+
+    /// Whether `finding` carries a fact evidencing this scope.
+    pub fn is_evidenced_in(self, finding: &AgentFinding) -> bool {
+        let labels = self.evidenced_by();
+        finding
+            .facts
+            .iter()
+            .any(|fact| labels.contains(&fact.label.as_str()))
+    }
+}
+
+/// The ambient scopes `findings` cover, ignoring any finding that carries no
+/// information. The ambient counterpart of [`covered_by`]; the two never
+/// read each other's labels.
+pub fn ambient_covered_by<'a>(
+    findings: impl IntoIterator<Item = &'a AgentFinding>,
+) -> BTreeSet<AmbientScope> {
+    let findings: Vec<&AgentFinding> = findings
+        .into_iter()
+        .filter(|finding| finding.status.is_informative())
+        .collect();
+    AmbientScope::ALL
         .into_iter()
         .filter(|scope| findings.iter().any(|f| scope.is_evidenced_in(f)))
         .collect()

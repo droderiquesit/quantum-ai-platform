@@ -54,6 +54,7 @@
 //!   two-person `model-pack` publish to sign (ADR 0131, ADR 0535). The
 //!   deployed deep brain installs no signer: it never holds that key.
 
+use qip_agents::finding::AgentFinding;
 use qip_agents::registries::{CapabilityRegistry, OntologyRegistry};
 use qip_contracts::ambient::{
     AcquisitionCriteria, AcquisitionKind, Advisory, AmbientSignal, AttentionEvent, AttentionRouter,
@@ -90,6 +91,7 @@ use qip_expansion::meta::{
     resource_str,
 };
 use qip_expansion::plan::AcquisitionAction;
+use qip_investment_agents::coverage::{AmbientScope, ambient_covered_by};
 use qip_kernel::Platform;
 use qip_kernel::evidence_intake::{PoisoningClass, PoisoningFinding, PoisoningThresholds};
 use qip_kernel::exploration::{MAXIMUM_OPEN_UNKNOWNS, ProbeKind};
@@ -1101,6 +1103,16 @@ pub struct ResearchRound {
     pub signals: Vec<AmbientSignal>,
     /// Every attention event the router returned this sweep, in order.
     pub attention_events: Vec<AttentionEvent>,
+    /// The one finding composed from [`Self::attention_events`]
+    /// (R12-AMBIENT-3027, ADR 0725), `None` where the router returned no
+    /// event. It is what the attention router's scope is covered by: the
+    /// Brain Registry records that the router exists, and a record is not a
+    /// report.
+    pub attention_finding: Option<AgentFinding>,
+    /// The ambient scopes this sweep's findings cover, read from
+    /// [`Self::attention_finding`] by whole fact label and published as
+    /// `qip_ambient_scope_covered`.
+    pub ambient_scopes: BTreeSet<AmbientScope>,
     /// The specialist each activated NOW-surprise signal woke, by signal id.
     pub woken: BTreeMap<String, &'static str>,
     /// The research question each woken specialist was given, by specialist
@@ -1795,7 +1807,9 @@ impl ResearchRound {
 pub struct ResearchLoop {
     config: ResearchConfig,
     desk: ExpansionDesk,
-    router: AttentionRouter,
+    /// `None` only after [`Self::without_attention_router`]: every
+    /// constructor builds one.
+    router: Option<AttentionRouter>,
     detectors: DetectorRegistry,
     /// The opportunity sentinels' memory and what they watch (ADR 0434).
     precursors: PrecursorScanner,
@@ -2089,7 +2103,7 @@ impl ResearchLoop {
         }
         Ok(Self {
             desk,
-            router: AttentionRouter::new(policy),
+            router: Some(AttentionRouter::new(policy)),
             detectors: DetectorRegistry::standard(),
             precursors: PrecursorScanner::new(),
             precursor_config: PrecursorConfig::default(),
@@ -2168,6 +2182,19 @@ impl ResearchLoop {
     /// refused when it lacks a type the sweep's detectors read. Whether it
     /// names every asset class in the coverage map is checked at each sweep,
     /// by [`Self::check_coverage_registered`].
+    /// This loop with its attention router removed (R12-AMBIENT-3027).
+    ///
+    /// No binary calls it: every deployed loop keeps the router its
+    /// constructor built. It exists so the claim "the router's scope is
+    /// covered because the router ran" can be tested by taking the router
+    /// away from the same loop on the same platform, the way the
+    /// organisation suite removes an agent from the roster, rather than by
+    /// comparing against a hand-made list of events.
+    pub fn without_attention_router(mut self) -> Self {
+        self.router = None;
+        self
+    }
+
     pub fn with_ontology(mut self, ontology: OntologyRegistry) -> Result<Self> {
         Self::check_ontology(&ontology)?;
         self.ontology = ontology;
@@ -3243,7 +3270,12 @@ impl ResearchLoop {
                     (raised, signal.expiry(), signal.urgency_bp()),
                 );
             }
-            let events = self.router.route(&signal, now)?;
+            // With no router nothing is decided: no event, so no activation
+            // and, below, no attention finding to cover the scope by.
+            let events = match self.router.as_mut() {
+                Some(router) => router.route(&signal, now)?,
+                None => Vec::new(),
+            };
             round.signals.push(signal.clone());
             round.attention_events.extend(events.iter().cloned());
             if !events.iter().any(|e| e.signal_id == signal.id()) {
@@ -3524,6 +3556,25 @@ impl ResearchLoop {
             } else if request.should_halt(now, MIN_VIABLE_BP) && request.halt() {
                 round.info_halted += 1;
             }
+        }
+        // The attention router's scope is covered by what it returned this
+        // sweep and by nothing else (R12-AMBIENT-3027, ADR 0725): one finding
+        // composed from the events, read back by whole fact label. Every
+        // ambient scope is written, 1 or 0, so a sweep with no router or no
+        // decision is a 0 on the series and not the last sweep's 1.
+        round.attention_finding =
+            crate::ambient_coverage::attention_finding(&round.attention_events, now)?;
+        round.ambient_scopes = ambient_covered_by(round.attention_finding.iter());
+        for scope in AmbientScope::ALL {
+            metrics.gauge(
+                names::AMBIENT_SCOPE_COVERED,
+                labels([("scope", scope.as_str())]),
+                if round.ambient_scopes.contains(&scope) {
+                    1.0
+                } else {
+                    0.0
+                },
+            );
         }
         round.desk = report;
         Ok(round)
@@ -5880,7 +5931,12 @@ mod tests {
             .emit(&raise_worth(40, "dear, arrived third"), now)
             .expect("emits");
         assert!(cheap.attention_value() < dear.attention_value(), "premise");
-        let spent = research.router.route(&first, now).expect("routes");
+        let spent = research
+            .router
+            .as_mut()
+            .expect("the constructor builds a router")
+            .route(&first, now)
+            .expect("routes");
         assert!(
             spent
                 .iter()
@@ -5888,7 +5944,12 @@ mod tests {
             "premise: the first signal of the window spends the budget: {spent:?}"
         );
         for signal in [&cheap, &dear] {
-            let events = research.router.route(signal, now).expect("routes");
+            let events = research
+                .router
+                .as_mut()
+                .expect("the constructor builds a router")
+                .route(signal, now)
+                .expect("routes");
             assert!(
                 events
                     .iter()
@@ -5896,13 +5957,25 @@ mod tests {
                 "premise: past the budget the signal is held: {events:?}"
             );
         }
-        assert_eq!(research.router.deferred_len(), 2);
+        assert_eq!(
+            research
+                .router
+                .as_ref()
+                .expect("the constructor builds a router")
+                .deferred_len(),
+            2
+        );
 
         let later = now.saturating_add(Duration::from_hours(1) + Duration::from_secs(1));
         let trivial = research
             .emit(&raise_worth(1, "trivial"), later)
             .expect("emits");
-        let events = research.router.route(&trivial, later).expect("routes");
+        let events = research
+            .router
+            .as_mut()
+            .expect("the constructor builds a router")
+            .route(&trivial, later)
+            .expect("routes");
         let activated: Vec<&str> = events
             .iter()
             .filter(|e| e.disposition == Disposition::Activated)
