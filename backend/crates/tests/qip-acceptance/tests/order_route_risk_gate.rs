@@ -1345,6 +1345,20 @@ fn the_arity_count_reads_a_turbofish_comma_as_part_of_one_argument() {
         call_arity("(<Vec<u8> as Default>::default(), now)"),
         Some(2)
     );
+    // An arrow's `>` closes no generic list: with a comma after the arrow
+    // at the generic list's own depth, reading `->` as a close would count
+    // the comma as a third argument and miss a second sign-off caller.
+    assert_eq!(
+        call_arity("(now, HashMap::<fn() -> u8, u8>::new())"),
+        Some(2)
+    );
+    // A qualified path opening an argument is a generic list whose comma
+    // sits at the list's own depth; without the rule that `<` after `(` or
+    // `,` opens one, that comma is counted as an argument.
+    assert_eq!(
+        call_arity("(<HashMap<A, B> as Default>::default(), now)"),
+        Some(2)
+    );
     assert_eq!(call_arity("(a < b, c > d)"), Some(2));
     assert_eq!(call_arity("(x << 2, y >> 1, z)"), Some(3));
     assert_eq!(call_arity("(f::<A, B>(x), y,)"), Some(2));
