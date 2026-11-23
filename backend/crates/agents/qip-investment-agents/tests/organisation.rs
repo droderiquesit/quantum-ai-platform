@@ -4280,6 +4280,64 @@ fn the_meta_brain_resolves_a_contested_panel_by_each_authors_record_in_the_regim
     Ok(())
 }
 
+/// The brains half of R12-AMBIENT-3024: the Meta Brain reports every analyst's
+/// record in every regime research memory holds, not only the regime in force,
+/// and each cell is the share of that analyst's resolved calls in that regime
+/// that were right.
+///
+/// An independent reader found on 2026-11-23 that no test read these facts:
+/// deleting the loop that writes them left every test green, because the
+/// attention weights for the regime in force are computed from the same
+/// records by another path, and the cell count's label alone kept the scope
+/// covered. The expected values are written out from the fixture (9 of 10, 1
+/// of 10), not read back through `ResearchMemory::reliability_by_regime`, so
+/// the test does not ask the code under test what to expect.
+///
+/// Mutations, each fired and restored: skip the per-cell fact loop; write a
+/// cell under the regime in force instead of its own; pool each analyst's
+/// record over every regime.
+#[test]
+fn the_meta_brain_reports_each_analysts_record_in_every_regime_memory_holds_and_not_only_the_one_in_force()
+-> Result<()> {
+    let expected = [
+        (ids::MACRO, TRENDING, 0.9),
+        (ids::MACRO, CALM, 0.1),
+        (ids::EQUITY, TRENDING, 0.1),
+        (ids::EQUITY, CALM, 0.9),
+    ];
+    for in_force in [TRENDING, CALM] {
+        let mut org = leaning_organisation(meta_desk(), Direction::Negative, true)?;
+        let report = org.dispatch(&brief().in_regime(in_force), now(), &lineage());
+        let meta = meta_finding(&report);
+        assert_eq!(
+            fact_value(meta, "regime_reliability_cells"),
+            Some(4.0),
+            "{in_force}: two analysts in two regimes are four cells"
+        );
+        for (agent, regime, rate) in expected {
+            let label = format!("reliability:{agent}@{regime}");
+            let value = fact_value(meta, &label)
+                .unwrap_or_else(|| panic!("{in_force}: no {label} in {}", meta.claim));
+            assert!(
+                (value - rate).abs() < 1e-12,
+                "{in_force}: {label} is {value}, the fixture says {rate}"
+            );
+        }
+        let reported: Vec<&str> = meta
+            .facts
+            .iter()
+            .map(|fact| fact.label.as_str())
+            .filter(|label| label.starts_with("reliability:"))
+            .collect();
+        assert_eq!(
+            reported.len(),
+            expected.len(),
+            "{in_force}: one fact per cell and no other: {reported:?}"
+        );
+    }
+    Ok(())
+}
+
 /// An uncontested panel has nothing to resolve, and the Meta Brain says
 /// nothing about resolution — attention and reliability are still reported.
 #[test]

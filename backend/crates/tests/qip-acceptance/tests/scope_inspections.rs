@@ -169,6 +169,110 @@ fn the_deep_brain_opens_its_ambient_agency_unconditionally_so_planning_and_tool_
     );
 }
 
+/// R12-AMBIENT-3027: under ADR 0725, accepted by the owner on 2026-11-23, the
+/// production organisation for an ambient brain is the deployed deep brain.
+/// The attention router is built inside the research loop's node constructor
+/// and its finding is journalled by the ambient journal, so the clause holds
+/// only while the deep brain's composition root builds both, unconditionally,
+/// and hands both to the run loop. The qip-deepbrain tests build the loop by
+/// hand and cannot see `main.rs`; an independent reader found on 2026-11-23
+/// that deleting either hand-off failed nothing.
+///
+/// A second reader found the text scan alone too weak: `main.rs` could take
+/// the router back out with `research.without_attention_router()` after
+/// building the loop, and every check above would still pass. So the test
+/// also holds that no source file of any deployed binary calls that
+/// constructor; its only callers are tests.
+///
+/// Mutations, each fired and restored: hand the run loop `research: None`;
+/// hand it `ambient: None`; put the research loop's construction behind an
+/// `if`; call `research.without_attention_router()` in `main.rs`.
+#[test]
+fn the_deep_brain_builds_its_attention_router_and_ambient_journal_unconditionally_and_hands_both_to_the_run_loop()
+ {
+    let main = read("crates/apps/qip-deepbrain/src/main.rs");
+    for (construction, what) in [
+        (
+            "qip_deepbrain::research::ResearchLoop::new_for_node(",
+            "the research loop, whose node constructor builds the attention router",
+        ),
+        (
+            "qip_deepbrain::ambient_journal::AmbientJournal::open(",
+            "the ambient journal the attention finding is written to",
+        ),
+    ] {
+        let at = main
+            .find(construction)
+            .unwrap_or_else(|| panic!("the deep brain's composition root builds {what}"));
+        let line_start = main[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line = &main[line_start..at];
+        assert!(
+            line.trim_start().starts_with("let mut "),
+            "{what} is bound directly, not inside an expression: {line:?}"
+        );
+        let before: Vec<&str> = main[..line_start].lines().rev().take(3).collect();
+        assert!(
+            before.iter().all(|l| {
+                let l = l.trim_start();
+                !l.starts_with("if ") && !l.starts_with("match ") && !l.starts_with("} else")
+            }),
+            "{what} is built behind a condition: {before:?}"
+        );
+    }
+    let research = read("crates/apps/qip-deepbrain/src/research.rs");
+    let node_constructor = research
+        .find("pub fn new_for_node(")
+        .expect("the research loop has a node constructor");
+    let body = &research[node_constructor..];
+    let end = body.find("\n    }\n").expect("the constructor ends");
+    assert!(
+        body[..end].contains("Self::new_holding("),
+        "the node constructor builds through new_holding, which builds the attention router"
+    );
+    for handed in [
+        "research: Some(&mut research)",
+        "ambient: Some(&mut ambient)",
+    ] {
+        assert!(
+            main.contains(handed),
+            "the run loop is not handed `{handed}`"
+        );
+    }
+
+    // The router-removal constructor is for tests. Its definition is the only
+    // mention a deployed source file may hold, and it is in research.rs.
+    let definition = "pub fn without_attention_router(";
+    assert!(
+        research.contains(definition),
+        "premise: the research loop still defines the constructor this test guards against"
+    );
+    let apps = backend().join("crates/apps");
+    let mut callers = Vec::new();
+    for app in fs::read_dir(&apps).expect("the apps directory") {
+        let src = app.expect("an app").path().join("src");
+        let Ok(files) = fs::read_dir(&src) else {
+            continue;
+        };
+        for file in files {
+            let path = file.expect("a source file").path();
+            if path.extension().is_none_or(|ext| ext != "rs") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("a readable source file");
+            for (n, line) in text.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or_default();
+                if code.contains("without_attention_router") && !code.contains(definition) {
+                    callers.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        callers.is_empty(),
+        "a deployed binary removes the attention router: {callers:?}"
+    );
+}
+
 /// R12-REFLEX-1165: the reflex node's scope items, each held to the file
 /// that composes it. The node's composition root builds the cell
 /// (`assemble_with_risk`: feature engine, mode gate, risk gate) and `main`
