@@ -46,8 +46,19 @@ production organisation". The attention router is built by the deep brain and
 has no seat in the desk's standard roster. The owner was shown two choices:
 accept that the deployed deep brain counts as the production organisation for
 an ambient brain, or say a roster seat was meant. The owner took the first.
-The record also decides that a sweep whose router returned nothing composes
-no finding, rather than a finding stating zero, and that was accepted with it.
+
+**A correction to this file.** As first written on 2026-11-23 this paragraph
+said the owner had also accepted ADR 0725's rule that a sweep whose router
+returned nothing composes no finding. That was wrong. The pull request the
+owner merged said the opposite in its own words: that rule was "still to fix
+when the decision lands", because the owner's ruling of 2026-10-31 asks for
+"one AgentFinding per ResearchRound". Two independent readers caught the
+discrepancy the same day. What the owner accepted is ADR 0725 with that point
+to be brought into line with the ruling, and it has been: a loop that holds a
+router now composes one finding every round, stating zero decisions on a
+quiet one, and a loop without a router composes none. Where ADR 0725's own
+text says a quiet sweep composes nothing, the owner's ruling and this file
+govern.
 
 ## What this file does not do
 
