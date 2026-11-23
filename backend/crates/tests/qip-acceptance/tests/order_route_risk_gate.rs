@@ -1746,13 +1746,18 @@ enum Table {
     Entry(Declared),
 }
 
-/// The line with a trailing `#` comment removed, outside a quoted string.
+/// The line with a trailing `#` comment removed, outside a quoted string —
+/// a basic `"…"` or a literal `'…'` one, each closed only by its own quote,
+/// so a `'` inside `"it's"` closes nothing. A `#` inside a single-quoted
+/// value cut the line there while only `"` was read, and a `package` after
+/// it was lost.
 fn without_comment(line: &str) -> &str {
-    let mut quoted = false;
+    let mut quote: Option<char> = None;
     for (at, c) in line.char_indices() {
-        match c {
-            '"' => quoted = !quoted,
-            '#' if !quoted => return &line[..at],
+        match (c, quote) {
+            ('"' | '\'', None) => quote = Some(c),
+            (c, Some(open)) if c == open => quote = None,
+            ('#', None) => return &line[..at],
             _ => {}
         }
     }
@@ -1768,7 +1773,11 @@ fn leading_key(line: &str) -> String {
         .collect()
 }
 
-/// The quoted value of `field = "…"` inside `text`, as a delimited field.
+/// The quoted value of `field = "…"` or `field = '…'` inside `text`, as a
+/// delimited field. TOML takes either; reading only `"` let `models = {
+/// package = 'qip-ai' }` link the language-model crate under the key
+/// `models`, which the scan does not treat as a model crate (second round-81
+/// review).
 fn quoted_field(text: &str, field: &str) -> Option<String> {
     for (at, _) in text.match_indices(field) {
         let before = text[..at].chars().next_back();
@@ -1779,8 +1788,11 @@ fn quoted_field(text: &str, field: &str) -> Option<String> {
         let Some(rest) = rest.strip_prefix('=') else {
             continue;
         };
-        let rest = rest.trim_start().strip_prefix('"')?;
-        return rest.split_once('"').map(|(value, _)| value.to_string());
+        let rest = rest.trim_start();
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+        return rest[1..]
+            .split_once(quote)
+            .map(|(value, _)| value.to_string());
     }
     None
 }
@@ -1920,6 +1932,40 @@ fn the_dependency_scan_reads_tables_renames_and_inherited_renames() {
                     [target.'cfg(unix)'.dependencies.models]\npackage = \"qip-models\"\n\n\
                     [dev-dependencies]\nqip-dev-only = { path = \"../d\" }\n\n\
                     [dev-dependencies.qip-dev-table]\npath = \"../e\"\n";
+    let found = normal_dependencies(manifest, &inherited);
+    let expected: BTreeSet<String> = [
+        "qip-ai",
+        "qip-core",
+        "qip-cost-router",
+        "qip-language-providers",
+        "qip-models",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    assert_eq!(found, expected);
+}
+
+/// The manifest parser on single-quoted TOML strings, which a parser reading
+/// only `"` missed (second round-81 review): an inline rename, a rename in
+/// its own `[dependencies.name]` table, and an inline rename whose `package`
+/// follows a single-quoted value holding a `#`, which the comment stripper
+/// cut at while it read only `"`. A `'` inside a double-quoted value opens
+/// nothing, so the `#` after it is still inside that value.
+///
+/// Mutations: read only `"` in `quoted_field` (the three single-quoted
+/// renames fall back to keys outside `qip-*`); read only `"` in
+/// `without_comment` (the rename after the single-quoted `#` is lost); let
+/// either quote close the other (the rename after `it's#` is lost).
+#[test]
+fn the_dependency_scan_reads_single_quoted_package_renames() {
+    let inherited = BTreeMap::from([("qip-core".to_string(), "qip-core".to_string())]);
+    let manifest = "[package]\nname = 'x'\n\n\
+                    [dependencies]\nrouter = { package = 'qip-cost-router', path = '../r' }\n\
+                    hashed = { path = '../#h', package = 'qip-ai' } # renamed\n\
+                    apostrophe = { path = \"../it's#here\", package = \"qip-models\" }\n\
+                    qip-core.workspace = true\nserde = '1'\n\n\
+                    [dependencies.lm]\npackage = 'qip-language-providers'\npath = '../lm'\n";
     let found = normal_dependencies(manifest, &inherited);
     let expected: BTreeSet<String> = [
         "qip-ai",
