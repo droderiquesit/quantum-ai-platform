@@ -5079,14 +5079,20 @@ fn desk_with_a_symbolic_derivation(view: qip_investment_agents::desk::SymbolicVi
 }
 
 /// R12-REASON-3026. The Symbolic Reasoning Brain is constructed in the
-/// production organisation (`standard_agents`, under the standard roster),
-/// emits a finding for its scope that restates what each reasoner concluded —
-/// and removing it drops symbolic reasoning from coverage.
+/// production organisation (`standard_late_agents`, which
+/// `Organisation::standard` passes to `with_late_agents`, under the standard
+/// roster), emits a finding for its scope that restates what each reasoner
+/// concluded — and removing it drops symbolic reasoning, and each of the six
+/// per-kind scopes, from coverage.
 ///
-/// Mutations: drop the `SymbolicReasoningAnalyst` from `standard_agents` (the
-/// premise finding is missing); count the refused links as held (the
-/// `timeline_links_refused` figure moves); report a refused reasoner as
-/// derived (`reasoners_derived` moves).
+/// Mutations, each run: return an empty list from `standard_late_agents`
+/// (the premise finding is missing); in `symbolic_brain.rs::reasoners`, make
+/// the rule entry `false` — the fixture's rule reasoner derived, so
+/// `reasoners_derived` reads 5, not 6. The fixture has every reasoner
+/// derived, so a mutation that reports a *refused* reasoner as derived cannot
+/// fire here; that direction is held by
+/// `a_derivation_in_which_every_reasoner_refused_covers_no_symbolic_scope`
+/// and the per-kind test below.
 #[test]
 fn removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage() -> Result<()> {
     let desk = desk_with_a_symbolic_derivation(a_symbolic_derivation());
@@ -5110,8 +5116,150 @@ fn removing_the_symbolic_reasoning_brain_drops_symbolic_reasoning_from_coverage(
     );
 
     let (with, without) = scopes_with_and_without(desk, &brief(), ids::SYMBOLIC_REASONING)?;
-    assert!(with.contains(&Scope::SymbolicReasoning), "{with:?}");
-    assert!(!without.contains(&Scope::SymbolicReasoning), "{without:?}");
+    for scope in SYMBOLIC_SCOPES {
+        assert!(with.contains(&scope), "{scope:?} not covered: {with:?}");
+        assert!(
+            !without.contains(&scope),
+            "{scope:?} still covered: {without:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The aggregate scope and the six per-kind scopes, spelled out here rather
+/// than read off `Scope::ALL` through the code under test.
+const SYMBOLIC_SCOPES: [Scope; 7] = [
+    Scope::SymbolicReasoning,
+    Scope::SymbolicOntology,
+    Scope::SymbolicTemporal,
+    Scope::SymbolicCausal,
+    Scope::SymbolicRule,
+    Scope::SymbolicProbabilistic,
+    Scope::SymbolicConstraint,
+];
+
+fn symbolic_scopes_covered(report: &qip_investment_agents::OrganisationReport) -> BTreeSet<Scope> {
+    report
+        .covered_scopes()
+        .into_iter()
+        .filter(|scope| SYMBOLIC_SCOPES.contains(scope))
+        .collect()
+}
+
+/// R12-REASON-3026. A derivation in which all six reasoners refused is a
+/// record of refusals, and covers no symbolic scope. The finding is still an
+/// informative one — it states `reasoners_derived` at zero and the caveat
+/// naming every refused reasoner — which is exactly why coverage cannot read
+/// the count's presence: it is present at zero.
+///
+/// The failure this guards: `Scope::SymbolicReasoning` was evidenced by the
+/// label `reasoners_derived`, which the brain states on every observed
+/// derivation, so a brain whose every reasoner refused read as covered.
+///
+/// Mutation: evidence `Scope::SymbolicReasoning` by `reasoners_derived` again
+/// in `coverage.rs` — the aggregate scope reads covered and this fails.
+#[test]
+fn a_derivation_in_which_every_reasoner_refused_covers_no_symbolic_scope() -> Result<()> {
+    let view = qip_investment_agents::desk::SymbolicView {
+        observed: true,
+        cycle: 9,
+        hypothesis_id: "hyp-9".into(),
+        subject: "AAPL".into(),
+        ..Default::default()
+    };
+    let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+    let report = org.dispatch(&brief(), now(), &lineage());
+    let finding = symbolic_finding(&report);
+    // Premise: an informative finding that states the count, at zero.
+    assert!(finding.status.is_informative(), "{:?}", finding.status);
+    assert_eq!(fact_value(finding, "reasoners_derived"), Some(0.0));
+    let covered = symbolic_scopes_covered(&report);
+    assert!(covered.is_empty(), "{covered:?}");
+    Ok(())
+}
+
+/// R12-REASON-3026. Each of the six kinds of reasoning is its own scope, so a
+/// blind spot in one is reported as that scope uncovered while the others
+/// hold. For each kind, a derivation in which that reasoner alone derived
+/// covers exactly the aggregate scope and that kind's scope — no other kind.
+///
+/// The failure this guards: the six kinds shared one scope, so the platform
+/// could not say it had no ontology or no probabilistic reasoning while the
+/// other five held.
+///
+/// Mutations: in `symbolic_brain.rs`, state the `probabilistic_derived` flag
+/// whether or not that reasoner derived (`if held || label ==
+/// "probabilistic_derived"`) — the probabilistic scope appears in every other
+/// kind's case; map
+/// `Scope::SymbolicOntology` to `temporal_derived` in `coverage.rs` — the
+/// ontology case covers no ontology scope.
+#[test]
+fn each_kind_of_symbolic_reasoning_is_covered_only_by_its_own_reasoner() -> Result<()> {
+    use qip_investment_agents::desk::SymbolicView;
+    let base = || SymbolicView {
+        observed: true,
+        cycle: 9,
+        hypothesis_id: "hyp-9".into(),
+        subject: "AAPL".into(),
+        ..Default::default()
+    };
+    let cases: [(Scope, SymbolicView); 6] = [
+        (
+            Scope::SymbolicOntology,
+            SymbolicView {
+                subject_type: Some("equity".into()),
+                ..base()
+            },
+        ),
+        (
+            Scope::SymbolicTemporal,
+            SymbolicView {
+                timeline_links: 2,
+                timeline_links_refused: 1,
+                ..base()
+            },
+        ),
+        (
+            Scope::SymbolicCausal,
+            SymbolicView {
+                causal_reach: Some(3),
+                ..base()
+            },
+        ),
+        (
+            Scope::SymbolicRule,
+            SymbolicView {
+                rules_eligible: Some(false),
+                ..base()
+            },
+        ),
+        (
+            Scope::SymbolicProbabilistic,
+            SymbolicView {
+                claim_probability: Some(0.4),
+                ..base()
+            },
+        ),
+        (
+            Scope::SymbolicConstraint,
+            SymbolicView {
+                blocking_constraints: Some(Vec::new()),
+                ..base()
+            },
+        ),
+    ];
+    for (kind, view) in cases {
+        let mut org = organisation(desk_with_a_symbolic_derivation(view))?;
+        let report = org.dispatch(&brief(), now(), &lineage());
+        // Premise: exactly one reasoner derived in this case.
+        assert_eq!(
+            fact_value(symbolic_finding(&report), "reasoners_derived"),
+            Some(1.0),
+            "{kind:?}"
+        );
+        let expected: BTreeSet<Scope> = [Scope::SymbolicReasoning, kind].into_iter().collect();
+        assert_eq!(symbolic_scopes_covered(&report), expected, "{kind:?}");
+    }
     Ok(())
 }
 

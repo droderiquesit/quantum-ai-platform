@@ -479,6 +479,19 @@ impl Organisation {
         &self.audit
     }
 
+    /// Whether the organisation constructed an agent under `id`, in any
+    /// phase: panel, arbiters or late agents.
+    ///
+    /// Distinct from [`Self::roster`], which lists the manifests reviewed and
+    /// is built from [`manifests::roster`] whatever was constructed: a
+    /// registry derived from the roster still names a specialist that was
+    /// deleted from the list that builds it, so it cannot say what runs.
+    pub fn constructs(&self, id: &str) -> bool {
+        self.agents.iter().any(|a| a.manifest().id == id)
+            || self.arbiters.iter().any(|a| a.manifest().id == id)
+            || self.late.iter().any(|a| a.manifest().id == id)
+    }
+
     /// Every agent the organisation runs: panel, arbiters and late agents.
     pub fn len(&self) -> usize {
         self.agents.len() + self.arbiters.len() + self.late.len()

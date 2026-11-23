@@ -2559,8 +2559,12 @@ fn the_cycles_own_panel_report_carries_a_symbolic_finding_for_the_hypothesis_jus
 /// `qip_organisation_scope_covered` gauge for it reads 1; before any cycle the
 /// record is empty.
 ///
-/// Mutation: drop the `record_scopes_reported` call after `dispatch_late`
-/// -- the symbolic scope is missing from the record and the gauge reads 0.
+/// Mutations: drop the `record_scopes_reported` call after `dispatch_late`
+/// -- the symbolic scope is missing from the record and the gauge reads 0;
+/// return an empty list from `chief::standard_late_agents`, the production
+/// roster path `Organisation::standard` builds the brain on -- the record
+/// does not hold symbolic reasoning. This is the removal clause proved on
+/// the deployed construction rather than on a registry built from manifests.
 #[test]
 fn a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported() -> Result<()> {
     use qip_investment_agents::coverage::Scope;
@@ -2590,5 +2594,215 @@ fn a_scope_is_covered_in_a_cycle_only_because_a_finding_for_it_reported() -> Res
         )
     };
     assert_eq!(gauge(Scope::SymbolicReasoning), Some(1.0));
+    Ok(())
+}
+
+/// Which of the six reasoners derived in `derivation`, by the per-kind scope,
+/// counted here from the journaled record itself, not through the brain.
+fn kinds_derived(
+    derivation: &symbolic_stage::SymbolicDerivation,
+) -> Vec<(qip_investment_agents::coverage::Scope, bool)> {
+    use qip_investment_agents::coverage::Scope;
+    let refused_links = derivation
+        .temporal
+        .links
+        .iter()
+        .filter(|link| !matches!(link.admitted, symbolic_stage::Step::Derived(())))
+        .count();
+    vec![
+        (
+            Scope::SymbolicOntology,
+            derivation
+                .subject_type
+                .as_ref()
+                .is_some_and(|t| matches!(t.typed, symbolic_stage::Step::Derived(_)))
+                || derivation
+                    .knowledge
+                    .as_ref()
+                    .is_some_and(|k| matches!(k.inference, symbolic_stage::Step::Derived(_))),
+        ),
+        (
+            Scope::SymbolicTemporal,
+            derivation.temporal.links.len() > refused_links,
+        ),
+        (
+            Scope::SymbolicCausal,
+            matches!(derivation.abduction, symbolic_stage::Step::Derived(_))
+                || matches!(derivation.intervention, symbolic_stage::Step::Derived(_)),
+        ),
+        (
+            Scope::SymbolicRule,
+            matches!(derivation.rules.verdict, symbolic_stage::Step::Derived(_)),
+        ),
+        (
+            Scope::SymbolicProbabilistic,
+            matches!(derivation.posterior, symbolic_stage::Step::Derived(_)),
+        ),
+        (
+            Scope::SymbolicConstraint,
+            matches!(derivation.acting, symbolic_stage::Step::Derived(_)),
+        ),
+    ]
+}
+
+/// R12-REASON-3026. On a `run_cycle` over `PlatformConfig::default`, each of
+/// the six kinds of symbolic reasoning reaches `qip_organisation_scope_covered`
+/// as its own series, reading 1 exactly where the cycle's journaled
+/// derivation shows that reasoner derived and 0 where it refused — so a blind
+/// spot in one kind is a 0 an operator can chart, not a 1 averaged over six.
+///
+/// The failure this guards: the six kinds shared one scope, and the gauge for
+/// it read 1 whatever any one reasoner did.
+///
+/// Each series is read by the literal label an operator charts, never
+/// through `Scope::as_str`, which is the mapping under test: read through it,
+/// mapping `SymbolicTemporal` to `"symbolic_ontology"` passed, and an operator
+/// would have had no temporal series at all. The seven literals are asserted
+/// distinct, and every one is asserted written.
+///
+/// Mutations: in `symbolic_brain.rs::reasoners`, make the rule entry `false`
+/// — the rule series reads 0 against a derivation whose pack evaluated; in
+/// `coverage.rs::Scope::as_str`, map `SymbolicTemporal` to
+/// `"symbolic_ontology"` — the `"symbolic_temporal"` series is never written
+/// and reads `None`.
+#[test]
+fn each_kind_of_symbolic_reasoning_is_its_own_covered_series_on_a_cycle() -> Result<()> {
+    use qip_investment_agents::coverage::Scope;
+    use qip_observability::metrics::names;
+
+    let (platform, derivation) = journaled_derivation()?;
+    let kinds = kinds_derived(&derivation);
+    assert!(
+        kinds.iter().any(|(_, derived)| *derived),
+        "premise: at least one reasoner derived in the cycle"
+    );
+    let snapshot = platform.telemetry().metrics.snapshot();
+    let gauge = |series: &str| {
+        snapshot.gauge(
+            names::ORGANISATION_SCOPE_COVERED,
+            &qip_observability::metrics::labels([("scope", series)]),
+        )
+    };
+    let series = |scope: Scope| match scope {
+        Scope::SymbolicOntology => "symbolic_ontology",
+        Scope::SymbolicTemporal => "symbolic_temporal",
+        Scope::SymbolicCausal => "symbolic_causal",
+        Scope::SymbolicRule => "symbolic_rule",
+        Scope::SymbolicProbabilistic => "symbolic_probabilistic",
+        Scope::SymbolicConstraint => "symbolic_constraint",
+        other => panic!("not a kind of symbolic reasoning: {other:?}"),
+    };
+    let literals: std::collections::BTreeSet<&str> =
+        kinds.iter().map(|(scope, _)| series(*scope)).collect();
+    assert_eq!(kinds.len(), 6, "premise: six kinds of symbolic reasoning");
+    assert_eq!(
+        literals.len(),
+        6,
+        "two kinds share one series: {literals:?}"
+    );
+    assert!(!literals.contains("symbolic_reasoning"));
+    assert_eq!(
+        gauge("symbolic_reasoning"),
+        Some(1.0),
+        "the aggregate series reads 1 when any kind derived"
+    );
+    for (scope, derived) in kinds {
+        assert_eq!(
+            gauge(series(scope)),
+            Some(if derived { 1.0 } else { 0.0 }),
+            "{scope:?}: derived {derived}"
+        );
+        assert_eq!(
+            platform.scopes_reported_this_cycle().contains(&scope),
+            derived,
+            "{scope:?}"
+        );
+    }
+    Ok(())
+}
+
+/// R12-REASON-3026. The constraint reasoner's conflict reaches the brain's
+/// finding as machine-checkable evidence, with the ids the kernel's own
+/// acting problem poses, on a `run_cycle` over `PlatformConfig::default`.
+/// The kill switch is tripped so the acting problem is unsatisfiable: the
+/// hypothesis may not be acted on, and the conflict names why.
+///
+/// The failure this guards: the evidence was asserted only against fixture
+/// ids no production problem poses, so a mapping that dropped or renamed the
+/// solver's ids in a cycle would have passed.
+///
+/// Mutation: in `symbolic_brain.rs`, map each id to `blocking_constraint`
+/// without the id — the journaled evidence no longer names `posed-acting`.
+#[test]
+fn a_blocked_act_reaches_the_symbolic_finding_as_the_ids_of_the_constraints_that_block_it()
+-> Result<()> {
+    use qip_events::{EventFilter, Topic};
+    use qip_investment_agents::ids;
+    use qip_kernel::agent_journal::AgentRunJournal;
+
+    let mut platform = platform()?;
+    platform.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "operator",
+        "a halt so the acting problem is unsatisfiable".to_string(),
+    );
+    assert!(platform.autonomy().kill_switch().is_globally_tripped());
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let derivations = symbolic_stage::replay(&platform)?;
+    let derivation = derivations
+        .first()
+        .expect("premise: the halted cycle still derived a hypothesis");
+    let symbolic_stage::Step::Derived(qip_reasoning_engine::constraint::Answer::Unsatisfiable {
+        conflict,
+    }) = &derivation.acting
+    else {
+        return Err(qip_core::error::Error::invalid(format!(
+            "premise: a halted act is blocked, got {:?}",
+            derivation.acting
+        )));
+    };
+    let conflict = conflict.clone();
+    // The ids are the kernel's acting problem's own: the posed act and at
+    // least one of the two constraints a halt or an ineligible verdict fires,
+    // and nothing else.
+    assert!(
+        conflict.iter().all(|id| [
+            "posed-acting",
+            "acting-requires-eligibility",
+            "a-halt-forbids-acting"
+        ]
+        .contains(&id.as_str())),
+        "{conflict:?}"
+    );
+    assert!(
+        conflict.iter().any(|id| id == "posed-acting"),
+        "{conflict:?}"
+    );
+    assert!(
+        conflict
+            .iter()
+            .any(|id| id == "a-halt-forbids-acting" || id == "acting-requires-eligibility"),
+        "{conflict:?}"
+    );
+
+    let run = platform
+        .replay_journal(&EventFilter::new().topic(Topic::AgentRunCompleted))?
+        .into_iter()
+        .filter_map(|e| e.decode::<AgentRunJournal>().ok().map(|d| d.body))
+        .find(|run| run.cycle == derivation.cycle && run.record.agent_id == ids::SYMBOLIC_REASONING)
+        .expect("the symbolic brain ran in the halted cycle");
+    let finding = run.record.finding.expect("the brain answered");
+    let expected: Vec<String> = conflict
+        .iter()
+        .map(|id| format!("blocking_constraint:{id}"))
+        .collect();
+    assert_eq!(finding.evidence, expected);
+    let blocking = finding
+        .facts
+        .iter()
+        .find(|f| f.label == "constraints_blocking")
+        .map(|f| f.value);
+    assert_eq!(blocking, Some(conflict.len() as f64));
     Ok(())
 }

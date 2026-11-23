@@ -21,10 +21,10 @@
 //! zero is the floor of the field, not a measurement.
 
 use qip_agents::capability::Capability;
-use qip_agents::governance::Roster;
 use qip_agents::manifest::AgentManifest;
 use qip_contracts::expansion::BrainSpec;
 use qip_core::error::{Error, Result};
+use qip_investment_agents::Organisation;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The always-on attention router `ResearchLoop::new` builds and every sweep
@@ -210,8 +210,9 @@ impl BrainRegistry {
         }
     }
 
-    /// Without the brain `id`, for the test that removing a brain drops its
-    /// scope. Not called on a running path: the node never deregisters.
+    /// Without the brain `id`. [`standard`] judges coverage on a copy without
+    /// the roster entries no agent was constructed for; the node never
+    /// deregisters a brain from the registry it keeps.
     pub fn without(mut self, id: &str) -> Self {
         self.entries.remove(id);
         self
@@ -309,12 +310,26 @@ pub fn ambient_specs() -> Vec<BrainSpec> {
 }
 
 /// The registry this node starts on: every agent on the organisation's
-/// roster — the World Model Arbitration Brain among them — the NOW
-/// specialists and the ambient brains. Refuses to build if any entry is missing a declared
-/// field, two share an id, or a [`REQUIRED_SCOPES`] entry is uncovered.
-pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
+/// roster — the World Model Arbitration Brain and the Symbolic Reasoning Brain
+/// among them — the NOW specialists and the ambient brains. Refuses to build
+/// if any entry is missing a declared field, two share an id, or a
+/// [`REQUIRED_SCOPES`] entry is uncovered by a brain that actually runs.
+///
+/// Every reviewed manifest keeps its entry, constructed or not, because the
+/// registry is the record of what governance reviewed. Coverage is judged
+/// without the entries [`Organisation::constructs`] says nothing was built
+/// for (R12-REASON-3026): judged on the roster alone, `symbolic-reasoning`
+/// stayed covered after the analyst was deleted from
+/// `standard_late_agents`, and the node started on a record of a brain it
+/// did not run. A required scope only an unbuilt agent covers now stops the
+/// node at start-up.
+pub fn standard(organisation: &Organisation) -> Result<BrainRegistry> {
     let mut registry = BrainRegistry::new();
-    for manifest in organisation.iter() {
+    let mut unbuilt = Vec::new();
+    for manifest in organisation.roster().iter() {
+        if !organisation.constructs(&manifest.id) {
+            unbuilt.push(format!("organisation/{}", manifest.id));
+        }
         registry
             .register(organisation_spec(manifest))
             .map_err(|error| {
@@ -332,5 +347,9 @@ pub fn standard(organisation: &Roster) -> Result<BrainRegistry> {
         registry.register(spec)?;
     }
     registry.require_coverage()?;
+    unbuilt
+        .iter()
+        .fold(registry.clone(), |running, id| running.without(id))
+        .require_coverage()?;
     Ok(registry)
 }
