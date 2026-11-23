@@ -124,6 +124,11 @@ pub enum DrainedTo {
 /// The manifest key prefix a sink's cursor is committed under.
 const CURSOR_PREFIX: &str = "drain.cursor.";
 
+/// The manifest key prefix under which the last offset of a seal under way
+/// is recorded before the seal writes and cleared after it, so a restart
+/// seals the re-drained offsets at the same boundary ([`Sink::holding`]).
+const SEAL_PREFIX: &str = "drain.seal.";
+
 /// One destination the drain delivers spool batches to.
 pub trait Sink: Send + std::fmt::Debug {
     /// The sink's name: a source literal, because it is a manifest key and a
@@ -139,6 +144,38 @@ pub trait Sink: Send + std::fmt::Debug {
     fn fenced(&self) -> bool {
         false
     }
+
+    /// The spool offsets this sink has taken but does not yet hold durably,
+    /// as `(first, last)`: a sink that batches across offsets before it
+    /// seals (the lake, ADR 0181 decision 3). The drain commits the sink's
+    /// cursor at `first`, not past `last`, and retires nothing from `first`
+    /// on, so a crash before the seal re-drains what the sink held rather
+    /// than losing it with the process. The default holds nothing: `Ok`
+    /// from [`Self::deliver`] is durable.
+    fn holding(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    /// Whether the sink's own bounds say what it holds is to be sealed now.
+    /// The drain asks after every delivery and once per step, so an age
+    /// bound fires on a quiet spool too.
+    fn seal_due(&self) -> bool {
+        false
+    }
+
+    /// Make everything [`Self::holding`] names durable. `Err` leaves it
+    /// held, and the drain asks again on the next step.
+    fn seal(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    /// After a restart: the last offset a seal that was under way when the
+    /// process stopped covered. The sink re-drains from its committed cursor
+    /// and seals at exactly this offset, so the re-drained seal names the
+    /// same segments as the interrupted one and the lake's write-once
+    /// refusal recognises what was already written. Sealing at a different
+    /// offset would write the same lines a second time under a new name.
+    fn resume_seal_through(&mut self, _last: u64) {}
 }
 
 /// How the drain runs.
@@ -246,6 +283,12 @@ impl Drain {
                      resuming from it would skip records — inspect the spool rather than clear it"
                 )));
             }
+            let mut sink = sink;
+            if let Some(bytes) = log.manifest_get(&format!("{SEAL_PREFIX}{name}"))?
+                && !bytes.is_empty()
+            {
+                sink.resume_seal_through(parse_cursor(name, &bytes)?);
+            }
             cursors.push(Cursor { sink, next });
         }
         Ok(Self {
@@ -273,6 +316,17 @@ impl Drain {
         let high_water = self.log.high_water();
         for cursor in &mut self.cursors {
             let mut taken = 0usize;
+            // The age bound of a sink that batches fires here when nothing
+            // new arrives: a quiet spool still seals what the sink held.
+            if cursor.sink.seal_due()
+                && let Err(error) = seal_held(&self.log, cursor)
+            {
+                self.telemetry.drain("refused");
+                report
+                    .refused
+                    .push((cursor.sink.name(), error.message().to_string()));
+                continue;
+            }
             while cursor.next < high_water && taken < self.config.max_batches_per_step {
                 let Some(batch) = self.log.read(cursor.next)? else {
                     break;
@@ -281,12 +335,21 @@ impl Drain {
                 match cursor.sink.deliver(cursor.next, stream, &batch) {
                     Ok(()) => {
                         cursor.next = cursor.next.saturating_add(1);
-                        self.log.manifest_put(
-                            &format!("{CURSOR_PREFIX}{}", cursor.sink.name()),
-                            cursor.next.to_string().as_bytes(),
-                        )?;
                         taken += 1;
                         self.telemetry.drain("delivered");
+                        if cursor.sink.seal_due()
+                            && let Err(error) = seal_held(&self.log, cursor)
+                        {
+                            self.telemetry.drain("refused");
+                            report
+                                .refused
+                                .push((cursor.sink.name(), error.message().to_string()));
+                            break;
+                        }
+                        self.log.manifest_put(
+                            &format!("{CURSOR_PREFIX}{}", cursor.sink.name()),
+                            committed(cursor).to_string().as_bytes(),
+                        )?;
                     }
                     Err(error) => {
                         self.telemetry.drain("refused");
@@ -310,10 +373,12 @@ impl Drain {
             self.log.seal_active()?;
             self.last_seal = Instant::now();
         }
+        // Retire only what every sink holds durably: a batching sink's held
+        // offsets are still the spool's to keep.
         let floor = self
             .cursors
             .iter()
-            .map(|cursor| cursor.next)
+            .map(committed)
             .min()
             .unwrap_or(high_water);
         for segment in self.log.segments() {
@@ -340,7 +405,17 @@ impl Drain {
         for steps in 1..=max_steps {
             let step = self.step()?;
             delivered += step.delivered;
-            if self.cursors.iter().all(|cursor| cursor.next >= target) {
+            // Every sink has taken the spool to `target`; what a batching
+            // sink still holds is sealed now, because the drain-out is the
+            // last chance this incarnation has to make it durable, and the
+            // tail is reported only once every committed cursor reaches it.
+            if self.cursors.iter().all(|cursor| cursor.next >= target)
+                && self.seal_all().is_ok()
+                && self
+                    .cursors
+                    .iter()
+                    .all(|cursor| committed(cursor) >= target)
+            {
                 return Ok(DrainedTo::Tail { delivered, steps });
             }
             if let Some(cursor) = self.cursors.iter().find(|cursor| cursor.sink.fenced()) {
@@ -370,6 +445,15 @@ impl Drain {
                 behind.join(", ")
             ),
         })
+    }
+
+    /// Seal what every sink holds, whatever its bounds say, and commit
+    /// each cursor past it.
+    fn seal_all(&mut self) -> Result<()> {
+        for cursor in &mut self.cursors {
+            seal_held(&self.log, cursor)?;
+        }
+        Ok(())
     }
 
     /// Run [`Self::step`] on a thread of its own until stopped.
@@ -457,6 +541,32 @@ impl Drain {
             drained,
         })
     }
+}
+
+/// The offset a sink's cursor is committed at: the first offset it holds
+/// unsealed, or the next it has not taken when it holds nothing.
+fn committed(cursor: &Cursor) -> u64 {
+    cursor
+        .sink
+        .holding()
+        .map_or(cursor.next, |(first, _)| first.min(cursor.next))
+}
+
+/// Seal what `cursor`'s sink holds, recording the seal's last offset first
+/// so a restart seals the re-drained offsets at the same boundary, then
+/// clearing it and committing the cursor past what was sealed.
+fn seal_held(log: &SegmentLog, cursor: &mut Cursor) -> Result<()> {
+    let Some((_, last)) = cursor.sink.holding() else {
+        return Ok(());
+    };
+    let name = cursor.sink.name();
+    log.manifest_put(&format!("{SEAL_PREFIX}{name}"), last.to_string().as_bytes())?;
+    cursor.sink.seal()?;
+    log.manifest_put(&format!("{SEAL_PREFIX}{name}"), b"")?;
+    log.manifest_put(
+        &format!("{CURSOR_PREFIX}{name}"),
+        committed(cursor).to_string().as_bytes(),
+    )
 }
 
 fn parse_cursor(name: &str, bytes: &[u8]) -> Result<u64> {
@@ -733,8 +843,103 @@ struct LatestTick {
     instrument: String,
 }
 
-/// Delivers the market events in P2 batches to the tick lake, one sealed
-/// segment per spool offset per partition. Every other record is not the
+/// The deployed size bound on a lake seal (ADR 0181 decision 3,
+/// R12-DATA-9187): the sink seals once the lines and raw bytes it holds
+/// across drained offsets reach one mebibyte. Provisional, decided
+/// 2026-11-23 under the owner's delegation of the same day: the smallest
+/// round figure at which a Cloud Storage object's per-request cost and
+/// listing entry stop dominating its bytes, where a spool offset's handful
+/// of ticks sealed alone was a few hundred bytes. It is an engineering
+/// figure for the lake writer, not money and not a limit.
+pub const LAKE_SEAL_MAX_BYTES: usize = 1 << 20;
+
+/// The deployed age bound on a lake seal (ADR 0181 decision 3): what the
+/// sink holds is sealed sixty seconds after its first line arrived, however
+/// little it is, so a quiet partition never sits unsealed — and off the
+/// lake — indefinitely. Provisional, decided 2026-11-23 with
+/// [`LAKE_SEAL_MAX_BYTES`]: the smallest whole minute, a window short enough
+/// that a backtest reading the lake is at most a minute behind the cell.
+pub const LAKE_SEAL_MAX_AGE: Duration = Duration::from_secs(60);
+
+/// When [`LakeSink`] seals what it holds: a size bound and an age bound
+/// (ADR 0181 decision 3). Segments are sized where they are cut, never by
+/// merging sealed ones, because a lake segment is read by the key a pinned
+/// manifest names and a merged object has no place in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LakeBatching {
+    max_bytes: usize,
+    max_age: Duration,
+}
+
+impl LakeBatching {
+    /// Seal at `max_bytes` held or `max_age` after the first held line.
+    /// Refuses a zero bound of either kind: a zero size seals every offset
+    /// alone — the tiny objects the batching exists to stop — and a zero age
+    /// does the same on every step.
+    pub fn new(max_bytes: usize, max_age: Duration) -> Result<Self> {
+        if max_bytes == 0 {
+            return Err(Error::invalid(
+                "a lake seal bound of zero bytes seals every spool offset as its own object;                  configure a positive size",
+            ));
+        }
+        if max_age.is_zero() {
+            return Err(Error::invalid(
+                "a lake seal age of zero seals every step's lines as their own objects;                  configure a positive age",
+            ));
+        }
+        Ok(Self { max_bytes, max_age })
+    }
+
+    /// The bounds the edge node deploys with: [`LAKE_SEAL_MAX_BYTES`] and
+    /// [`LAKE_SEAL_MAX_AGE`].
+    pub const fn deployed() -> Self {
+        Self {
+            max_bytes: LAKE_SEAL_MAX_BYTES,
+            max_age: LAKE_SEAL_MAX_AGE,
+        }
+    }
+
+    /// The size bound in bytes.
+    pub const fn max_bytes(&self) -> usize {
+        self.max_bytes
+    }
+
+    /// The age bound.
+    pub const fn max_age(&self) -> Duration {
+        self.max_age
+    }
+}
+
+/// A lake partition: venue, date, instrument and dataset.
+type PartitionKey = (String, String, String, String);
+
+/// One partition's lines held across drained offsets until the seal, with
+/// its raw slot: absent where no line of it is retained raw, `Some(None)`
+/// once any line failed to re-encode to the venue's bytes (the whole slot is
+/// then dropped, never sealed with a hole), `Some(Some(bytes))` otherwise.
+#[derive(Debug, Default)]
+struct HeldPartition {
+    canonical: Vec<u8>,
+    raw: Option<Option<Vec<u8>>>,
+}
+
+/// What [`LakeSink`] holds between seals.
+#[derive(Debug)]
+struct Held {
+    first: u64,
+    last: u64,
+    since: Instant,
+    bytes: usize,
+    partitions: BTreeMap<PartitionKey, HeldPartition>,
+}
+
+/// Delivers the market events in P2 batches to the tick lake. Unbatched
+/// ([`LakeSink::new`]), one sealed segment per spool offset per partition;
+/// with [`LakeSink::with_batching`], as the edge node deploys it, a
+/// partition's lines are held across drained offsets and sealed as one
+/// segment per partition when a size or age bound is reached (ADR 0181
+/// decision 3, R12-DATA-9187), the drain committing its cursor at the first
+/// held offset until then ([`Sink::holding`]). Every other record is not the
 /// lake's: a journal entry is the platform's own record and reaches the lake
 /// through the central archive, not from a cell.
 ///
@@ -774,6 +979,12 @@ pub struct LakeSink {
     /// Where the clock bound is published as a gauge (R12-TICK-2052). `None`
     /// on a sink nobody scrapes; the bound is on the lake line either way.
     metrics: Option<Arc<qip_observability::metrics::Metrics>>,
+    /// The seal bounds; `None` seals each spool offset as it is delivered.
+    batching: Option<LakeBatching>,
+    /// Lines taken and not yet sealed, under `batching`.
+    held: Option<Held>,
+    /// The last offset an interrupted seal covered, read back at restart.
+    resume_through: Option<u64>,
 }
 
 impl LakeSink {
@@ -827,7 +1038,20 @@ impl LakeSink {
             raw_unverified: 0,
             capture: CaptureStream::new(DisciplineSettings::default())?,
             metrics: None,
+            batching: None,
+            held: None,
+            resume_through: None,
         })
+    }
+
+    /// Hold each partition's lines across drained offsets and seal them as
+    /// one segment per partition at `batching`'s size or age bound, instead
+    /// of one segment per spool offset (ADR 0181 decision 3). The segment id
+    /// then names the range of offsets it covers.
+    #[must_use]
+    pub fn with_batching(mut self, batching: LakeBatching) -> Self {
+        self.batching = Some(batching);
+        self
     }
 
     /// Publish each normalized tick's clock uncertainty on `metrics` as
@@ -960,19 +1184,23 @@ impl Sink for LakeSink {
     }
 
     fn deliver(&mut self, offset: u64, stream: QosClass, batch: &Batch) -> Result<()> {
+        // A held range runs to the last offset taken, whatever it carried,
+        // so a re-drain after an interrupted seal reaches the same boundary.
+        if let Some(held) = self.held.as_mut() {
+            held.last = offset;
+        }
         if stream != QosClass::P2MarketJournal {
             return Ok(());
         }
         // Keyed by partition so one segment holds one venue, day,
         // instrument and licence; a BTreeMap so the write order — and a
         // retry's — is the same every time.
-        let mut by_partition: BTreeMap<(String, String, String, String), Vec<u8>> = BTreeMap::new();
+        let mut by_partition: BTreeMap<PartitionKey, Vec<u8>> = BTreeMap::new();
         // The venue's bytes per partition, where the dataset's right keeps
         // them (ADR 0181): `None` once any line of the partition could not be
         // re-encoded to what was published, so a raw slot is either the whole
         // partition's bytes or absent, never a session with a hole in it.
-        let mut raw_by_partition: BTreeMap<(String, String, String, String), Option<Vec<u8>>> =
-            BTreeMap::new();
+        let mut raw_by_partition: BTreeMap<PartitionKey, Option<Vec<u8>>> = BTreeMap::new();
         for record in &batch.records {
             let event = record.decode_payload(batch.encoding)?;
             if event.topic != MARKET_EVENT_APPLIED.topic {
@@ -1073,14 +1301,128 @@ impl Sink for LakeSink {
             body.extend_from_slice(line.as_bytes());
             body.push(b'\n');
         }
-        let lake = Lake::new(self.store.as_ref()).with_codec(self.codec);
-        let segment_id = format!("{}-o{offset:020}", self.cell);
+        if self.batching.is_none() {
+            let segment_id = format!("{}-o{offset:020}", self.cell);
+            let partitions = by_partition
+                .into_iter()
+                .map(|(key, canonical)| {
+                    let raw = raw_by_partition.remove(&key);
+                    (key, HeldPartition { canonical, raw })
+                })
+                .collect();
+            return self.write_partitions(&segment_id, partitions);
+        }
+        if by_partition.is_empty() {
+            return Ok(());
+        }
+        let held = self.held.get_or_insert_with(|| Held {
+            first: offset,
+            last: offset,
+            since: Instant::now(),
+            bytes: 0,
+            partitions: BTreeMap::new(),
+        });
         for (key, canonical) in by_partition {
+            let raw = raw_by_partition.remove(&key);
+            held.bytes = held.bytes.saturating_add(canonical.len());
+            if let Some(Some(bytes)) = &raw {
+                held.bytes = held.bytes.saturating_add(bytes.len());
+            }
+            let partition = held.partitions.entry(key).or_default();
+            partition.canonical.extend_from_slice(&canonical);
+            // The same rule a single batch applies within itself: a slot
+            // is the partition's whole session of published bytes or
+            // nothing, so one line that did not re-encode drops it.
+            partition.raw = match (partition.raw.take(), raw) {
+                (None, next) => next,
+                (held_raw, None) => held_raw,
+                (Some(None), Some(_)) | (Some(Some(_)), Some(None)) => Some(None),
+                (Some(Some(mut bytes)), Some(Some(next))) => {
+                    bytes.extend_from_slice(&next);
+                    Some(Some(bytes))
+                }
+            };
+        }
+        Ok(())
+    }
+
+    fn holding(&self) -> Option<(u64, u64)> {
+        self.held.as_ref().map(|held| (held.first, held.last))
+    }
+
+    fn seal_due(&self) -> bool {
+        let (Some(held), Some(batching)) = (&self.held, &self.batching) else {
+            return false;
+        };
+        match self.resume_through {
+            // Re-draining after an interrupted seal: seal where it sealed,
+            // whatever the bounds say now, so the segment ids match.
+            Some(last) => held.last >= last,
+            None => held.bytes >= batching.max_bytes || held.since.elapsed() >= batching.max_age,
+        }
+    }
+
+    fn seal(&mut self) -> Result<()> {
+        let Some(held) = self.held.take() else {
+            return Ok(());
+        };
+        let segment_id = format!("{}-o{:020}-o{:020}", self.cell, held.first, held.last);
+        let (first, last, since, bytes) = (held.first, held.last, held.since, held.bytes);
+        // Written from a copy so a failed seal keeps what it held: the
+        // drain retries it, and a segment already sealed by the failed
+        // attempt is refused as this sink's own earlier write.
+        let partitions: BTreeMap<PartitionKey, HeldPartition> = held
+            .partitions
+            .iter()
+            .map(|(key, partition)| {
+                (
+                    key.clone(),
+                    HeldPartition {
+                        canonical: partition.canonical.clone(),
+                        raw: partition.raw.clone(),
+                    },
+                )
+            })
+            .collect();
+        match self.write_partitions(&segment_id, partitions) {
+            Ok(()) => {
+                self.resume_through = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.held = Some(Held {
+                    first,
+                    last,
+                    since,
+                    bytes,
+                    partitions: held.partitions,
+                });
+                Err(error)
+            }
+        }
+    }
+
+    fn resume_seal_through(&mut self, last: u64) {
+        self.resume_through = Some(last);
+    }
+}
+
+impl LakeSink {
+    /// Seal each partition's lines as segment `segment_id` of that
+    /// partition, beside its raw bytes where the dataset's right keeps them.
+    fn write_partitions(
+        &mut self,
+        segment_id: &str,
+        partitions: BTreeMap<PartitionKey, HeldPartition>,
+    ) -> Result<()> {
+        let lake = Lake::new(self.store.as_ref()).with_codec(self.codec);
+        for (key, held) in partitions {
             // The venue's bytes ride beside the decoded lines where the
             // dataset's right keeps them and every line re-encoded to what
             // was published; otherwise the segment is sealed without them and
             // the shortfall counted.
-            let raw = match raw_by_partition.remove(&key) {
+            let canonical = held.canonical;
+            let raw = match held.raw {
                 Some(Some(bytes)) => Some(bytes),
                 Some(None) => {
                     self.raw_unverified = self.raw_unverified.saturating_add(1);
@@ -1100,12 +1442,13 @@ impl Sink for LakeSink {
                     raw_retention_permitted,
                 },
             )?;
-            match lake.write_segment(&partition, &segment_id, canonical, raw) {
+            match lake.write_segment(&partition, segment_id, canonical, raw) {
                 Ok(_) => {}
-                // A segment id is one spool offset of one cell, so a sealed
-                // one is this sink's own earlier write of these same records,
-                // retried after a later partition of the batch failed. Any
-                // other refusal is returned and the batch retried.
+                // A segment id is one spool offset, or one sealed range of
+                // offsets, of one cell, so a sealed one is this sink's own
+                // earlier write of these same records, retried after a later
+                // partition failed or re-drained after a restart. Any other
+                // refusal is returned and the batch retried.
                 Err(error) if error.code() == "denied" => {}
                 Err(error) => return Err(error),
             }

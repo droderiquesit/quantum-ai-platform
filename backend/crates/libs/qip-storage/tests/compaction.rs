@@ -18,7 +18,7 @@ fn snapshot(store: &MemoryBlobStore) -> Vec<(String, Vec<u8>)> {
 
 fn config() -> CompactionConfig {
     CompactionConfig::new()
-        .with_min_object_size(1)
+        .with_min_object_size(1024)
         .with_max_segment_size(64 * 1024)
 }
 
@@ -89,21 +89,31 @@ fn compacting_the_archive_prefix_is_refused_and_leaves_every_object_and_manifest
     }
 }
 
-/// `min_object_size` is read: an object smaller than it is left alone and is
-/// not handed back as merged, and what is reported merged is exactly what was.
-/// The failure this prevents: a stored-and-never-read field, and a result
-/// that listed every key under the prefix as deletable, including objects the
-/// pass never read into a segment.
+/// `min_object_size` is the line below which an object is tiny: the tiny
+/// objects are merged, an object at or above it is left alone and not handed
+/// back as merged, and what is reported merged is exactly what was (ADR 0181
+/// decision 3, R12-DATA-9187). The failure this prevents: the inverted
+/// filter this module shipped with, which merged every reasonably sized
+/// object and left the tiny ones — the objects the job exists for — where
+/// they were, and before that a result that listed every key under the
+/// prefix as deletable.
 ///
-/// Mutation: drop the `bytes.len() >= self.config.min_object_size` condition.
-/// The 8-byte object is merged and the reported list has four entries.
+/// Mutation: turn `bytes.len() < self.config.min_object_size` back into
+/// `>=`. The three 100-byte objects are merged instead of the two tiny ones
+/// and the merged list names the wrong keys.
 #[test]
-fn objects_below_the_minimum_are_left_alone_and_only_merged_objects_are_reported() {
+fn tiny_objects_below_the_minimum_are_merged_and_reasonably_sized_ones_are_left_alone() {
     let store = MemoryBlobStore::new();
     store.put("lake/a", vec![1; 100]).unwrap();
     store.put("lake/b", vec![2; 100]).unwrap();
     store.put("lake/c", vec![3; 100]).unwrap();
-    store.put("lake/tiny", vec![4; 8]).unwrap();
+    store.put("lake/tiny-1", vec![4; 8]).unwrap();
+    store.put("lake/tiny-2", vec![5; 12]).unwrap();
+    assert_eq!(
+        store.list("lake/").unwrap().len(),
+        5,
+        "premise: two tiny objects beside three reasonably sized ones"
+    );
     let result = Compactor::new(
         &store,
         CompactionConfig::new()
@@ -112,10 +122,19 @@ fn objects_below_the_minimum_are_left_alone_and_only_merged_objects_are_reported
     )
     .compact("lake/")
     .unwrap();
+    let mut merged = result.merged_objects.clone();
+    merged.sort();
     assert_eq!(
-        result.merged_objects,
-        vec!["lake/a", "lake/b", "lake/c"],
-        "the 8-byte object is under the minimum and is not merged"
+        merged,
+        vec!["lake/tiny-1", "lake/tiny-2"],
+        "only the objects under the minimum are merged"
     );
-    assert_eq!(result.total_bytes_merged, 300);
+    assert_eq!(result.total_bytes_merged, 20);
+    assert_eq!(result.compacted_segments.len(), 1, "one merged segment");
+    let segment = store.get(&result.compacted_segments[0]).unwrap().unwrap();
+    assert_eq!(
+        segment,
+        [vec![4u8; 8], vec![5u8; 12]].concat(),
+        "the segment holds the tiny objects' bytes in listing order"
+    );
 }
