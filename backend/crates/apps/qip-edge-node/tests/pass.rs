@@ -803,12 +803,13 @@ fn a_venue_feed_other_than_the_simulator_is_refused_at_start_naming_adr_0003() {
 /// is deployed; it is reachable on the first one that is.
 #[test]
 fn a_partial_fill_on_an_order_that_later_expires_is_counted_once() -> Result<()> {
-    // A five-second time to live and a timeline inside ten seconds, because
-    // nothing in the pass loop answers a heartbeat and the simulated venue
-    // degrades its session after thirty (`ExchangeSettings::orderly`). The
-    // shape the defect needs is what matters and not the interval: the fill
-    // must land on one pass and the expiry on a *later* one, so that the old
-    // fill is still in the cumulative record when the withdrawal runs.
+    // A five-second time to live and a timeline inside ten seconds, chosen
+    // when nothing in the pass loop answered a heartbeat and the simulated
+    // venue degraded its session after thirty; the pass has answered it
+    // since 2026-11-23 (`tests/venue_session.rs`). The shape the defect needs
+    // is what matters and not the interval: the fill must land on one pass
+    // and the expiry on a *later* one, so that the old fill is still in the
+    // cumulative record when the withdrawal runs.
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(5))?)?;
     permit_seeding(&mut gateway, &[&object()])?;
@@ -1280,8 +1281,9 @@ fn a_requote_seals_its_cancel_acknowledgement_and_its_replacement_and_moves_the_
     }
 
     // A twelve-second time to live, so the order sent at `t(10)` is requoted
-    // at `t(20)` and expires by `t(25)`: nothing in the pass loop answers a
-    // heartbeat, and the simulated venue degrades its session after thirty.
+    // at `t(20)` and expires by `t(25)`: inside the thirty seconds the
+    // simulated venue's session lasted before the pass answered its
+    // heartbeat (2026-11-23, `tests/venue_session.rs`).
     let (mut node, mut gateway, mut feed) =
         node_with_feed(PricingPolicy::rest_at_mid(Duration::from_secs(12))?)?;
     let mut requoter = requoter(&node)?;

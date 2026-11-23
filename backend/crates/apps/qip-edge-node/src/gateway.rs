@@ -476,6 +476,10 @@ impl SimulatedGateway {
     /// Move the gateway to the pass instant, releasing what is due (ADR 0084
     /// §3).
     ///
+    /// The venue session is heartbeated first, on every pass: nothing else
+    /// in this node keeps it answering, and a session left unanswered for
+    /// thirty seconds refuses every order (`heartbeat`, below).
+    ///
     /// Called by the pass before anything else touches the venue, with the
     /// same `now` the cell is handed. An order held for an instant at or
     /// before `now` is submitted on this pass if `now` is within the release
@@ -501,6 +505,9 @@ impl SimulatedGateway {
             )));
         }
         self.now = now;
+        // Before the release below, so a held order meets a session the venue
+        // answered on this pass rather than one last heard from a pass ago.
+        self.heartbeat(now);
         let due: Vec<Timestamp> = self.held.range(..=now).map(|(at, _)| *at).collect();
         // A refusal at release neither ends the release nor stops the pass.
         // Until 2026-10-24 the first one returned here with the rest of its
@@ -549,6 +556,56 @@ impl SimulatedGateway {
             }
         }
         self.settle_due(now)
+    }
+
+    /// Heartbeat the venue session at the pass instant, through the venue's
+    /// own heartbeat.
+    ///
+    /// Until 2026-11-23 nothing did after start-up. `bring_up` heartbeated
+    /// the session once, when the gateway was built, and the venue allows
+    /// thirty seconds between heartbeats (`ExchangeSettings::orderly`); from
+    /// then on `ConnectionState::ready_ticket` refused every placement and
+    /// every held release with "has not answered a heartbeat", for the life
+    /// of the process. [`RestGateway`] re-proves a stale session before an
+    /// order and its doc names a timer as the production answer; this
+    /// gateway had neither, and every pass-loop test kept its timeline inside
+    /// thirty seconds rather than find out. The pass is this node's timer:
+    /// heartbeated on every pass, a session turned at one-second intervals
+    /// never goes stale, so it never cycles through degraded and back, each
+    /// cycle a new session number and two more recorded transitions.
+    ///
+    /// Through `VenueAdapter::heartbeat` and nothing beneath it. A venue
+    /// silenced by [`Self::stop_heartbeat`] refuses the heartbeat, its
+    /// session degrades once the gap passes the interval, and placements and
+    /// releases are refused as they were before — a heartbeat that wrote the
+    /// session's last-heard instant itself would read a dead venue as alive.
+    ///
+    /// The answer is not returned, and that is not a decision dropped: the
+    /// venue records it in its session, and the session is what
+    /// `ready_ticket` reads at every placement and release, naming the gap
+    /// when it refuses. Returning the refusal would stop the pass, and with
+    /// it the cancels, expiries and halt a degraded venue still needs —
+    /// cancels need no ticket.
+    ///
+    /// Draws nothing from the seed: the round trip is jittered only when
+    /// the settings carry a jitter, and every constructor here builds on
+    /// `ExchangeSettings::orderly`, which carries none. A replay therefore
+    /// heartbeats at the same instants and draws the same rejections. The
+    /// venue's own `VenueObservation` tally counts each answer as an
+    /// acknowledgement, as it documents; the cell's per-order
+    /// acknowledgement latency is read from execution reports, which a
+    /// heartbeat never produces, and nothing in this node reads the tally.
+    fn heartbeat(&mut self, now: Timestamp) {
+        let _answered = self.exchange.heartbeat(now);
+    }
+
+    /// Stop the venue answering heartbeats, without telling anyone.
+    ///
+    /// A fault, for rehearsing a venue that goes quiet; nothing in the binary
+    /// calls it. The session degrades once its gap passes the interval, and
+    /// [`Self::advance_to`]'s heartbeat does not revive it.
+    pub fn stop_heartbeat(&mut self) {
+        self.exchange.stop_heartbeat();
     }
 
     /// Report settled every unsettled order whose proceeds the venue's terms

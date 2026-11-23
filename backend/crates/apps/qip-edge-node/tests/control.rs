@@ -615,8 +615,9 @@ fn with_nothing_delivered_the_cell_runs_on_its_last_valid_envelope_until_it_expi
     let dir = scratch("fabric-down");
     let (path, digest) = plan_file(&dir, &[spec(STRATEGY, "10")]);
     // The whole timeline sits inside the simulated session's thirty seconds,
-    // because nothing in the pass loop answers the venue's heartbeat and the
-    // venue answering is not what is under test.
+    // as it had to until 2026-11-23, when nothing in the pass loop answered
+    // the venue's heartbeat. The pass answers it now, and the venue answering
+    // is not what is under test here (`tests/venue_session.rs`).
     let expiry = t(20);
     let grant = grant_until(STRATEGY, expiry)?;
     let (mut node, mut gateway, mut feed) = node_with_feed()?;
