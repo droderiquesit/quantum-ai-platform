@@ -203,16 +203,72 @@ fn the_attention_finding_covers_its_ambient_scope_and_no_desk_scope() {
     assert_eq!(ambient_covered_by([&neighbour]), BTreeSet::new());
 }
 
-/// A sweep whose router returned nothing composes no finding, rather than a
-/// finding stating zero that would cover the scope on an absent router.
-/// Mutation: compose from an empty slice instead of returning `None`; the
-/// call no longer answers `Ok(None)` and this fails.
+/// A round whose router returned nothing still composes its one finding, as
+/// the owner's 2026-10-31 ruling says (one finding per round), and it states
+/// zero decisions. This test asserted the opposite until 2026-11-23, when two
+/// readers held it against the ruling: a quiet router and a removed one then
+/// read the same on the series.
+///
+/// Mutations, each fired and restored: compose nothing on a quiet round; let
+/// the quiet finding state a decision; compose a finding for a loop with no
+/// router.
 #[test]
-fn no_attention_events_compose_no_finding() {
+fn a_quiet_round_composes_one_finding_stating_no_decision_and_a_loop_without_a_router_composes_none()
+ {
+    let finding = attention_finding(&[], start()).unwrap_or_else(|e| panic!("{e}"));
+    finding
+        .validate()
+        .unwrap_or_else(|e| panic!("the quiet finding is well formed: {e}"));
+    assert_eq!(finding.agent_id, AMBIENT_ATTENTION);
+    assert!(finding.evidence.is_empty(), "a quiet round cites no event");
     assert_eq!(
-        attention_finding(&[], start()).unwrap_or_else(|e| panic!("{e}")),
-        None
+        finding
+            .fact("attention_routing")
+            .map(|fact| fact.value.to_bits()),
+        Some(0.0_f64.to_bits()),
+        "the router decided nothing"
     );
+    assert_eq!(
+        finding
+            .fact("attention_activated")
+            .map(|fact| fact.value.to_bits()),
+        Some(0.0_f64.to_bits()),
+        "and woke nothing"
+    );
+    assert_eq!(
+        ambient_covered_by([&finding]),
+        [AmbientScope::AttentionRouting].into(),
+        "a router that ran and decided nothing still routed: the scope is covered"
+    );
+
+    // Through the deployed sweep: a loop over a universe with nothing to raise
+    // holds a router and returns no decision; the same loop without its router
+    // composes nothing, and only the first writes 1 on the series.
+    let quiet_universe: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let quiet = || {
+        ResearchLoop::new(ResearchConfig::default(), quiet_universe.clone())
+            .unwrap_or_else(|e| panic!("the research loop assembles: {e}"))
+    };
+    let with_platform = platform();
+    let with = sweep(quiet(), &with_platform);
+    assert!(
+        with.attention_events.is_empty(),
+        "premise: the router returned no decision this round: {:?}",
+        with.attention_events
+    );
+    let composed = with
+        .attention_finding
+        .as_ref()
+        .expect("a loop that holds a router composes one finding on a quiet round");
+    assert!(composed.evidence.is_empty());
+    assert_eq!(with.ambient_scopes, [AmbientScope::AttentionRouting].into());
+    assert_eq!(covered_gauge(&with_platform), Some(1.0));
+
+    let without_platform = platform();
+    let without = sweep(quiet().without_attention_router(), &without_platform);
+    assert_eq!(without.attention_finding, None);
+    assert_eq!(without.ambient_scopes, BTreeSet::new());
+    assert_eq!(covered_gauge(&without_platform), Some(0.0));
 }
 
 /// The finding says which pathways the router woke, and how often, and counts
@@ -309,9 +365,7 @@ fn the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_
     assert_eq!(activated, 15, "premise: one to five activations");
     assert_eq!(events.len(), 20, "premise: and five that woke nothing");
 
-    let finding = attention_finding(&events, start())
-        .unwrap_or_else(|e| panic!("{e}"))
-        .expect("events compose a finding");
+    let finding = attention_finding(&events, start()).unwrap_or_else(|e| panic!("{e}"));
     let value = |label: &str| finding.fact(label).map(|fact| fact.value.to_bits());
     assert_eq!(
         value(ATTENTION_ROUTING_FACT),
@@ -350,8 +404,7 @@ fn the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_
     one_activated.pathway = Pathway::ResearchTask;
     one_activated.disposition = Disposition::Activated;
     let sparse = attention_finding(&[one_activated, only_deferred], start())
-        .unwrap_or_else(|e| panic!("{e}"))
-        .expect("events compose a finding");
+        .unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(
         sparse
             .fact("attention_woke_research_task")
