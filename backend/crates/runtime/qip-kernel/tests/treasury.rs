@@ -26,6 +26,17 @@ const ENTITY: &str = "central";
 const JURISDICTION: &str = "home";
 const LENDER: &str = "repo-desk";
 
+/// The gate a leverage decision is made under, as the cost router would
+/// hand it. These tests hold the treasury's books, not the routing, which
+/// `qip-kernel`'s unit tests drive through the platform, refusal included.
+fn routed() -> Result<qip_risk::gate::DeterministicGate> {
+    Ok(
+        qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "test: the treasury's leverage decision",
+        ),
+    )
+}
+
 fn requirement(id: &str, amount: Decimal) -> FundingRequirement {
     FundingRequirement {
         id: id.to_owned(),
@@ -92,7 +103,7 @@ fn a_treasury_with_no_reserve_floor_counts_no_financing_source_however_permitted
         JURISDICTION,
         declaration(Some(Decimal::ZERO), vec![ceiling(dec!("2"))]),
     )?;
-    let funded = whole.fund(&requirements, &balances)?;
+    let funded = whole.fund(&routed, &requirements, &balances)?;
     assert_eq!(
         funded.plan.funded.len(),
         1,
@@ -112,7 +123,7 @@ fn a_treasury_with_no_reserve_floor_counts_no_financing_source_however_permitted
         JURISDICTION,
         declaration(None, vec![ceiling(dec!("2"))]),
     )?;
-    let funding = no_floor.fund(&requirements, &balances)?;
+    let funding = no_floor.fund(&routed, &requirements, &balances)?;
     assert!(funding.plan.funded.is_empty(), "nothing is financed");
     assert_eq!(funding.plan.refused.len(), 1);
     assert_eq!(
@@ -137,7 +148,7 @@ fn a_treasury_with_no_reserve_floor_counts_no_financing_source_however_permitted
     );
     assert!(
         undeclared
-            .fund(&requirements, &balances)?
+            .fund(&routed, &requirements, &balances)?
             .plan
             .funded
             .is_empty()
@@ -162,7 +173,7 @@ fn a_financed_requirement_past_its_leverage_decision_is_refused_whole_and_its_ow
         JURISDICTION,
         declaration(Some(Decimal::ZERO), vec![ceiling(dec!("2"))]),
     )?;
-    let admitted = wide.fund(&requirements, &balances)?;
+    let admitted = wide.fund(&routed, &requirements, &balances)?;
     assert_eq!(admitted.plan.funded.len(), 1);
     assert_eq!(admitted.plan.funded[0].requirement, "a");
     assert_eq!(admitted.plan.refused[0].requirement, "b");
@@ -174,7 +185,7 @@ fn a_financed_requirement_past_its_leverage_decision_is_refused_whole_and_its_ow
             JURISDICTION,
             declaration(Some(Decimal::ZERO), leverage),
         )?;
-        let funding = narrow.fund(&requirements, &balances)?;
+        let funding = narrow.fund(&routed, &requirements, &balances)?;
         assert_eq!(funding.plan.refused.len(), 1, "{:?}", funding.plan);
         assert_eq!(funding.plan.refused[0].requirement, "a");
         let expected = if decided {
@@ -210,7 +221,8 @@ fn a_declared_reserve_floor_refuses_the_own_capital_placement_that_would_breach_
 
     // Premise: with no floor both are funded from own capital, and the
     // funding says no floor was applied rather than implying one of zero.
-    let undeclared = Treasury::undeclared(ENTITY, JURISDICTION).fund(&requirements, &balances)?;
+    let undeclared =
+        Treasury::undeclared(ENTITY, JURISDICTION).fund(&routed, &requirements, &balances)?;
     assert_eq!(undeclared.plan.funded.len(), 2);
     assert!(!undeclared.reserve_floor_applied);
     assert!(
@@ -230,7 +242,7 @@ fn a_declared_reserve_floor_refuses_the_own_capital_placement_that_would_breach_
             ..TreasuryDeclaration::default()
         },
     )?
-    .fund(&requirements, &balances)?;
+    .fund(&routed, &requirements, &balances)?;
     assert!(floored.reserve_floor_applied);
     assert_eq!(floored.plan.funded.len(), 1);
     assert_eq!(floored.plan.funded[0].requirement, "a");
@@ -311,7 +323,7 @@ fn every_move_of_a_pre_positioning_plan_is_sourced_whole_from_the_plans_own_budg
         "premise: the plan proposes a move, so there is something to fund"
     );
     let treasury = Treasury::undeclared(ENTITY, JURISDICTION);
-    let funding = treasury.fund_plan(&plan, ENTITY)?;
+    let funding = treasury.fund_plan(&routed, &plan, ENTITY)?;
     assert!(
         funding.plan.refused.is_empty(),
         "{:?}",
@@ -341,7 +353,7 @@ fn every_move_of_a_pre_positioning_plan_is_sourced_whole_from_the_plans_own_budg
     // move and that move has no source.
     let mut short = plan.clone();
     short.budget = plan.moves[0].amount_base - dec!("1");
-    let funding = treasury.fund_plan(&short, ENTITY)?;
+    let funding = treasury.fund_plan(&routed, &short, ENTITY)?;
     assert_eq!(funding.plan.refused.len(), plan.moves.len());
     assert!(
         funding.plan.refused[0]

@@ -4679,6 +4679,8 @@ pub const SURVIVAL_CEILING_SUBJECT: &str = "survival ceiling for the book";
 pub const SIGN_OFF_SUBJECT: &str = "sign-off of the cycle's draft proposals";
 /// The subject the release of approved proposals is routed under.
 pub const RELEASE_SUBJECT: &str = "release of the cycle's approved proposals";
+/// The subject a financed requirement's leverage decision is routed under.
+pub const LEVERAGE_SUBJECT: &str = "leverage ceiling of a financed treasury requirement";
 
 /// A kernel-side hard-limit decision the cost router determines before the
 /// function that makes it runs (R12-RISK-3022, ADR 0430).
@@ -4701,6 +4703,9 @@ pub enum HardLimitDecision {
     Release,
     /// The scoped halt of a cell whose records do not reconcile.
     ReconciliationHalt,
+    /// The leverage ceiling a treasury requirement that draws on financing
+    /// is judged against (`Treasury::check_leverage`).
+    Leverage,
 }
 
 /// How an attributed fill reached the user books, on the record.
@@ -32232,7 +32237,9 @@ impl Platform {
         // Name the source of every move (ADR 0388). A plan reported with no
         // source named for its capital reads as funded when nothing has said
         // so; a move the treasury refuses is a problem, not a quiet line.
-        match self.treasury.fund_plan(&plan, CENTRAL_TREASURY) {
+        match self
+            .fund_treasury(|treasury, route| treasury.fund_plan(route, &plan, CENTRAL_TREASURY))
+        {
             Ok(funding) => {
                 sentence.push_str(&format!("; {}", funding.describe()));
                 for refusal in &funding.plan.refused {
@@ -32274,6 +32281,35 @@ impl Platform {
             }
         }
         (sentence, problems)
+    }
+
+    /// Fund through the platform's treasury, with every leverage decision the
+    /// funding makes routed through the cost router (R12-RISK-3022).
+    ///
+    /// The one place the kernel hands the treasury the means to route: each
+    /// financed requirement asks [`Self::determine_book_decision`] under
+    /// [`LEVERAGE_SUBJECT`] at the decision, and a refusal there refuses the
+    /// requirement rather than admitting it unchecked. The rationale of the
+    /// gate the last decision was made under is recorded as
+    /// [`HardLimitDecision::Leverage`]; a funding that financed nothing made
+    /// no leverage decision and records none.
+    fn fund_treasury(
+        &mut self,
+        fund: impl FnOnce(
+            &crate::treasury::Treasury,
+            crate::treasury::RouteLeverage<'_>,
+        ) -> Result<crate::treasury::TreasuryFunding>,
+    ) -> Result<crate::treasury::TreasuryFunding> {
+        let route = || {
+            self.determine_book_decision(LEVERAGE_SUBJECT)
+                .map(|routing| routing.gate())
+        };
+        let funding = fund(&self.treasury, &route)?;
+        if let Some(rationale) = &funding.leverage_routed {
+            self.hard_limit_routings
+                .insert(HardLimitDecision::Leverage, rationale.clone());
+        }
+        Ok(funding)
     }
 
     /// Score the retained pre-positioning plan once its window has closed,
@@ -37094,6 +37130,135 @@ mod decide_tests {
             )),
             "the refusal did not reach the stage's record: {:?}",
             outcome.problems
+        );
+    }
+
+    /// R12-RISK-3022 (c): a treasury requirement that draws on financing is
+    /// judged against its leverage ceiling under a gate the cost router
+    /// minted for that decision, through the platform's one funding seam,
+    /// and the routed check refuses exactly what the check refused before. A
+    /// routing the router refuses refuses the financed requirement as if its
+    /// ceiling were breached, and leaves a requirement funded from own
+    /// capital alone, which needs no leverage decision, untouched.
+    ///
+    /// The failure this prevents: `Treasury::first_breach` called
+    /// `LeverageBook::check` with no routing at all, a hard limit
+    /// deterministic only because no model happened to be in the call.
+    ///
+    /// Mutations: drop the `*leverage_routed = ..` line from
+    /// `Treasury::check_leverage` — "the leverage decision ran under no
+    /// recorded gate"; answer a refused routing with no refusal
+    /// (`Err(_) => None` in `Treasury::first_breach`) — "a financed
+    /// requirement was funded under a leverage decision the router refused".
+    #[test]
+    fn a_financed_treasury_requirement_is_judged_under_a_routed_gate_and_refused_without_one() {
+        use crate::treasury::TreasuryDeclaration;
+        use qip_treasury::funding::{
+            FundingRequirement, FundingSource, RequirementKind, SourceBalance,
+        };
+        use qip_treasury::treasury::{FinancingFunction, LeverageDecision};
+
+        let mut platform = small_book_platform();
+        platform
+            .declare_treasury(TreasuryDeclaration {
+                reserve_floor: Some(Decimal::ZERO),
+                leverage: vec![LeverageDecision {
+                    strategy: "carry".to_string(),
+                    region: "home".to_string(),
+                    max_leverage: Decimal::from_int(2),
+                    decided_at: Timestamp::from_secs(1),
+                }],
+                permissions: vec![(FinancingFunction::Repo, "repo-desk".to_string())],
+            })
+            .expect("the declaration is admitted");
+        let requirement = |amount: i64| FundingRequirement {
+            id: "a".to_string(),
+            kind: RequirementKind::Placement,
+            strategy: "carry".to_string(),
+            region: "home".to_string(),
+            amount: Decimal::from_int(amount),
+        };
+        let balances = |own: i64, repo: i64| {
+            vec![
+                SourceBalance {
+                    source: FundingSource::OwnCapital {
+                        book: CENTRAL_TREASURY.to_string(),
+                    },
+                    available: Decimal::from_int(own),
+                },
+                SourceBalance {
+                    source: FundingSource::Financing {
+                        function: FinancingFunction::Repo,
+                        counterparty: "repo-desk".to_string(),
+                    },
+                    available: Decimal::from_int(repo),
+                },
+            ]
+        };
+        let fund = |platform: &mut Platform, amount: i64, own: i64, repo: i64| {
+            let (requirements, balances) = (vec![requirement(amount)], balances(own, repo));
+            platform
+                .fund_treasury(|treasury, route| treasury.fund(route, &requirements, &balances))
+                .expect("the treasury funds or refuses")
+        };
+        assert_eq!(
+            platform.hard_limit_routing(HardLimitDecision::Leverage),
+            None,
+            "premise: no leverage decision has been made"
+        );
+
+        // 150 from 100 of own capital: a leverage of 1.5 under a ceiling of 2.
+        let within = fund(&mut platform, 150, 100, 100);
+        assert_eq!(within.plan.funded.len(), 1, "{:?}", within.plan);
+        let rationale = platform
+            .hard_limit_routing(HardLimitDecision::Leverage)
+            .unwrap_or_else(|| panic!("the leverage decision ran under no recorded gate"));
+        assert!(
+            rationale.starts_with(
+                "'leverage ceiling of a financed treasury requirement' must be a function of its \
+                 inputs, so it is answered in deterministic code under "
+            ),
+            "the leverage decision ran under a gate for another decision: {rationale}"
+        );
+        assert_eq!(within.leverage_routed.as_deref(), Some(rationale));
+
+        // 250 from 100: a leverage of 2.5, refused by the routed check as the
+        // unrouted one refused it.
+        let over = fund(&mut platform, 250, 100, 200);
+        assert!(over.plan.funded.is_empty(), "{:?}", over.plan);
+        assert!(
+            over.plan.refused[0]
+                .reason
+                .contains("above the recorded leverage of 2"),
+            "{}",
+            over.plan.refused[0].reason
+        );
+
+        // Own capital alone makes no leverage decision.
+        let unfinanced = fund(&mut platform, 80, 100, 100);
+        assert_eq!(unfinanced.plan.funded.len(), 1);
+        assert_eq!(unfinanced.leverage_routed, None);
+
+        platform.refuse_book_decision(LEVERAGE_SUBJECT);
+        let refused = fund(&mut platform, 150, 100, 100);
+        assert!(
+            refused.plan.funded.is_empty(),
+            "a financed requirement was funded under a leverage decision the router refused: {:?}",
+            refused.plan
+        );
+        assert!(
+            refused.plan.refused[0]
+                .reason
+                .starts_with("the leverage decision for carry/home could not be routed"),
+            "{}",
+            refused.plan.refused[0].reason
+        );
+        assert_eq!(refused.leverage_routed, None);
+        let unfinanced = fund(&mut platform, 80, 100, 100);
+        assert_eq!(
+            unfinanced.plan.funded.len(),
+            1,
+            "a refused leverage routing stopped a requirement that needs no leverage decision"
         );
     }
 

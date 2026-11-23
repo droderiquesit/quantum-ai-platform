@@ -38,6 +38,21 @@
 //! floor, a ceiling and a permission come from a [`TreasuryDeclaration`] or
 //! are absent.
 //!
+//! # The leverage decision is routed (R12-RISK-3022)
+//!
+//! A requirement that draws on financing is judged against the leverage
+//! ceiling decided for its strategy and region, and that judgement is a hard
+//! limit: it refuses a financed placement. It is made by one function,
+//! [`Treasury::check_leverage`], which demands the
+//! [`DeterministicGate`] the cost router mints and records its rationale, so
+//! a path into `LeverageBook::check` that never asked the router has nothing
+//! to pass. The caller hands [`Treasury::fund`] the means to route, not a
+//! routing: the router is asked at each leverage decision, and never for a
+//! pass that finances nothing. A routing the router
+//! refuses does not loosen anything: the financed requirement is refused as
+//! if its ceiling were breached, and its own-capital draws go back to the
+//! requirements after it, which is what a breach does.
+//!
 //! # One source for the fact
 //!
 //! No funding record is journalled. The funding is a pure function of the
@@ -50,6 +65,7 @@ use std::collections::BTreeMap;
 use qip_capital_fabric::plan::PrePositioningPlan;
 use qip_core::Decimal;
 use qip_core::error::{Error, Result};
+use qip_risk::gate::DeterministicGate;
 use qip_treasury::funding::{
     FundingPlan, FundingRefusal, FundingRequirement, FundingSource, RequirementKind, SourceBalance,
     plan_funding,
@@ -102,7 +118,15 @@ pub struct TreasuryFunding {
     pub financing_withheld: Vec<String>,
     /// Whether a declared reserve floor was applied to own capital.
     pub reserve_floor_applied: bool,
+    /// The rationale of the gate the last leverage decision of this funding
+    /// was made under, as the cost router wrote it. `None` where no
+    /// requirement drew on financing, so no leverage decision was made.
+    pub leverage_routed: Option<String>,
 }
+
+/// How [`Treasury::fund`] obtains the gate for one leverage decision: the
+/// cost router's determination of it, or its refusal.
+pub type RouteLeverage<'a> = &'a dyn Fn() -> Result<DeterministicGate>;
 
 impl Treasury {
     /// The treasury nobody has declared anything for.
@@ -198,11 +222,14 @@ impl Treasury {
     ///   before anything is summed;
     /// * a requirement that draws on financing must pass the leverage
     ///   decision for its strategy and region, with the requirement as the
-    ///   notional and its own-capital draws as the capital;
+    ///   notional and its own-capital draws as the capital, made under the
+    ///   gate `route_leverage` returns for it — and refused, as a breach,
+    ///   where `route_leverage` refuses;
     /// * with a floor declared, a requirement whose own-capital draws would
     ///   take the uncommitted reserve below it is refused, not trimmed.
     pub fn fund(
         &self,
+        route_leverage: RouteLeverage<'_>,
         requirements: &[FundingRequirement],
         balances: &[SourceBalance],
     ) -> Result<TreasuryFunding> {
@@ -221,6 +248,7 @@ impl Treasury {
         // planned again, so its draws go back to the sources. Each pass
         // excludes one requirement, so the loop ends within their count.
         let mut excluded: BTreeMap<String, String> = BTreeMap::new();
+        let mut leverage_routed = None;
         loop {
             let live: Vec<FundingRequirement> = requirements
                 .iter()
@@ -234,7 +262,13 @@ impl Treasury {
                 &self.entity,
                 &self.jurisdiction,
             )?;
-            if let Some((id, reason)) = self.first_breach(&plan, &live, own_total)? {
+            if let Some((id, reason)) = self.first_breach(
+                route_leverage,
+                &plan,
+                &live,
+                own_total,
+                &mut leverage_routed,
+            )? {
                 excluded.insert(id, reason);
                 continue;
             }
@@ -250,17 +284,22 @@ impl Treasury {
                 plan,
                 financing_withheld,
                 reserve_floor_applied: self.reserve_floor.is_some(),
+                leverage_routed,
             });
         }
     }
 
     /// The first funded requirement the leverage book or the reserve floor
-    /// refuses, in the order the plan funded them.
+    /// refuses, in the order the plan funded them. A financed requirement
+    /// whose leverage decision the router refuses to route is refused here
+    /// too, as the breach the unrouted check could not rule out.
     fn first_breach(
         &self,
+        route_leverage: RouteLeverage<'_>,
         plan: &FundingPlan,
         live: &[FundingRequirement],
         own_total: Decimal,
+        leverage_routed: &mut Option<String>,
     ) -> Result<Option<(String, String)>> {
         let mut book = match self.reserve_floor {
             Some(floor) => Some(CapitalBook::new(own_total, floor)?),
@@ -279,15 +318,24 @@ impl Treasury {
                 .iter()
                 .filter(|draw| is_own(&draw.source))
                 .fold(Decimal::ZERO, |sum, draw| sum + draw.amount);
-            if own < requirement.amount
-                && let Err(error) = self.leverage.check(
-                    &requirement.strategy,
-                    &requirement.region,
-                    requirement.amount,
-                    own,
-                )
-            {
-                return Ok(Some((requirement.id.clone(), error.message().to_owned())));
+            if own < requirement.amount {
+                let refused = match route_leverage() {
+                    Ok(gate) => self
+                        .check_leverage(&gate, requirement, own, leverage_routed)
+                        .err()
+                        .map(|error| error.message().to_owned()),
+                    Err(error) => Some(format!(
+                        "the leverage decision for {}/{} could not be routed as a deterministic \
+                         decision ({}), so the financed requirement is refused as if its ceiling \
+                         were breached; fund it from own capital or restore the routing",
+                        requirement.strategy,
+                        requirement.region,
+                        error.message()
+                    )),
+                };
+                if let Some(reason) = refused {
+                    return Ok(Some((requirement.id.clone(), reason)));
+                }
             }
             if let Some(book) = book.as_mut()
                 && own.is_positive()
@@ -304,6 +352,29 @@ impl Treasury {
         Ok(None)
     }
 
+    /// The leverage decision for one financed requirement, with the
+    /// requirement as the notional and its own-capital draws as the capital.
+    ///
+    /// **The only caller of `LeverageBook::check` in the kernel**
+    /// (R12-RISK-3022). It demands the gate the cost router mints for the
+    /// decision and records the gate's rationale, so a second path into the
+    /// check written without asking the router has nothing to hand it.
+    fn check_leverage(
+        &self,
+        gate: &DeterministicGate,
+        requirement: &FundingRequirement,
+        own: Decimal,
+        leverage_routed: &mut Option<String>,
+    ) -> Result<()> {
+        *leverage_routed = Some(gate.rationale().to_string());
+        self.leverage.check(
+            &requirement.strategy,
+            &requirement.region,
+            requirement.amount,
+            own,
+        )
+    }
+
     /// Name the source of every move a pre-positioning plan proposes.
     ///
     /// One requirement per move, in the plan's order, for the move's
@@ -312,7 +383,12 @@ impl Treasury {
     /// allowed to spend, taken from the plan so the funding and the plan
     /// cannot disagree about it. No financing source is offered, because
     /// nothing in the tree reports a balance at a financing counterparty.
-    pub fn fund_plan(&self, plan: &PrePositioningPlan, book: &str) -> Result<TreasuryFunding> {
+    pub fn fund_plan(
+        &self,
+        route_leverage: RouteLeverage<'_>,
+        plan: &PrePositioningPlan,
+        book: &str,
+    ) -> Result<TreasuryFunding> {
         let requirements: Vec<FundingRequirement> = plan
             .moves
             .iter()
@@ -331,7 +407,7 @@ impl Treasury {
             },
             available: plan.budget,
         }];
-        self.fund(&requirements, &balances)
+        self.fund(route_leverage, &requirements, &balances)
     }
 }
 

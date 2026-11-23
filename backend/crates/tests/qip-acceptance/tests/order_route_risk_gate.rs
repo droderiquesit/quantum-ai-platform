@@ -1142,11 +1142,18 @@ fn the_function_splitter_reads_every_visibility_and_qualifier() {
 /// another type — `ReservationLedger::release(id, now)` takes two,
 /// `Proposal::release(now)` one — because the count is part of the
 /// signature and a receiver's name is not.
-const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 4] = [
+///
+/// `Treasury::check_leverage` joined the table with R12-RISK-3022 (c):
+/// `Treasury::first_breach` called `LeverageBook::check` with no routing, a
+/// hard limit on every financed requirement that the cycle reached with no
+/// gate. `check` takes four arguments (strategy, region, notional, capital),
+/// which is what tells it from the kernel's other `check`s.
+const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 5] = [
     ("size_survival", "SurvivalGovernor", "size", 5),
     ("seed_survival_ceiling", "SurvivalGovernor", "seed", 4),
     ("sign_off_drafts", "Proposal", "approve", 2),
     ("advance_released", "Proposal", "release", 1),
+    ("check_leverage", "LeverageBook", "check", 4),
 ];
 
 /// Production text with every comment and the contents of every string and
