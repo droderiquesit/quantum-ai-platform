@@ -2652,14 +2652,31 @@ fn a_turn_that_applied_tape_ships_a_market_state_pack_in_its_feature_digest() ->
 /// so the digest's instruments were never shown to carry what the pass
 /// evaluated, nor to be written once per pass.
 ///
+/// The passes are driven first and the spool is read after them, with no
+/// turn in between. Until 2026-11-23 this test turned once per poll and
+/// left when the spool held as many digests as passes had run — but each
+/// poll ran another pass, so the target moved with every look. The writer,
+/// fed by the relay on 5 ms beats, trails the pass just recorded, and the
+/// loop left only when a background thread happened to land the newest
+/// digest between `record` and the read: locally anything from 0.04 s to
+/// never, and on CI the chase drove simulated time past the simulated
+/// venue's session, a pass that sent failed "XLON is degraded", and the
+/// watchdog aborted the binary. A pass that has run is a fixed number, and
+/// the turn's marker on the spool is the witness that its inputs landed.
+///
 /// Mutation: make `feature_digest` skip the `by_subject` loop (empty
-/// instruments), or record the digest on every other turn; the first or the
-/// second assertion fails.
+/// instruments) and the per-instrument assertion fails; record the digest
+/// on every other turn and "one digest per pass that ran" fails.
 #[test]
 fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them() -> Result<()> {
     use qip_edge_node::standard_engine_and_catalogue;
     use qip_feature_dag::state::DEFAULT_MAX_STALENESS;
     use std::collections::BTreeSet;
+    /// The last second a pass may run at. The simulated venue's session is
+    /// heartbeated once, at the gateway's `t(0)`, and nothing in the pass
+    /// loop answers another (`tests/degraded.rs`), so thirty seconds later
+    /// it degrades and a pass that sends fails rather than runs.
+    const SESSION_ENDS: i64 = 30;
     let (engine, _catalogue) = standard_engine_and_catalogue(&object(), DEFAULT_MAX_STALENESS)?;
     let config = CellConfig::new(CELL, REGION)
         .with_venue(venue())
@@ -2674,31 +2691,56 @@ fn a_turn_with_registered_features_ships_exactly_one_digest_per_pass_naming_them
         64,
     )?;
     let _watchdog = Watchdog::arm("digests for registered features reaching the spool");
-    let waited = std::time::Instant::now();
+
+    // The passes: one simulated second per turn and nothing waited on
+    // between them, stopping as soon as the third has run. Each is keyed by
+    // its turn number, which is the `pass` its marker and digest carry.
+    let mut ran: BTreeSet<u64> = BTreeSet::new();
     let mut second = 10;
-    let mut passes = 0;
-    let digests = loop {
+    while ran.len() < 3 {
+        assert!(
+            second <= SESSION_ENDS,
+            "premise: three passes ran inside the simulated venue's session, and {} did by t({})",
+            ran.len(),
+            second - 1
+        );
         if rig.decisions.turn(t(second))?.ran_pass {
-            passes += 1;
+            ran.insert(rig.decisions.turns());
         }
         second += 1;
-        let found = writer::records(&rig.spool)?
+    }
+    let turns = rig.decisions.turns();
+
+    // Then the spool, and no turn: once every turn's marker is on it, every
+    // turn's inputs are. The writer pushes a pass's marker and its digest
+    // onto P2 side by side and cuts batches only at 16 MiB, so the two share
+    // one batch and are read whole or not at all — a digest missing beside
+    // its marker was never recorded, not late.
+    let marked = |spool: &SegmentLog| -> Result<BTreeSet<u64>> {
+        writer::records(spool)?
             .into_iter()
-            .filter(|r| r.event.topic == Topic::ReflexFeatureDigested)
-            .map(|r| writer::feature_digest(&r.event))
-            .collect::<Result<Vec<_>>>()?;
-        if passes >= 3 && found.len() >= passes {
-            break found;
-        }
+            .filter(|r| r.event.topic == REFLEX_PASS_MARKED.topic)
+            .map(|r| writer::pass_marker(&r.event).map(|marker| marker.pass))
+            .collect()
+    };
+    let every_turn: BTreeSet<u64> = (1..=turns).collect();
+    let waited = std::time::Instant::now();
+    while marked(&rig.spool)? != every_turn {
         assert!(
-            waited.elapsed() < PATIENCE,
-            "premise: three passes ran and their digests reached the spool"
+            waited.elapsed() < PATIENCE / 2,
+            "premise: the markers of all {turns} turns reached the spool"
         );
         std::thread::sleep(std::time::Duration::from_millis(5));
-    };
-    assert_eq!(digests.len(), passes, "one digest per pass that ran");
+    }
+    let digests = writer::records(&rig.spool)?
+        .into_iter()
+        .filter(|r| r.event.topic == Topic::ReflexFeatureDigested)
+        .map(|r| writer::feature_digest(&r.event))
+        .collect::<Result<Vec<_>>>()?;
+    assert_eq!(digests.len(), ran.len(), "one digest per pass that ran");
     let numbers: BTreeSet<u64> = digests.iter().map(|d| d.pass).collect();
     assert_eq!(numbers.len(), digests.len(), "no pass is digested twice");
+    assert_eq!(numbers, ran, "each digest is of a turn that ran a pass");
     for digest in &digests {
         assert!(
             digest
