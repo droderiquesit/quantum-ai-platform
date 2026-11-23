@@ -1067,30 +1067,7 @@ fn outside_functions(code: &str) -> String {
         if start < covered || function_name(line).is_none() {
             continue;
         }
-        // The body opens at the first `{` outside the signature's `()` and
-        // `[]`; a `;` there first ends a declaration with no body.
-        let mut nesting = 0usize;
-        let mut braces = 0usize;
-        let mut end = bytes.len();
-        for (at, &byte) in bytes.iter().enumerate().skip(start) {
-            match byte {
-                b'(' | b'[' if braces == 0 => nesting += 1,
-                b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
-                b';' if braces == 0 && nesting == 0 => {
-                    end = at + 1;
-                    break;
-                }
-                b'{' if nesting == 0 || braces > 0 => braces += 1,
-                b'}' if braces > 0 => {
-                    braces -= 1;
-                    if braces == 0 {
-                        end = at + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
+        let end = item_end(bytes, start);
         for flag in &mut blank[start..end] {
             *flag = true;
         }
@@ -1099,6 +1076,31 @@ fn outside_functions(code: &str) -> String {
     code.char_indices()
         .map(|(at, c)| if blank[at] && c != '\n' { ' ' } else { c })
         .collect()
+}
+
+/// Where the function declared at `start` ends: the brace that closes its
+/// body, or the `;` that ends a declaration with none. The body opens at the
+/// first `{` outside the signature's `()` and `[]`. Assumes [`code_only`]
+/// text, so no brace or `;` sits inside a comment or a literal.
+fn item_end(bytes: &[u8], start: usize) -> usize {
+    let mut nesting = 0usize;
+    let mut braces = 0usize;
+    for (at, &byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'(' | b'[' if braces == 0 => nesting += 1,
+            b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
+            b';' if braces == 0 && nesting == 0 => return at + 1,
+            b'{' if nesting == 0 || braces > 0 => braces += 1,
+            b'}' if braces > 0 => {
+                braces -= 1;
+                if braces == 0 {
+                    return at + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes.len()
 }
 
 #[test]
@@ -1996,6 +1998,16 @@ fn the_dependency_scan_reads_single_quoted_package_renames() {
 
 /// Every model crate reachable from `root`, with the path that reaches it.
 fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Vec<String> {
+    crates_reached(manifests, root, &MODEL_CRATES)
+}
+
+/// Every crate of `targets` reachable from `root` through normal
+/// dependencies, with the path that reaches it.
+fn crates_reached(
+    manifests: &BTreeMap<String, BTreeSet<String>>,
+    root: &str,
+    targets: &[&str],
+) -> Vec<String> {
     let mut reached = Vec::new();
     let mut seen = BTreeSet::new();
     let mut stack = vec![vec![root.to_string()]];
@@ -2004,7 +2016,7 @@ fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Ve
         if !seen.insert(at.clone()) {
             continue;
         }
-        if MODEL_CRATES.contains(&at.as_str()) {
+        if targets.contains(&at.as_str()) {
             reached.push(path.join(" -> "));
             continue;
         }
@@ -2065,5 +2077,706 @@ fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
             .iter()
             .any(|path| path.ends_with("-> qip-risk -> qip-cost-router")),
         "a model edge added below the cell went unseen: {reached:?}"
+    );
+}
+
+// --- what a gated kernel decision reaches (R12-RISK-3022) ------------------
+
+/// A kernel production function: its file, the type whose `impl` (or trait)
+/// declares it — `None` for a free function — its name, and its
+/// [`code_only`] text from its declaration through the end of its body.
+struct KernelFn {
+    file: String,
+    owner: Option<String>,
+    name: String,
+    body: String,
+}
+
+/// The type an `impl` or `trait` header names: `impl<T> Book<T>` is `Book`,
+/// `impl Default for Treasury` is `Treasury`, `pub trait Gate: Debug` is
+/// `Gate`, and `impl crate::x::Plane` is `Plane`.
+fn header_owner(header: &str) -> Option<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let header = header.split('{').next()?.split(" where").next()?.trim();
+    let target = if let Some(rest) = header
+        .strip_prefix("pub ")
+        .unwrap_or(header)
+        .strip_prefix("trait ")
+    {
+        rest
+    } else {
+        let rest = header.strip_prefix("impl")?;
+        let rest = match rest.trim_start().strip_prefix('<') {
+            // Skip the impl's own generic list.
+            Some(generics) => {
+                let mut depth = 1usize;
+                let close = generics.char_indices().find(|(_, c)| {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })?;
+                &generics[close.0 + 1..]
+            }
+            None => rest,
+        };
+        rest.rsplit_once(" for ").map_or(rest, |(_, target)| target)
+    };
+    let path = target.trim().split('<').next()?;
+    let name: String = path
+        .rsplit("::")
+        .next()?
+        .chars()
+        .take_while(|c| ident(*c))
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every function in `code` with the type that declares it, each cut to its
+/// own extent — from the line that declares it through the brace that closes
+/// its body — rather than to the next declaration as [`function_items`]
+/// cuts it, so a struct, an `impl` header or a `const` written after a
+/// function is not read as its text. The owner is the `impl` or `trait`
+/// opened at the start of a line and closed by a `}` there.
+fn owned_function_bodies(code: &str) -> Vec<(Option<String>, String, &str)> {
+    let bytes = code.as_bytes();
+    let mut bodies = Vec::new();
+    let mut owner: Option<String> = None;
+    let mut offset = 0;
+    for line in code.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if line.starts_with('}') {
+            owner = None;
+        }
+        let opens_impl = line.starts_with("impl")
+            || line.starts_with("trait ")
+            || line.starts_with("pub trait ")
+            || line.starts_with("unsafe impl");
+        if opens_impl {
+            owner = header_owner(line.strip_prefix("unsafe ").unwrap_or(line));
+        }
+        if let Some(name) = function_name(line) {
+            let owner = if line.starts_with(|c: char| !c.is_whitespace()) {
+                None
+            } else {
+                owner.clone()
+            };
+            bodies.push((owner, name, &code[start..item_end(bytes, start)]));
+        }
+    }
+    bodies
+}
+
+/// The kernel's production sources, each a file's path and its
+/// [`code_only`] text.
+fn kernel_sources() -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    rust_files(&crates_root().join("runtime/qip-kernel/src"), &mut files);
+    assert!(files.len() > 10, "premise: the kernel's sources were found");
+    files
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path).expect("kernel source is readable");
+            (path.display().to_string(), code_only(&source))
+        })
+        .collect()
+}
+
+fn kernel_functions(sources: &[(String, String)]) -> Vec<KernelFn> {
+    sources
+        .iter()
+        .flat_map(|(file, code)| {
+            owned_function_bodies(code)
+                .into_iter()
+                .map(|(owner, name, body)| KernelFn {
+                    file: file.clone(),
+                    owner,
+                    name,
+                    body: body.to_string(),
+                })
+        })
+        .collect()
+}
+
+/// A call [`calls_in`] can follow, and where its definition is looked for.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Call {
+    /// `self.name(..)` or `Self::name(..)`: a function of the caller's own
+    /// type.
+    Own(String),
+    /// `Type::name(..)`: a function of the named type.
+    Of(String, String),
+    /// `name(..)`, `crate::module::name(..)`, `super::name(..)`: a free
+    /// function.
+    Free(String),
+}
+
+/// The calls `body` makes in a form the scan can follow to a kernel
+/// function, each with or without a turbofish: a method on `self`, a path
+/// through `Self` or a named type, a path through `crate`, `super` or
+/// `self`, or a bare call.
+///
+/// A method on any other receiver — `self.treasury.fund(..)`, `x.check(..)`
+/// — is not followed. Its type is not in the text, and following every
+/// kernel function of the same name would read `Vec::push` or
+/// `LeverageBook::check` as the kernel's own. That is the scan's stated
+/// limit: it follows by name as far as the text names the owner. The
+/// declaration itself (`fn name(`) is not a call.
+fn calls_in(body: &str) -> BTreeSet<Call> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let preceded_by_ident = |text: &str| text.chars().next_back().is_some_and(ident);
+    let mut calls = BTreeSet::new();
+    let mut cursor = 0;
+    while let Some(offset) = body[cursor..].find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        let at = cursor + offset;
+        let end = body[at..]
+            .find(|c: char| !ident(c))
+            .map_or(body.len(), |len| at + len);
+        cursor = end;
+        if preceded_by_ident(&body[..at]) {
+            continue;
+        }
+        let after = body[end..].trim_start();
+        if !(after.starts_with('(') || after.starts_with("::<")) {
+            continue;
+        }
+        let name = body[at..end].to_string();
+        let before = body[..at].trim_end();
+        if let Some(path) = before.strip_suffix("::") {
+            let start = path
+                .rfind(|c: char| !(ident(c) || c == ':'))
+                .map_or(0, |at| at + 1);
+            let path = &path[start..];
+            let first = path.split("::").next().unwrap_or_default();
+            let last = path.rsplit("::").next().unwrap_or_default();
+            if last == "Self" {
+                calls.insert(Call::Own(name));
+            } else if matches!(first, "crate" | "super" | "self")
+                && !last.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                calls.insert(Call::Free(name));
+            } else if last.starts_with(|c: char| c.is_ascii_uppercase()) {
+                calls.insert(Call::Of(last.to_string(), name));
+            }
+        } else if let Some(receiver) = before.strip_suffix('.') {
+            if let Some(head) = receiver.strip_suffix("self")
+                && !preceded_by_ident(head)
+                && !head.ends_with('.')
+            {
+                calls.insert(Call::Own(name));
+            }
+        } else if before.strip_suffix("fn").is_none_or(preceded_by_ident) {
+            calls.insert(Call::Free(name));
+        }
+    }
+    calls
+}
+
+/// Every kernel function reachable from `roots` through [`calls_in`], each
+/// with the chain of names that reaches it, the root first. A call resolves
+/// to every kernel function of that name and owner, so a name defined twice
+/// on one type (in two `impl` blocks, or behind two `cfg`s) is followed into
+/// both.
+fn kernel_closure<'a>(
+    functions: &'a [KernelFn],
+    roots: &[&'a KernelFn],
+) -> Vec<(Vec<String>, &'a KernelFn)> {
+    let mut index: BTreeMap<(Option<&str>, &str), Vec<usize>> = BTreeMap::new();
+    for (at, function) in functions.iter().enumerate() {
+        index
+            .entry((function.owner.as_deref(), function.name.as_str()))
+            .or_default()
+            .push(at);
+    }
+    let position = |function: &KernelFn| {
+        functions
+            .iter()
+            .position(|f| std::ptr::eq(f, function))
+            .expect("a root is one of the kernel's functions")
+    };
+    let mut seen = BTreeSet::new();
+    let mut reached = Vec::new();
+    let mut queue: std::collections::VecDeque<(Vec<String>, usize)> = roots
+        .iter()
+        .map(|root| (vec![root.name.clone()], position(root)))
+        .collect();
+    while let Some((chain, at)) = queue.pop_front() {
+        if !seen.insert(at) {
+            continue;
+        }
+        let function = &functions[at];
+        for call in calls_in(&function.body) {
+            let (owner, name) = match &call {
+                Call::Own(name) => (function.owner.as_deref(), name.as_str()),
+                Call::Of(owner, name) => (Some(owner.as_str()), name.as_str()),
+                Call::Free(name) => (None, name.as_str()),
+            };
+            for &next in index.get(&(owner, name)).into_iter().flatten() {
+                let mut longer = chain.clone();
+                longer.push(match owner {
+                    Some(owner) => format!("{owner}::{name}"),
+                    None => name.to_string(),
+                });
+                queue.push_back((longer, next));
+            }
+        }
+        reached.push((chain, function));
+    }
+    reached
+}
+
+/// The kernel production functions that demand `gate: &DeterministicGate` by
+/// signature: every hard-limit decision the kernel makes under a gate.
+fn gated_kernel_functions(functions: &[KernelFn]) -> Vec<&KernelFn> {
+    functions
+        .iter()
+        .filter(|function| demands_the_gate(signature_of(&function.body)))
+        .collect()
+}
+
+/// The calls the walk follows, and the ones it says it does not, on a
+/// fixture: an own method, a `Self::` path, a named type's function, a
+/// `crate::` path and a bare call are followed into the definition of that
+/// name and owner; a method on another receiver and a same-named function of
+/// another type are not.
+///
+/// Mutations: resolve every call by name alone (drop the owner from the
+/// index key) — `Other::own` is reached; drop the `crate::` path arm of
+/// `calls_in` — `free_leaf` is not reached. By name alone the kernel scans
+/// below fail too: a `Self::new` in some `Default` impl reaches
+/// `Platform::new`, which is why the owner is part of the key.
+#[test]
+fn the_kernel_walk_follows_calls_by_name_and_owner() {
+    let fixture = "impl Platform {\n    fn root(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.own();\n        Self::path();\n        Book::make();\n        \
+                   crate::module::free_leaf();\n        bare();\n        \
+                   self.field.leaf();\n    }\n    fn own(&self) {}\n    fn path() {}\n}\n\
+                   impl Book {\n    fn make() {}\n}\n\
+                   impl Other {\n    fn leaf(&self) {}\n    fn own(&self) {}\n}\n\
+                   fn free_leaf() {}\nfn bare() {}\n";
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    assert_eq!(roots.len(), 1, "premise: one gated root");
+    let reached: BTreeSet<(Option<String>, String)> = kernel_closure(&functions, &roots)
+        .into_iter()
+        .map(|(_, function)| (function.owner.clone(), function.name.clone()))
+        .collect();
+    let named = |owner: Option<&str>, name: &str| (owner.map(str::to_string), name.to_string());
+    let expected: BTreeSet<_> = [
+        named(Some("Platform"), "root"),
+        named(Some("Platform"), "own"),
+        named(Some("Platform"), "path"),
+        named(Some("Book"), "make"),
+        named(None, "free_leaf"),
+        named(None, "bare"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(reached, expected);
+    assert!(
+        !reached.contains(&named(Some("Other"), "own"))
+            && !reached.contains(&named(Some("Other"), "leaf")),
+        "a same-named method of another type, or a method on another receiver, was followed"
+    );
+}
+
+// --- the Risk Brain recommends (R12-RISK-3022) -----------------------------
+
+/// What the Risk Brain hands the desk, by every name a function would have to
+/// use to read it: the cycle's `RiskDiscovery` (`qip_kernel::cycle`), its
+/// parts, the passes that compute it, and the risk control agent
+/// (`qip_investment_agents::control::RiskControl`), whose finding reaches
+/// the kernel only as one of the organisation's.
+const RISK_BRAIN_ADVICE: [&str; 9] = [
+    "RiskDiscovery",
+    "risk_discovery",
+    "last_risk_discovery",
+    "discover_risk",
+    "EmergingRisk",
+    "ExposureFinding",
+    "with_emerging_since",
+    "market_exposure_findings",
+    "RiskControl",
+];
+
+/// Which of [`RISK_BRAIN_ADVICE`] `code` names, plus `ids::RISK` — the risk
+/// control's agent id, the one way to pick its finding out of a report.
+fn advice_named(code: &str) -> Vec<String> {
+    let mut named: Vec<String> = RISK_BRAIN_ADVICE
+        .iter()
+        .filter(|token| !token_offsets(code, token).is_empty())
+        .map(|token| token.to_string())
+        .collect();
+    if token_offsets(code, "RISK")
+        .into_iter()
+        .any(|at| code[..at].ends_with("ids::"))
+    {
+        named.push("ids::RISK".to_string());
+    }
+    named
+}
+
+/// R12-RISK-3022 (b): "the Risk Brain only recommends", held for the crates
+/// that make the hard-limit decisions outside the kernel. The order manager
+/// (`submit`, `replace`, `admit_ladder`), `PreTradeChecker::check` and the
+/// kill switch's trips live in crates that link neither `qip-kernel`, which
+/// owns `RiskDiscovery`, nor `qip-investment-agents`, which owns
+/// `RiskControl`, so none of them can name either value: the compiler holds
+/// it, not a reviewer.
+///
+/// The failure this prevents: no test failed if a hard limit began
+/// enforcing the brain's advice, so a discovery or a control finding wired
+/// into a refusal would have been a second gate nobody had reviewed as one.
+///
+/// Mutation: the scratch copy below adds `qip-investment-agents` beneath
+/// `qip-risk`, and the walk must find it.
+#[test]
+fn the_crates_holding_the_hard_limits_cannot_name_the_risk_brains_advice() {
+    const HARD_LIMIT_CRATES: [(&str, &str, &[&str]); 3] = [
+        (
+            "qip-execution-engine",
+            "backend/crates/services/qip-execution-engine/src/oms.rs",
+            &["fn submit(", "fn replace(", "fn admit_ladder("],
+        ),
+        (
+            "qip-risk-engine",
+            "backend/crates/services/qip-risk-engine/src/pretrade.rs",
+            &["impl PreTradeChecker", "fn check("],
+        ),
+        (
+            "qip-risk-engine",
+            "backend/crates/services/qip-risk-engine/src/autonomy.rs",
+            &["fn trip_scope_under(", "fn trip_scope(", "fn trip_global("],
+        ),
+    ];
+    const ADVICE_OWNERS: [&str; 2] = ["qip-kernel", "qip-investment-agents"];
+    // Premise: each hard limit is where this says, and each piece of advice
+    // is owned where this says.
+    for (_, file, declarations) in HARD_LIMIT_CRATES {
+        let source = qip_acceptance::read(file);
+        for declaration in declarations {
+            assert!(
+                source.contains(declaration),
+                "premise: {file} declares `{declaration}`"
+            );
+        }
+    }
+    assert!(
+        qip_acceptance::read("backend/crates/runtime/qip-kernel/src/cycle.rs")
+            .contains("pub struct RiskDiscovery {")
+    );
+    assert!(
+        qip_acceptance::read("backend/crates/agents/qip-investment-agents/src/control.rs")
+            .contains("pub struct RiskControl {")
+    );
+
+    let manifests = workspace_dependencies();
+    for (krate, _, _) in HARD_LIMIT_CRATES {
+        let reached = crates_reached(&manifests, krate, &ADVICE_OWNERS);
+        assert!(
+            reached.is_empty(),
+            "{krate} holds a hard limit and can reach a crate that owns the Risk Brain's advice, \
+             so the limit could read a RiskDiscovery or a RiskControl finding: {reached:?}"
+        );
+    }
+
+    let mut scratch = manifests.clone();
+    scratch
+        .get_mut("qip-risk")
+        .expect("qip-risk is a workspace crate")
+        .insert("qip-investment-agents".to_string());
+    let reached = crates_reached(&scratch, "qip-execution-engine", &ADVICE_OWNERS);
+    assert!(
+        reached
+            .iter()
+            .any(|path| path.ends_with("-> qip-risk -> qip-investment-agents")),
+        "an advice edge added below the order manager went unseen: {reached:?}"
+    );
+}
+
+/// R12-RISK-3022 (b) inside the kernel: no function that makes a hard-limit
+/// decision under the deterministic gate — the survival ceiling and sizing,
+/// sign-off, release, the central plane's halt, and whatever demands the
+/// gate next — nor any kernel function it reaches by name, reads the cycle's
+/// `RiskDiscovery` or the risk control's finding.
+///
+/// The roots are found by signature, not listed, so a gated decision added
+/// later is covered without a row here; the premise pins the ones that exist.
+///
+/// Mutation: in `Platform::sign_off_drafts`, read
+/// `self.last_risk_discovery.as_ref()` — this fails naming the chain
+/// `sign_off_drafts` and `last_risk_discovery`.
+#[test]
+fn no_gated_kernel_decision_reads_the_risk_brains_advice() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    let root_names: BTreeSet<&str> = roots.iter().map(|root| root.name.as_str()).collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            root_names.contains(function),
+            "premise: `{function}` demands the gate and is a root: {root_names:?}"
+        );
+    }
+    assert!(
+        root_names.contains("ingest"),
+        "premise: the plane's gated halt is a root"
+    );
+    let closure = kernel_closure(&functions, &roots);
+    assert!(
+        closure.len() > roots.len(),
+        "premise: the walk followed the roots into what they call"
+    );
+    let readers: Vec<String> = closure
+        .iter()
+        .filter_map(|(chain, function)| {
+            let named = advice_named(&function.body);
+            (!named.is_empty())
+                .then(|| format!("{} reads {named:?} ({})", chain.join(" -> "), function.file))
+        })
+        .collect();
+    assert!(
+        readers.is_empty(),
+        "a gated hard-limit decision reads what the Risk Brain only recommends, so the advice \
+         has become a second gate nobody reviewed as one: {readers:?}"
+    );
+}
+
+/// Every kernel production function that names the Risk Brain's advice, and
+/// what it does with it. Each is advisory: it derives the discovery, carries
+/// it on a report, journals it, or starts the platform with none. No kernel
+/// function names the risk control's type or id: its finding reaches the
+/// kernel only inside the organisation's report, as one of the panel's.
+const ADVICE_READERS: [(Option<&str>, &str, &str); 7] = [
+    (
+        Some("Platform"),
+        "discover_risk",
+        "derives it after every stage has run",
+    ),
+    (
+        Some("Platform"),
+        "run_cycle",
+        "carries it on the cycle report",
+    ),
+    (
+        Some("Platform"),
+        "refuse_cycle_before",
+        "carries an unmeasured one on a refusal",
+    ),
+    (
+        Some("Platform"),
+        "journal_cycle",
+        "journals it with the cycle",
+    ),
+    (
+        Some("Platform"),
+        "with_model_provider",
+        "starts the platform with none",
+    ),
+    (
+        Some("RiskDiscovery"),
+        "with_emerging_since",
+        "derives what emerged",
+    ),
+    (
+        None,
+        "market_exposure_findings",
+        "derives the basis and gap findings",
+    ),
+];
+
+/// R12-RISK-3022 (b): every place the kernel consumes the Risk Brain's
+/// advice is a row of [`ADVICE_READERS`] — derive, report, journal — and
+/// nothing else names it. A new reader is a new row, so whoever adds one
+/// states what it does with the advice, and a reader added inside a gate
+/// fails both this and the closure test above.
+///
+/// Mutation: read `self.last_risk_discovery` in `size_survival` — it is not a
+/// row and this fails naming it.
+#[test]
+fn every_kernel_reader_of_the_risk_brains_advice_derives_reports_or_journals_it() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let found: BTreeSet<(Option<String>, String)> = functions
+        .iter()
+        .filter(|function| !advice_named(&function.body).is_empty())
+        .map(|function| (function.owner.clone(), function.name.clone()))
+        .collect();
+    let expected: BTreeSet<(Option<String>, String)> = ADVICE_READERS
+        .iter()
+        .map(|(owner, name, _)| (owner.map(str::to_string), name.to_string()))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the kernel functions naming the Risk Brain's advice are not the advisory readers this \
+         suite lists; a reader that is not deriving, reporting or journaling it may be enforcing it"
+    );
+    assert!(
+        functions
+            .iter()
+            .all(|function| !advice_named(&function.body)
+                .iter()
+                .any(|named| named == "RiskControl" || named == "ids::RISK")),
+        "a kernel function names the risk control's type or id"
+    );
+}
+
+/// R12-RISK-3022 (b), behaviourally, through the platform. A book whose one
+/// position sits downstream of one claimed cause: the cycle's `RiskDiscovery`
+/// names that driver at 10% of equity, and emerging. With no limit on the
+/// axis, a further order in the same name is admitted — the discovery
+/// refused nothing by itself. With the deterministic cap on the same axis at
+/// 5%, the same order on the same book is refused, and the refusal names the
+/// cap.
+///
+/// Mutations: in `Platform::submit_released`, refuse while
+/// `last_risk_discovery` names an emerging risk — the first half fails with
+/// the refusal; build the capped desk without its cap — the second half
+/// fails with "the deterministic cap admitted the order".
+#[test]
+fn a_risk_discovery_naming_a_concentration_refuses_nothing_and_the_limit_on_it_does() {
+    use qip_execution_engine::order::Side;
+    use qip_kernel::{Platform, PlatformConfig};
+    use qip_risk::shared_cause::CAUSAL_DRIVER_AXIS;
+
+    let start = t(1_760_000_000);
+    let equity = Decimal::from_int(10_000_000);
+    let desk = |cap: Option<f64>| -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(equity);
+        let (context, _clock) = qip_core::Context::deterministic(start, config.seed);
+        let mut universe = qip_financial::universe::Universe::new();
+        universe
+            .insert(
+                qip_financial::object::FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    qip_financial::asset_class::InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(
+                        Decimal::from_int(5_000_000),
+                        3.0,
+                    ),
+                )
+                .venue("XNYS")
+                .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(qip_financial::quality::Provenance::synthetic(
+                    "risk-advice",
+                    start,
+                ))
+                .build(start)
+                .expect("a valid instrument"),
+            )
+            .expect("insertable");
+        let mut limits = LimitSet::new("risk-advice").with(Limit::new(
+            "order-notional",
+            LimitKind::MaxOrderNotional {
+                limit: Decimal::from_int(5_000_000),
+            },
+        ));
+        if let Some(cap) = cap {
+            limits = limits.with(Limit::new(
+                "causal-driver-concentration",
+                LimitKind::MaxAxisWeight {
+                    axis: CAUSAL_DRIVER_AXIS.to_string(),
+                    limit: cap,
+                },
+            ));
+        }
+        let mut platform = Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            universe,
+            limits,
+        )
+        .expect("the platform assembles");
+        // One position of 1,000,000 — 10% of equity — then a claimed cause
+        // the position sits downstream of.
+        let first = platform
+            .order_for(
+                ObjectId::from_string("obj-AAA"),
+                Side::Buy,
+                dec!("10000"),
+                dec!("100"),
+                "prop-risk-advice",
+                vec!["hyp-risk-advice".to_string()],
+                start,
+            )
+            .expect("an order");
+        platform
+            .submit_order(first, start)
+            .expect("the first order, before any cause is claimed, is admitted");
+        platform
+            .claim_causal(
+                qip_world_model::causal::CausalEdge::new(
+                    "funding-stress",
+                    "obj-AAA",
+                    qip_world_model::causal::Mechanism::DiscountRate,
+                    1.0,
+                    Duration::from_days(1),
+                    start.saturating_sub(Duration::from_days(1)),
+                )
+                .expect("a strength in [0, 1]")
+                .with_confidence(1.0)
+                .expect("a confidence in [0, 1]"),
+            )
+            .expect("an edge naming both ends");
+        platform
+    };
+    let second = |platform: &mut Platform| {
+        let order = platform
+            .order_for(
+                ObjectId::from_string("obj-AAA"),
+                Side::Buy,
+                dec!("1000"),
+                dec!("100"),
+                "prop-risk-advice",
+                vec!["hyp-risk-advice".to_string()],
+                start,
+            )
+            .expect("an order");
+        platform.submit_order(order, start)
+    };
+
+    let mut advised = desk(None);
+    let report = advised.run_cycle(start);
+    let driven = report
+        .risk_discovery
+        .causal_drivers
+        .as_ref()
+        .and_then(|drivers| drivers.get("funding-stress"))
+        .copied();
+    // Premise: the discovery names the concentration the cap below refuses,
+    // above that cap, and as emerging.
+    assert!(
+        driven.is_some_and(|gross| gross.to_f64() / equity.to_f64() > 0.05),
+        "premise: the discovery names the driver above 5% of equity: {:?}",
+        report.risk_discovery
+    );
+    assert!(
+        report
+            .risk_discovery
+            .emerging
+            .iter()
+            .any(|risk| risk.axis == CAUSAL_DRIVER_AXIS && risk.bucket == "funding-stress"),
+        "premise: the driver is reported as emerging: {:?}",
+        report.risk_discovery.emerging
+    );
+    let admitted = second(&mut advised);
+    assert!(
+        admitted.is_ok(),
+        "an order was refused on a book whose only finding is the Risk Brain's advice: {admitted:?}"
+    );
+
+    let mut capped = desk(Some(0.05));
+    let refused = second(&mut capped).expect_err("the deterministic cap admitted the order");
+    assert!(
+        refused.message().contains("causal-driver-concentration"),
+        "refused, but not by the cap on the axis the discovery named: {}",
+        refused.message()
     );
 }
