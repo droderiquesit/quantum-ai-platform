@@ -34296,6 +34296,215 @@ mod decide_tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// Second round-81 review, R12-MODEL-4021: the refusal
+    /// `promote_model_from` makes when the record it is about to sign names
+    /// a student and the card holds no passing `distilled_adversarial`
+    /// result. Untested until now. Driven through `student_attack_stage`,
+    /// which the promotion calls, because no clearance the registry mints
+    /// reaches it through the promotion — that helper's doc names the three
+    /// refusals in front of it. A missing result and a failed one are both
+    /// refused; a passing one is signed as the line
+    /// `records_every_promotion_test` reads at restart.
+    ///
+    /// Mutations: drop `.filter(|test| test.passed)` from
+    /// `student_attack_stage` (the failed attack is signed); return the line
+    /// for a missing result (the missing attack is signed).
+    #[test]
+    fn a_promotion_naming_a_student_signs_no_attack_line_for_an_attack_missing_or_failed() {
+        use crate::model_serving::student_attack_stage;
+        use qip_ai::registry::{
+            DISTILLED_ADVERSARIAL_TEST, PROMOTION_TESTS, PromotionTest, PromotionTests,
+        };
+        let digest = "f".repeat(64);
+        let mut tests = PromotionTests {
+            artifact_digest: digest.clone(),
+            window: "student-window".to_string(),
+            rows: 64,
+            ran_at: Timestamp::from_secs(1_760_000_000),
+            results: PROMOTION_TESTS
+                .iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        PromotionTest {
+                            passed: true,
+                            evidence: format!("{name} held"),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        // Premise: the teacher's tests all pass, so every refusal below is
+        // about the student.
+        assert_eq!(tests.gap(&digest), None);
+        let refusal = "its card holds no passing distilled_adversarial test to record";
+
+        let missing = student_attack_stage("bar-linear@6", &tests)
+            .expect_err("a student with no attack on record was signed as attacked");
+        assert!(missing.message().contains(refusal), "{}", missing.message());
+
+        tests.results.insert(
+            DISTILLED_ADVERSARIAL_TEST.to_string(),
+            PromotionTest {
+                passed: false,
+                evidence: "the student stepped inside the data".to_string(),
+            },
+        );
+        let failed = student_attack_stage("bar-linear@6", &tests)
+            .expect_err("a student whose attack failed was signed as attacked");
+        assert!(failed.message().contains(refusal), "{}", failed.message());
+
+        tests.results.insert(
+            DISTILLED_ADVERSARIAL_TEST.to_string(),
+            PromotionTest {
+                passed: true,
+                evidence: "the student held".to_string(),
+            },
+        );
+        let line =
+            student_attack_stage("bar-linear@6", &tests).expect("a passing attack is signed");
+        assert_eq!(
+            line,
+            "distilled_adversarial: the student held on student-window"
+        );
+        // And the line signed is the one the restart door reads.
+        let mut record = student_record("6", &digest, Some("student"), &PROMOTION_TESTS);
+        assert!(
+            !record.records_every_promotion_test(),
+            "premise: without the line the record names an unattacked student"
+        );
+        record.stages.push(line);
+        assert!(record.records_every_promotion_test());
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: what a quarantined record does
+    /// to the references it displaced. It is not put back, and the models it
+    /// retired stay retired. The log's newest word on `bar-linear@7` is that
+    /// a promotion took it out of production, and that promotion being
+    /// unrestorable does not return it: a restart that put it back would
+    /// serve it, and name its student to the cells, with nobody having rolled
+    /// back to it. So the restrictive outcome is that neither stands.
+    ///
+    /// Mutation: drop the displacement loop from the quarantine branch of
+    /// `resume_model_promotions` — the displaced record is restored.
+    #[test]
+    fn a_quarantined_record_still_retires_what_it_displaced_and_restores_neither() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, resume_model_promotions};
+        use qip_ai::registry::{ADVERSARIAL_TEST, DISTILLED_ADVERSARIAL_TEST, PROMOTION_TESTS};
+        let now = Timestamp::from_secs(1_760_000_000);
+        let mut every: Vec<&str> = PROMOTION_TESTS.to_vec();
+        every.push(DISTILLED_ADVERSARIAL_TEST);
+        let unattacked: Vec<&str> = every
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        let displaced = student_record("7", &"7".repeat(64), Some("student-displaced"), &every);
+        let mut displacing = student_record(
+            "8",
+            &"8".repeat(64),
+            Some("student-displacing"),
+            &unattacked,
+        );
+        displacing.displaced = vec!["bar-linear@7".to_string()];
+        assert!(displaced.records_every_promotion_test());
+        assert!(!displacing.records_every_promotion_test());
+
+        // Premise: alone, the displaced record restores, so its absence below
+        // is the displacement's doing.
+        let mut alone = small_book_platform();
+        alone
+            .journal_record(displaced.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let restored = resume_model_promotions(alone.event_log()).expect("the record restores");
+        assert!(
+            restored.promoted.contains_key("bar-linear@7"),
+            "premise: {restored:?}"
+        );
+
+        let mut platform = small_book_platform();
+        for record in [displaced, displacing] {
+            platform
+                .journal_record(record, MODEL_PROMOTION_ORIGIN, now)
+                .expect("journaled");
+        }
+        let resumed = resume_model_promotions(platform.event_log())
+            .expect("a quarantined record does not stop the restart");
+        assert!(
+            resumed.quarantined.contains_key("bar-linear@8"),
+            "premise: the displacing record is quarantined: {resumed:?}"
+        );
+        assert!(
+            !resumed.promoted.contains_key("bar-linear@8"),
+            "a quarantined record was restored"
+        );
+        assert!(
+            !resumed.promoted.contains_key("bar-linear@7"),
+            "a model the quarantined promotion retired was put back in production"
+        );
+        assert!(
+            resumed.promoted.is_empty(),
+            "something stands after the restart: {:?}",
+            resumed.promoted.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// Second round-81 review, R12-MODEL-4021: a quarantine is cleared by a
+    /// later, complete record for the same reference. The reference is
+    /// restored from that record — the one whose stages show every promotion
+    /// test, not the legacy one — and is no longer reported, because "a
+    /// record for it was not put back" has stopped being true of it. A report
+    /// that kept it would send an operator after a model that stands in
+    /// production on a clean record, and a report nobody can act on is one
+    /// that teaches people to ignore the next.
+    ///
+    /// Mutation: drop `resumed.quarantined.remove(..)` from
+    /// `resume_model_promotions` — the reference stays listed.
+    #[test]
+    fn a_quarantine_is_cleared_by_a_later_complete_record_for_the_same_reference() {
+        use crate::model_serving::{MODEL_PROMOTION_ORIGIN, resume_model_promotions};
+        use qip_ai::registry::{ADVERSARIAL_TEST, PROMOTION_TESTS};
+        let now = Timestamp::from_secs(1_760_000_000);
+        let digest = "9".repeat(64);
+        let unattacked: Vec<&str> = PROMOTION_TESTS
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        let legacy = student_record("9", &digest, None, &unattacked);
+        let complete = student_record("9", &digest, None, &PROMOTION_TESTS);
+        assert!(!legacy.records_every_promotion_test());
+        assert!(complete.records_every_promotion_test());
+
+        let mut platform = small_book_platform();
+        platform
+            .journal_record(legacy.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let quarantined = resume_model_promotions(platform.event_log()).expect("restores");
+        assert!(
+            quarantined.quarantined.contains_key("bar-linear@9"),
+            "premise: the legacy record alone is quarantined: {quarantined:?}"
+        );
+
+        platform
+            .journal_record(complete.clone(), MODEL_PROMOTION_ORIGIN, now)
+            .expect("journaled");
+        let resumed = resume_model_promotions(platform.event_log()).expect("restores");
+        assert_eq!(
+            resumed
+                .promoted
+                .get("bar-linear@9")
+                .map(|record| record.stages.clone()),
+            Some(complete.stages),
+            "the reference was not restored from its complete record"
+        );
+        assert!(
+            !resumed.quarantined.contains_key("bar-linear@9"),
+            "a reference restored on a complete record is still reported quarantined: {:?}",
+            resumed.quarantined
+        );
+    }
+
     /// R12-WORLD-9035: the cycle grows a future tree from the held world
     /// events, partitioned by each event's class, and the next cycle's bars
     /// reweight and prune it while every family stays a distribution and the
@@ -39319,6 +39528,64 @@ mod book_decision_refusal_tests {
             platform.governor.gross_ceiling(),
             Some(book),
             "a refused reseed left a ceiling above what the book stands in"
+        );
+    }
+
+    /// The overflow branch of the refused reseed: where the book's gross plus
+    /// what is held against it cannot be represented, a standing ceiling
+    /// falls to none — which the survival limit refuses every gross-raising
+    /// order on — rather than staying where it stood. Untested until the
+    /// second round-81 review, which is how a branch that decides "this
+    /// figure is unknowable, so stand behind nothing" can quietly become
+    /// "this figure is unknowable, so keep the old release".
+    ///
+    /// Mutation: make the `(Some(_), None)` arm of
+    /// `lower_survival_ceiling_to_the_book` answer `false` — the seeded
+    /// ceiling survives the overflow and the assertion fires.
+    #[test]
+    fn a_reseed_the_router_refuses_over_a_book_whose_figure_overflows_leaves_no_ceiling() {
+        let mut platform = holding_a_book();
+        let seeded = platform
+            .governor
+            .gross_ceiling()
+            .expect("premise: assembly seeded a ceiling");
+        // Hold the largest representable amount, so the book's gross plus
+        // the hold overflows.
+        platform.reservations =
+            ReservationLedger::new(Decimal::MAX).expect("a ledger over the largest balance");
+        platform
+            .reservations
+            .reserve(
+                "unrepresentable",
+                Decimal::MAX,
+                start(),
+                Duration::from_hours(1),
+            )
+            .expect("premise: the hold is taken");
+        assert!(
+            RiskState::from_figures(&platform.aggregates)
+                .gross_exposure
+                .abs()
+                .checked_add(
+                    platform
+                        .reservations
+                        .reserved_total()
+                        .checked_sub(platform.yield_parked(start()))
+                        .unwrap_or(Decimal::ZERO),
+                )
+                .is_none(),
+            "premise: the book's figure overflows"
+        );
+        assert!(
+            platform.governor.gross_ceiling() == Some(seeded),
+            "premise: the ceiling still stands at the seed"
+        );
+        platform.refuse_book_decision(SURVIVAL_CEILING_SUBJECT);
+        platform.reseed_survival_ceiling(start());
+        assert_eq!(
+            platform.governor.gross_ceiling(),
+            None,
+            "a refused reseed over an unrepresentable book kept a ceiling standing"
         );
     }
 

@@ -346,6 +346,39 @@ impl ModelPromotion {
     }
 }
 
+/// The signed stage line a promotion naming a distilled student carries for
+/// the student's own attack, read off the promotion tests the promoted card
+/// holds, or the refusal (R12-MODEL-4021, round-81 review).
+///
+/// Apart from [`Platform::promote_model_from`] so that its refusal can be
+/// tested at all, which the second round-81 review found it never had been.
+/// Through the promotion no clearance the registry mints reaches it:
+/// `PromotionClearance::minted_by_measured_promotion_tests` refuses to name a
+/// student without a passing `distilled_adversarial` result,
+/// `promote_model_from` refuses a student its clearance does not name, and
+/// `ModelRegistry::promote_artifact` writes the clearance's own results onto
+/// the card read here. It is the promotion's own refusal to sign a line
+/// saying a student was attacked when the results in front of it do not say
+/// so, and it stays for the day one of those three changes.
+pub(crate) fn student_attack_stage(
+    reference: &str,
+    tests: &qip_ai::registry::PromotionTests,
+) -> Result<String> {
+    let name = qip_ai::registry::DISTILLED_ADVERSARIAL_TEST;
+    let test = tests
+        .results
+        .get(name)
+        .filter(|test| test.passed)
+        .ok_or_else(|| {
+            Error::denied(format!(
+                "{reference} is not promoted naming a distilled student: its card holds no \
+                 passing {name} test to record; run the promotion tests with the student \
+                 before naming it"
+            ))
+        })?;
+    Ok(format!("{name}: {} on {}", test.evidence, tests.window))
+}
+
 /// Shadow rounds a self-fitted model must win before it may be promoted: the
 /// registry's own figure, which `ModelRegistry::promote` enforces for every
 /// self-fitted card whoever calls it.
@@ -1600,20 +1633,7 @@ impl Platform {
         // Without it no record could show a named student was attacked, and
         // a restart could not tell one that was from one that was not.
         if distilled.is_some() {
-            let name = qip_ai::registry::DISTILLED_ADVERSARIAL_TEST;
-            let test = tests
-                .results
-                .get(name)
-                .filter(|test| test.passed)
-                .ok_or_else(|| {
-                    Error::denied(format!(
-                        "{} is not promoted naming a distilled student: its card holds no \
-                         passing {name} test to record; run the promotion tests with the \
-                         student before naming it",
-                        artifact.reference
-                    ))
-                })?;
-            stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
+            stages.push(student_attack_stage(&artifact.reference, tests)?);
         }
         stages.push(format!("verifier: {verified}"));
         // ADR 0480 (R12-MODEL-7022): a microstructure card's distillate is
