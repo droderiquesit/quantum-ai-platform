@@ -864,12 +864,12 @@ pub(crate) struct ResumedPromotions {
 /// is listed in [`ResumedPromotions::quarantined`], which assembly reports
 /// as a capture problem — never dropped silently.
 ///
-/// [`Platform::rollback_model`] restores a record from the same log and does
-/// not make this check itself. What it reactivates must be a card in the
-/// caller's registry at the digest the log recorded, and a restarted desk
-/// refills that registry through [`Platform::readmit_promoted_card`], which
-/// refuses a quarantined record's card; a registry filled some other way is
-/// not held by this function.
+/// [`Platform::rollback_model`] restores a record from the same log and makes
+/// the same check on it, so a rollback never writes a record this function
+/// would quarantine. It once relied on the card door instead — on a restarted
+/// desk refilling its registry through [`Platform::readmit_promoted_card`],
+/// which refuses a quarantined record's card — and a registry filled some
+/// other way was held by nothing (second round-81 review).
 pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<ResumedPromotions> {
     let mut resumed = ResumedPromotions::default();
     for record in promotions_in(log)? {
@@ -1688,8 +1688,10 @@ impl Platform {
     /// it was first promoted under (which is the digest that passed the gate,
     /// and which [`Self::promote_model_from`] guarantees is the only one that
     /// reference ever carried). A predecessor the registry will not
-    /// reactivate (drifted itself, never carried an artifact) is skipped for
-    /// the one before it. Same discipline as a promotion: a scratch registry,
+    /// reactivate (drifted itself, never carried an artifact), or whose
+    /// record does not show every promotion test
+    /// ([`ModelPromotion::records_every_promotion_test`]), is skipped for the
+    /// one before it. Same discipline as a promotion: a scratch registry,
     /// the record journalled first, then adopted, so a refused rollback leaves
     /// the log and the registry as they were. Returns the reactivated
     /// reference.
@@ -1728,6 +1730,34 @@ impl Platform {
                 refusals.push(format!("{predecessor} has no promotion record in the log"));
                 continue;
             };
+            // R12-MODEL-4021 (second round-81 review): the rollback record
+            // copies the stages and the student of the record it restores,
+            // so it shows every promotion test exactly when that record
+            // does. Restoring one that does not would put a model nobody
+            // attacked — or a student nobody attacked — back on the manifest
+            // the cells read, in this process, and journal a record the
+            // next restart quarantines. This was left to the card door, which
+            // holds only a registry refilled through `readmit_promoted_card`;
+            // the check is the rollback's own now, on the record it writes.
+            if !original.records_every_promotion_test() {
+                refusals.push(format!(
+                    "{predecessor}'s promotion record at artifact {} does not show every \
+                     promotion test ({}{}), so a rollback to it would restore a model the \
+                     record does not show was attacked; promote a new version through the \
+                     tests instead",
+                    original.artifact_digest,
+                    qip_ai::registry::PROMOTION_TESTS.join(", "),
+                    if original.distilled.is_some() {
+                        format!(
+                            ", and {} for the student it names",
+                            qip_ai::registry::DISTILLED_ADVERSARIAL_TEST
+                        )
+                    } else {
+                        String::new()
+                    }
+                ));
+                continue;
+            }
             let mut scratch = registry.clone();
             if let Err(error) = scratch.reactivate(predecessor, now) {
                 refusals.push(error.message().to_string());

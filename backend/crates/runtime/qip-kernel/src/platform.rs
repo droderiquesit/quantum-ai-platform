@@ -34505,6 +34505,126 @@ mod decide_tests {
         );
     }
 
+    /// Second round-81 review, R12-MODEL-4021: a rollback refuses a
+    /// predecessor whose promotion record does not show every promotion test,
+    /// by its own check rather than the card door's. The record a rollback
+    /// writes copies the restored record's stages, so restoring a legacy one
+    /// put a model nobody attacked back on the manifest. The registry here is
+    /// one the card door does not hold — each card admitted on a journaled
+    /// admission minted by hand, as a desk restoring from its own storage
+    /// might — so only the rollback can stop it. The control is the same log
+    /// with the predecessor's record complete, which rolls back.
+    ///
+    /// Mutation: drop the `records_every_promotion_test` check from
+    /// `rollback_model` — the legacy predecessor is reactivated.
+    #[test]
+    fn a_rollback_refuses_a_predecessor_whose_record_does_not_show_every_promotion_test() {
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, EvaluationRecord, JournaledAdmission, ModelRegistry, ModelStage,
+            PROMOTION_TESTS,
+        };
+        let now = Timestamp::from_secs(1_760_000_000);
+        let later = now.saturating_add(Duration::from_mins(5));
+        let predecessor_digest = "1".repeat(64);
+        let live_digest = "2".repeat(64);
+        let unattacked: Vec<&str> = PROMOTION_TESTS
+            .iter()
+            .copied()
+            .filter(|name| *name != ADVERSARIAL_TEST)
+            .collect();
+        // The predecessor retired at the bytes the log recorded, the live
+        // model in production, each with a passing evaluation, each admitted
+        // on an admission minted by hand rather than through the card door.
+        let registry = || {
+            let mut registry = ModelRegistry::new();
+            for (version, digest, stage) in [
+                ("10", &predecessor_digest, ModelStage::Retired),
+                ("11", &live_digest, ModelStage::Production),
+            ] {
+                let mut card = production_card(version, digest);
+                card.stage = stage;
+                card.evaluations.push(EvaluationRecord {
+                    evaluated_at: now,
+                    dataset: "holdout".to_string(),
+                    metrics: BTreeMap::new(),
+                    passed: true,
+                });
+                registry
+                    .readmit_on_journaled_admission(
+                        card,
+                        JournaledAdmission::minted_from_the_promotion_log(
+                            &format!("bar-linear@{version}"),
+                            digest,
+                        ),
+                    )
+                    .expect("premise: the card is admitted");
+            }
+            registry
+        };
+        let mut live = student_record("11", &live_digest, None, &PROMOTION_TESTS);
+        live.displaced = vec!["bar-linear@10".to_string()];
+
+        let (mut control, control_directory) = restarted_over(
+            "rollback-complete",
+            vec![
+                student_record("10", &predecessor_digest, None, &PROMOTION_TESTS),
+                live.clone(),
+            ],
+        );
+        control.name_model_desk("desk").expect("the desk is named");
+        assert!(
+            control.model_promotions().contains_key("bar-linear@11"),
+            "premise: the live record restores"
+        );
+        assert_eq!(
+            control
+                .rollback_model(&mut registry(), "bar-linear@11", later)
+                .expect("premise: a complete predecessor record rolls back"),
+            "bar-linear@10"
+        );
+
+        let (mut platform, directory) = restarted_over(
+            "rollback-legacy",
+            vec![
+                student_record("10", &predecessor_digest, None, &unattacked),
+                live,
+            ],
+        );
+        platform.name_model_desk("desk").expect("the desk is named");
+        assert!(
+            platform.model_promotions().contains_key("bar-linear@11"),
+            "premise: the live record restores"
+        );
+        let mut registry = registry();
+        let refused = platform
+            .rollback_model(&mut registry, "bar-linear@11", later)
+            .expect_err("a predecessor whose record shows no adversarial test was rolled back to");
+        assert!(
+            refused.message().contains(&format!(
+                "bar-linear@10's promotion record at artifact {predecessor_digest} does not show \
+                 every promotion test"
+            )),
+            "refused for another reason: {}",
+            refused.message()
+        );
+        assert_eq!(
+            registry.get("bar-linear@11").map(|card| card.stage),
+            Some(ModelStage::Production),
+            "a refused rollback retired the live model"
+        );
+        assert_eq!(
+            registry.get("bar-linear@10").map(|card| card.stage),
+            Some(ModelStage::Retired),
+            "a refused rollback reactivated the predecessor"
+        );
+        assert!(
+            !platform.model_promotions().contains_key("bar-linear@10"),
+            "a refused rollback put the predecessor in the promoted set"
+        );
+        let _ = std::fs::remove_dir_all(&control_directory);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     /// R12-WORLD-9035: the cycle grows a future tree from the held world
     /// events, partitioned by each event's class, and the next cycle's bars
     /// reweight and prune it while every family stays a distribution and the
