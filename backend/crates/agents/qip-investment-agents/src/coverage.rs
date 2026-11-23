@@ -113,13 +113,31 @@ pub enum Scope {
     PrivateMarkets,
     /// The six symbolic reasoners' conclusions about the latest hypothesis:
     /// ontology, temporal, causal, rule, probabilistic and constraint
-    /// (R12-REASON-3026).
+    /// (R12-REASON-3026). Covered only where at least one of the six
+    /// derived: a derivation in which every reasoner refused is a record of
+    /// refusals, not symbolic reasoning, and reading it as covered hid the
+    /// whole brain's blind spot behind a count of zero.
     SymbolicReasoning,
+    /// The ontology reasoner typed the subject or inferred facts about it
+    /// (R12-REASON-3026). One scope per kind so a blind spot in one of the
+    /// six is reported on its own, not averaged into the five that held.
+    SymbolicOntology,
+    /// The temporal reasoner held at least one timeline link.
+    SymbolicTemporal,
+    /// The causal reasoner explained the move or traced an intervention.
+    SymbolicCausal,
+    /// The rule pack reached a verdict.
+    SymbolicRule,
+    /// The probabilistic reasoner computed the claim's posterior.
+    SymbolicProbabilistic,
+    /// The constraint solver answered the acting problem: a satisfying
+    /// assignment or the conflict that blocks it.
+    SymbolicConstraint,
 }
 
 impl Scope {
     /// Every scope, in declaration order.
-    pub const ALL: [Scope; 25] = [
+    pub const ALL: [Scope; 31] = [
         Scope::QueueDynamics,
         Scope::SourcePoisoning,
         Scope::RiskForecast,
@@ -145,6 +163,12 @@ impl Scope {
         Scope::WorldModelArbitration,
         Scope::PrivateMarkets,
         Scope::SymbolicReasoning,
+        Scope::SymbolicOntology,
+        Scope::SymbolicTemporal,
+        Scope::SymbolicCausal,
+        Scope::SymbolicRule,
+        Scope::SymbolicProbabilistic,
+        Scope::SymbolicConstraint,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -173,6 +197,12 @@ impl Scope {
             Self::DisagreementResolution => "disagreement_resolution",
             Self::WorldModelArbitration => "world_model_arbitration",
             Self::SymbolicReasoning => "symbolic_reasoning",
+            Self::SymbolicOntology => "symbolic_ontology",
+            Self::SymbolicTemporal => "symbolic_temporal",
+            Self::SymbolicCausal => "symbolic_causal",
+            Self::SymbolicRule => "symbolic_rule",
+            Self::SymbolicProbabilistic => "symbolic_probabilistic",
+            Self::SymbolicConstraint => "symbolic_constraint",
             Self::PrivateMarkets => "private_markets",
         }
     }
@@ -230,7 +260,22 @@ impl Scope {
             }
             Self::DisagreementResolution => &["reliability_weighted_balance"],
             Self::WorldModelArbitration => &["arbitrations_decided"],
-            Self::SymbolicReasoning => &["reasoners_derived"],
+            // Not `reasoners_derived`: that count is stated at zero too, and
+            // a label present at zero covered the scope with nothing derived.
+            Self::SymbolicReasoning => &[
+                "ontology_derived",
+                "temporal_derived",
+                "causal_derived",
+                "rule_derived",
+                "probabilistic_derived",
+                "constraint_derived",
+            ],
+            Self::SymbolicOntology => &["ontology_derived"],
+            Self::SymbolicTemporal => &["temporal_derived"],
+            Self::SymbolicCausal => &["causal_derived"],
+            Self::SymbolicRule => &["rule_derived"],
+            Self::SymbolicProbabilistic => &["probabilistic_derived"],
+            Self::SymbolicConstraint => &["constraint_derived"],
             Self::PrivateMarkets => &[
                 "private_commitments",
                 "private_unfunded_commitment",

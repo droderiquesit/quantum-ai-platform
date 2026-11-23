@@ -170,9 +170,17 @@ fn removing_the_arbitration_brain_drops_world_model_arbitration_from_coverage() 
 /// constructs the specialist; removing it leaves `symbolic-reasoning`
 /// uncovered and `require_coverage` refuses naming the scope.
 ///
-/// Mutation: in `qip_investment_agents::manifests::symbolic_reasoning_brain`,
+/// The registry is built from the roster, and the roster lists reviewed
+/// manifests whatever was constructed, so the entry alone does not show the
+/// specialist runs: the test also asserts the platform's own organisation
+/// constructed an agent under the entry's manifest.
+///
+/// Mutations: in `qip_investment_agents::manifests::symbolic_reasoning_brain`,
 /// replace the `"symbolic-reasoning"` competency with another string --
-/// `standard` then refuses to build, naming the missing scope.
+/// `standard` then refuses to build, naming the missing scope; return an
+/// empty list from `qip_investment_agents::chief::standard_late_agents` --
+/// the roster still holds the manifest and the registry still lists the
+/// entry, and the construction assertion fails.
 #[test]
 fn removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage() {
     use qip_deepbrain::brains::{REQUIRED_SCOPES, SYMBOLIC_REASONING, SYMBOLIC_REASONING_BRAIN};
@@ -188,6 +196,14 @@ fn removing_the_symbolic_brain_drops_symbolic_reasoning_from_coverage() {
             .iter()
             .any(|manifest| format!("organisation/{}", manifest.id) == spec.id),
         "the symbolic entry is derived from a manifest on the running roster"
+    );
+    let agent = spec
+        .id
+        .strip_prefix("organisation/")
+        .expect("an organisation entry");
+    assert!(
+        platform.organisation().constructs(agent),
+        "the running organisation constructed no agent under {agent}"
     );
     assert!(registry.scopes().contains(SYMBOLIC_REASONING));
     assert!(REQUIRED_SCOPES.contains(&SYMBOLIC_REASONING));
