@@ -1535,3 +1535,97 @@ fn every_unit_received_under_the_committed_dev_plan_is_journalled_consolidated_a
     }
     Ok(())
 }
+
+/// R12-COMMERCE-1171, the "learn SKU-level economics" clause, through the
+/// deep brain's own `breadth::install` on the committed dev plan. Once a SKU
+/// has completed a purchase-and-resale cycle, every later assessment of it
+/// is drawn on what its cycles realised: the journalled assessment names how
+/// many cycles it learned from, its expected resale is the mean realised
+/// resale under the plan's fees and chargeback reserve, and its time to sale
+/// carries the mean realised days to sale. Before this,
+/// `replay_economics` and `FeasibilityInput::with_learned` had no caller
+/// outside library tests, so the plane journalled every realised cycle and
+/// priced the next purchase of the same SKU exactly as the first.
+///
+/// The expected figures are computed here from the journalled sales and the
+/// plan's terms, not through `replay_economics` or `with_learned`.
+///
+/// Mutations: drop the `with_learned` arm in `work_candidate` and no
+/// assessment learns, so the learned-assessment premise fails; replay only
+/// the cycles before the pass and the cycle count disagrees with the
+/// journal.
+#[test]
+fn every_assessment_of_a_sku_already_sold_under_the_committed_dev_plan_is_drawn_on_its_realised_cycles()
+-> Result<()> {
+    let plan = committed_commerce_plan()?;
+    // Premise: the committed terms the expected figures are computed from.
+    // Nothing is spoiled or returned, so every unit shipped is a unit sold,
+    // and the marketplace fee is charged into the all-in cost rather than
+    // out of the resale, so only the chargeback reserve comes off it.
+    assert_eq!(
+        plan.terms.spoilage,
+        qip_financial::physical::Spoilage::none("durable goods, stated by the desk")?
+    );
+    assert_eq!(plan.terms.returns.rate, Decimal::ZERO);
+    assert!(plan.chargeback_rate.is_positive());
+    let keep = Decimal::ONE - plan.chargeback_rate;
+
+    let platform = install_plan_file(&committed_plan_path(), 12)?;
+    let runs = simulated(&platform)?;
+    let stated_extra: BTreeSet<u32> = runs
+        .iter()
+        .flat_map(|run| run.assessed.iter())
+        .filter(|a| a.learned_cycles == 0)
+        .map(|a| a.time_to_sale_days - plan.days_on_market)
+        .collect();
+    assert_eq!(
+        stated_extra.len(),
+        1,
+        "premise: every unlearned assessment adds one fixed transit to the plan's days on market"
+    );
+    let transit = *stated_extra.first().expect("one value");
+
+    let mut learned = 0_u32;
+    for run in &runs {
+        for assessed in &run.assessed {
+            let sold: Vec<_> = runs
+                .iter()
+                .filter(|earlier| earlier.day <= run.day)
+                .flat_map(|earlier| earlier.sold.iter())
+                .filter(|cycle| cycle.sku == assessed.product)
+                .collect();
+            let cycles = u32::try_from(sold.len()).expect("a small count");
+            assert_eq!(
+                assessed.learned_cycles, cycles,
+                "{} on day {} learned from a count other than its journalled sales",
+                assessed.product, run.day
+            );
+            if cycles == 0 {
+                continue;
+            }
+            learned += 1;
+            let n = Decimal::from(i64::from(cycles));
+            let mean = sold.iter().map(|cycle| cycle.resale_price).sum::<Decimal>() / n;
+            let days: u32 = sold.iter().map(|cycle| cycle.days_to_sale).sum::<u32>() / cycles;
+            assert_eq!(
+                assessed.expected_resale,
+                plan.quantity * mean * keep,
+                "{} on day {}: expected resale is not its realised mean",
+                assessed.product,
+                run.day
+            );
+            assert_eq!(
+                assessed.time_to_sale_days,
+                transit + days,
+                "{} on day {}: time to sale is not its realised days",
+                assessed.product,
+                run.day
+            );
+        }
+    }
+    assert!(
+        learned > 0,
+        "premise: no SKU was assessed again after it sold"
+    );
+    Ok(())
+}

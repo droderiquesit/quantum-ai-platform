@@ -49,8 +49,8 @@ use qip_financial::commerce::{
     regions_spanned, scout,
 };
 use qip_financial::commerce_resale::{
-    Attr, CycleEvent, ResaleDesk, UNIT_ATTRIBUTES, UnitAttributes, VenueKind, VenueQuote,
-    route_resale,
+    Attr, CycleEvent, ResaleDesk, SkuEconomics, UNIT_ATTRIBUTES, UnitAttributes, VenueKind,
+    VenueQuote, replay_economics, route_resale,
 };
 use qip_financial::physical::{LogisticsTerms, Spoilage};
 use serde::{Deserialize, Serialize};
@@ -380,6 +380,17 @@ pub struct AssessedCandidate {
     /// still decodes, as zero, which is what it reserved.
     #[serde(default)]
     pub chargeback_reserve: Decimal,
+    /// How many completed purchase-and-resale cycles of this SKU the
+    /// assessment was drawn on (R12-COMMERCE-1171). Zero means the plan's
+    /// stated resale, days on market and return rate; above zero, those
+    /// three are the SKU's realised figures replayed from the cycles this
+    /// plane sold. Before this the realised cycles were journalled and read
+    /// by nothing, so the hundredth purchase of a SKU that had sold below
+    /// its reference every time was priced exactly as the first. Defaulted
+    /// so a record journalled before it existed decodes as zero, which is
+    /// what it learned from.
+    #[serde(default)]
+    pub learned_cycles: u32,
     /// Expected resale exceeds the all-in cost plus carry.
     pub viable: bool,
 }
@@ -781,10 +792,15 @@ impl CommerceResearch {
                 found.sale, found.finding
             ));
         }
+        // SKU-level economics, replayed from every cycle completed so far,
+        // this pass's sales included, so a replay of the same log learns
+        // the same figures (R12-COMMERCE-1171).
+        let learned = replay_economics(&self.cycles)?;
         let take = self.queue.len().min(CANDIDATES_PER_PASS);
         let candidates: Vec<Candidate> = self.queue.drain(..take).collect();
         for candidate in candidates {
-            if let Err(error) = self.work_candidate(&candidate, &mut run, now) {
+            let economics = learned.get(&candidate.product);
+            if let Err(error) = self.work_candidate(&candidate, economics, &mut run, now) {
                 run.problems.push(format!(
                     "{} at {}: {}",
                     candidate.product,
@@ -799,10 +815,11 @@ impl CommerceResearch {
     fn work_candidate(
         &mut self,
         candidate: &Candidate,
+        economics: Option<&SkuEconomics>,
         run: &mut CommerceSimulated,
         now: Timestamp,
     ) -> Result<()> {
-        let assessment = FeasibilityInput {
+        let stated = FeasibilityInput {
             unit_price: Some(candidate.price),
             quantity: Some(self.plan.quantity),
             declared_value_per_unit: Some(candidate.price),
@@ -812,8 +829,14 @@ impl CommerceResearch {
             daily_capital_cost: Some(self.plan.daily_capital_cost),
             purchase_tax_rate: Some(self.plan.purchase_tax_rate),
             chargeback_rate: Some(self.plan.chargeback_rate),
-        }
-        .assess()?;
+        };
+        // A SKU this plane has sold before is assessed on what it realised,
+        // not on what the plan expected of it.
+        let (input, learned_cycles) = match economics {
+            Some(learned) => (stated.with_learned(learned)?, learned.cycles),
+            None => (stated, 0),
+        };
+        let assessment = input.assess()?;
         let viable =
             assessment.expected_resale > assessment.all_in_cost + assessment.inventory_carry;
         run.assessed.push(AssessedCandidate {
@@ -828,6 +851,7 @@ impl CommerceResearch {
             duty: assessment.landed.duty,
             purchase_tax: assessment.purchase_tax,
             chargeback_reserve: assessment.chargeback_reserve,
+            learned_cycles,
             viable,
         });
         if !viable {
