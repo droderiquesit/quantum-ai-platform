@@ -1,0 +1,132 @@
+{
+ "lane": "r75",
+ "date": "2026-11-23",
+ "base": "613a7ce8f",
+ "what": "Readers on the two rows pull request #288 carried, after the owner accepted ADR 0724 and ADR 0725 by merging it. Pass 1 on 6a2e5b400: R12-AMBIENT-3024 refuted by the test-strength reader only (per-cell reliability facts unasserted); R12-AMBIENT-3027 refuted by both (the quiet-sweep rule and an untested main.rs hand-off). Pass 2 on cad0d17e2: R12-AMBIENT-3024 not refuted by either reader and regraded COMPLETE; R12-AMBIENT-3027 refuted by both, on a quiet-round finding whose zeros were not read from the router and a main.rs pin a later call could undo. The quiet-round change was reverted to ADR 0725 decision 4 and the pin made stronger in 7bb1b295c. Readers read the code and ran no test.",
+ "reader_verdicts": [
+  {
+   "pass": "pass 1 on 6a2e5b400",
+   "id": "R12-AMBIENT-3024",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "measuring which brains are reliable in which regimes (the brains half)"
+   ],
+   "reasons": [
+    "Clause 3, the brains half of 'which brains are reliable in which regimes', is unguarded. No test in organisation.rs or episodic.rs reads the reliability:{agent}@{regime} facts that meta_brain.rs::MetaBrain::arbitrate writes, or the value of its regime_reliability_cells count. A grep for the label prefix outside meta_brain.rs finds nothing.",
+    "If that fact loop in MetaBrain::arbitrate is deleted, every listed test still passes, and the finding would no longer report any brain's reliability in a regime other than the one in force. The scope stays covered because the regime_reliability_cells label is still present, and the attention weights still follow records_in.",
+    "The models half is pinned exactly by episodic.rs::a_model_scored_in_one_regime_is_unmeasured_when_the_tape_turns_and_is_never_pooled_across_them. The brains half has no matching assertion against ResearchMemory::reliability_by_regime.",
+    "Every other clause is met. The owner's acceptance of ADR 0724 is recorded in docs/blueprint/owner-decisions-2026-11-23.md, the merge commit for pull request #288 (613a7ce8f) carries the owner's name as author, and the acceptance answers the ADR 0466 decision 2 ground."
+   ]
+  },
+  {
+   "pass": "pass 1 on 6a2e5b400",
+   "id": "R12-AMBIENT-3024",
+   "lens": "callers",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Every clause traces to Platform::run_cycle -> stage_reason, which runs unconditionally in qip-fastbrain, qip-api and qip-deepbrain on PlatformConfig::default; Organisation::standard is built only in Platform::with_model_provider, and every constructor routes through it.",
+    "stage_reason calls platform.rs::hand_the_arbiters_the_models_record every cycle before dispatch_panel, and PanelView::model_records reaches MetaBrain::arbitrate only through that second phase.",
+    "The kernel tests in tests/episodic.rs drive Platform::run_cycle on PlatformConfig::default, the same configuration the binaries derive from, and assert non-empty model_brier, attention_allocated and reliability_weighted_balance facts; deleting the hand-off or the Meta Brain would fail them.",
+    "The ADR 0724 acceptance is credible: merge 613a7ce8f was a GitHub web merge by the owner, and the PR #288 body says merging accepts 0724 and lists the ADR 0466 'still gated' objection with three options.",
+    "Caveats, not grounds: the register row in R12-M3.json still reads PARTIAL; the acceptance file exists only on the branch tip, written by an agent; ADR 0724's Status line still reads Proposed; no test was run here because the task forbade it; the Meta Brain runs only when a panel convenes."
+   ]
+  },
+  {
+   "pass": "pass 1 on 6a2e5b400",
+   "id": "R12-AMBIENT-3027",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "emits findings for its scope, one per round as the 2026-10-31 ruling says"
+   ],
+   "reasons": [
+    "docs/blueprint/owner-decisions-2026-11-23.md says the owner accepted 'no finding on a quiet sweep'. The pull request #288 description the owner actually merged says the opposite: 'Still to fix when the decision lands: a quiet sweep composes no finding where the ruling says one per round'.",
+    "That same description says that under 'Accept ADR 0725 as written' the row 'closes after the remaining test gap below is fixed'. No code commit came after the merge: 6a2e5b400 adds only documentation.",
+    "qip-deepbrain/src/ambient_coverage.rs::attention_finding still returns None when the router returned no events, so ResearchLoop::sweep_over composes no finding on a quiet round. The 2026-10-31 ruling quoted in ADR 0725 asks for one AgentFinding per ResearchRound.",
+    "Point (3) is therefore not closed by any acceptance in the repository. The register row's own gap text also still lists it as 'still to fix when the decision lands'.",
+    "Production reach holds for every other clause: qip-deepbrain main.rs -> ResearchLoop::new_for_node -> node::run_with -> research_pass -> maybe_sweep -> sweep_over. No committed deepbrain.yaml sets QIP_DEEPBRAIN_RESEARCH_EVERY.",
+    "Point (2) holds: the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing writes all five labels out and covers every disposition that wakes nothing."
+   ]
+  },
+  {
+   "pass": "pass 1 on 6a2e5b400",
+   "id": "R12-AMBIENT-3027",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "constructed in the production organisation (deep brain, per ADR 0725)",
+    "emits findings for its scope (one per round, 2026-10-31 ruling)"
+   ],
+   "reasons": [
+    "The PR #288 body, which the owner merged, says to accept ADR 0725 'the row closes after the remaining test gap below is fixed'. It names that gap as 'a quiet sweep composes no finding where the ruling says one per round', yet qip-deepbrain/src/ambient_coverage.rs::attention_finding still returns Ok(None) and no_attention_events_compose_no_finding pins it.",
+    "docs/blueprint/owner-decisions-2026-11-23.md says the owner accepted the quiet-sweep rule, but the merged PR text shows it as an open fix, so point (3) is unresolved and the 2026-10-31 ruling's 'one AgentFinding per ResearchRound' is unmet.",
+    "No test pins the production-organisation clause: tests/ambient_coverage.rs::run_node builds node::Loops by hand, and no test reads qip-deepbrain/src/main.rs or runs the binary. Deleting 'research: Some(&mut research)' or 'ambient: Some(&mut ambient)' there fails nothing, unlike scope_inspections.rs, which pins 'agency: Some(&mut agency)'.",
+    "Point (2) is met: the_finding_counts_each_pathways_activations_under_its_own_label_and_nothing_that_woke_nothing writes out every label and count, and it would fail under all three listed mutations."
+   ]
+  },
+  {
+   "pass": "pass 2 on cad0d17e2",
+   "id": "R12-AMBIENT-3024",
+   "lens": "tests",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "tests/organisation.rs::the_meta_brain_reports_each_analysts_record_in_every_regime_memory_holds_and_not_only_the_one_in_force closes the earlier gap: it asserts all four reliability:{agent}@{regime} facts from MetaBrain::arbitrate at fixture literals, plus regime_reliability_cells == 4. It also asserts that no other reliability: fact exists, so deleting the loop or re-keying it fails.",
+    "The prefix 'reliability:' (with the colon) does not match the neighbouring label reliability_weighted_balance, so the exact-count assertion is not satisfied by unrelated facts.",
+    "Every other clause has production code in meta_brain.rs::MetaBrain::arbitrate or chief.rs::Organisation::standard. The cycle reaches each one through Platform::stage_reason. Each has a test whose expected values come from a path independent of the code under test.",
+    "PR #288, which carries ADR 0724, was merged on origin/main (613a7ce8f) by the repository owner's account, so the one owner decision the gap named is present. owner-decisions-2026-11-23.md records it.",
+    "I did not run any test, because the task forbids cargo in this worktree. The '7 passed' figure is the agent's, and it matches the seven test names containing the_meta_brain in tests/organisation.rs."
+   ]
+  },
+  {
+   "pass": "pass 2 on cad0d17e2",
+   "id": "R12-AMBIENT-3024",
+   "lens": "callers",
+   "refuted": false,
+   "unmet": [],
+   "reasons": [
+    "Every clause reaches a kernel cycle stage on a committed path: qip-fastbrain/qip-deepbrain node.rs step and qip-api routes.rs dispatch call Platform::run_cycle, whose stage_reason calls hand_the_arbiters_the_models_record and Organisation::dispatch_panel, which runs MetaBrain::arbitrate.",
+    "Platform::with_model_provider builds Organisation::standard, which includes standard_arbiters' MetaBrain; the only replace_organisation callers are #[cfg(test)] in agent_journal.rs.",
+    "All three roots build on PlatformConfig::default, which is the config the episodic.rs run_cycle tests show convening a contested panel.",
+    "The per-(agent, regime) records come from stage_learn -> calibrate_resolved -> remember_resolved -> write_research_memory, which stamps the regime.",
+    "cad0d17e2's test asserts regime_reliability_cells and all four reliability cells, closing the test-strength ground.",
+    "The ADR 0724 acceptance rests on merge commit 613a7ce8f of PR #288 on origin/main; this is recorded in owner-decisions-2026-11-23.md.",
+    "Residual, not a refutation: no production code reads attention_weight:* or reliability_weighted_balance (only coverage.rs labels), so allocation and resolution are advisory findings; the check asks only that findings are emitted.",
+    "The register row in the tip tree still reads PARTIAL, pending its regrade."
+   ]
+  },
+  {
+   "pass": "pass 2 on cad0d17e2",
+   "id": "R12-AMBIENT-3027",
+   "lens": "callers",
+   "refuted": true,
+   "unmet": [
+    "emits findings for its scope",
+    "removing it drops its scope from coverage"
+   ],
+   "reasons": [
+    "research.rs::ResearchLoop::sweep_over composes the finding on `Some(_)` without reading the router, and router.route is called only per routable signal, so on a round with no signals the router never runs yet quiet_finding writes 'observed' zero facts and covers attention-routing: coverage comes from holding the router field, the registration-style coverage the 2026-10-31 ruling rejected.",
+    "ambient_coverage.rs::quiet_finding's doc says the router 'was consulted and returned no decision', but the quiet-round test uses an empty universe with no signals, so its premise never exercises a consulted router and the hardcoded 0.0 'observed' facts are not observations.",
+    "The sweep_over None arm that drops the scope is reachable only through ResearchLoop::without_attention_router, which no binary calls, so 'removing it drops its scope' has no production caller.",
+    "docs/adr/0725 decision 4 ('No events, no finding') is accepted text that the code now contradicts, and the reversal rests on an agent-written correction in owner-decisions-2026-11-23.md, not on an amending ADR.",
+    "The register row in docs/blueprint/assessment/R12-M3.json still reads PARTIAL at the tip, so the COMPLETE claim is not recorded in the tree."
+   ]
+  },
+  {
+   "pass": "pass 2 on cad0d17e2",
+   "id": "R12-AMBIENT-3027",
+   "lens": "tests",
+   "refuted": true,
+   "unmet": [
+    "constructed in the production organisation"
+   ],
+   "reasons": [
+    "scope_inspections.rs::the_deep_brain_builds_its_attention_router_... only checks that main.rs contains a new_for_node binding and the hand-off strings, so adding `research = research.without_attention_router();` in qip-deepbrain/src/main.rs::run survives every test: the qip-deepbrain tests build their loops by hand, and runtime_reachability's AttentionRouter::new( probe still matches research.rs.",
+    "ambient_coverage.rs::a_quiet_round_composes_one_finding_... never asserts that the router was consulted. Its empty universe raises no signal, so router.route never runs, yet quiet_finding hard-codes 0.0 as an `observed` fact. That pins a constant rather than a measurement, and coverage on a quiet round reduces to `self.router.is_some()`.",
+    "The register row in docs/blueprint/assessment/R12-M3.json still reads PARTIAL, cites ADR 0725 as Proposed, and lists the quiet sweep as still to fix. Its verification command, `cargo test -p qip-investment-agents --test organisation`, runs no test that touches AttentionRouting."
+   ]
+  }
+ ]
+}
