@@ -1271,16 +1271,36 @@ fn token_offsets(text: &str, token: &str) -> Vec<usize> {
 }
 
 /// How many arguments the call whose parenthesis opens `text` passes: commas
-/// at the outermost depth of `()`, `[]` and `{}`, a trailing comma not
-/// counted. `None` if the parenthesis never closes. Closure parameters
-/// written directly as an argument would be miscounted; none of the methods
-/// held here takes a closure.
+/// at the outermost depth of `()`, `[]` and `{}` and outside every generic
+/// argument list, a trailing comma not counted. `None` if the parenthesis
+/// never closes. Closure parameters written directly as an argument would be
+/// miscounted; none of the methods held here takes a closure.
+///
+/// A `<` opens a generic list where an expression can hold one: after `::`
+/// (a turbofish, `BTreeMap::<A, B>::new()`), at the start of an argument (a
+/// qualified path, `<T as Default>::default()`), or inside a list already
+/// open. Anywhere else it is a comparison or a shift, and a `>` closes only an
+/// open list and never as part of `->`. Without this a turbofish comma was
+/// counted as an argument, so `p.approve(now, BTreeMap::<A, B>::new())` read
+/// as three arguments and was not taken for the two-argument sign-off
+/// (second round-81 review).
 fn call_arity(text: &str) -> Option<usize> {
     let mut depth = 0usize;
+    let mut generics = 0usize;
     let mut commas = 0usize;
     let mut since_comma = false;
+    let mut previous: Option<char> = None;
     for c in text.chars() {
+        let generic_open = generics > 0 || matches!(previous, Some(':' | '(' | '[' | '{' | ','));
         match c {
+            '<' if depth >= 1 && generic_open => {
+                generics += 1;
+                since_comma = true;
+            }
+            '>' if generics > 0 && previous != Some('-') => {
+                generics -= 1;
+                since_comma = true;
+            }
             '(' | '[' | '{' => {
                 depth += 1;
                 if depth > 1 {
@@ -1294,15 +1314,54 @@ fn call_arity(text: &str) -> Option<usize> {
                 }
                 since_comma = true;
             }
-            ',' if depth == 1 => {
+            ',' if depth == 1 && generics == 0 => {
                 commas += 1;
                 since_comma = false;
             }
             c if depth >= 1 && !c.is_whitespace() => since_comma = true,
             _ => {}
         }
+        if !c.is_whitespace() {
+            previous = Some(c);
+        }
     }
     None
+}
+
+/// The argument count, on the turbofish and qualified-path forms a
+/// bracket-only count read wrong, and on the comparisons and shifts it must
+/// not take for generics. Mutation: count commas inside a generic list again
+/// (drop `&& generics == 0`) — the turbofish cases read one argument too
+/// many and the sign-off with a turbofish argument is not found.
+#[test]
+fn the_arity_count_reads_a_turbofish_comma_as_part_of_one_argument() {
+    assert_eq!(
+        call_arity("(now, BTreeMap::<String, Vec<u8>>::new())"),
+        Some(2)
+    );
+    assert_eq!(call_arity("(now, Vec::<(u8, u8)>::new(), x)"), Some(3));
+    assert_eq!(call_arity("(now, Vec::<fn(u8, u8) -> u8>::new())"), Some(2));
+    assert_eq!(
+        call_arity("(<Vec<u8> as Default>::default(), now)"),
+        Some(2)
+    );
+    assert_eq!(call_arity("(a < b, c > d)"), Some(2));
+    assert_eq!(call_arity("(x << 2, y >> 1, z)"), Some(3));
+    assert_eq!(call_arity("(f::<A, B>(x), y,)"), Some(2));
+    let code = code_only(
+        "fn f() {\n    p.approve(now, BTreeMap::<String, String>::new());\n    \
+         Proposal::release(&mut p, HashMap::<A, B>::default());\n}\n",
+    );
+    assert_eq!(
+        reaches(&code, "approve", 2),
+        1,
+        "a sign-off with a turbofish argument was not found"
+    );
+    assert_eq!(
+        reaches(&code, "release", 1),
+        1,
+        "a path-form release with a turbofish argument was not found"
+    );
 }
 
 /// How many times `code` reaches `method`: a call on any receiver
