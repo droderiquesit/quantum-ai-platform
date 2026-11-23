@@ -40,7 +40,8 @@
 
 use qip_ai::registry::{
     ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST, EvaluationRecord, ModelCard,
-    ModelRegistry, PromotionTest, PromotionTests, REPLAY_TEST, RISK_ENVELOPE_TEST, ResourceBudget,
+    ModelRegistry, PromotionClearance, PromotionTest, PromotionTests, REPLAY_TEST,
+    RISK_ENVELOPE_TEST, ResourceBudget,
 };
 use qip_ai::serving::{ModelArtifact, ModelProvider};
 use qip_core::error::{Error, Result};
@@ -534,9 +535,20 @@ pub fn run_promotion_tests(
         ran_at: now,
         results,
     };
+    // R12-MODEL-4021: the record is written either way, so a refusal names
+    // the test that failed; the clearance that admits a promotion is minted
+    // here and nowhere else in production (`qip-acceptance`'s
+    // `model_promotion_clearance` suite), and only when every test above —
+    // the adversarial attack included — was measured and passed. A failed
+    // run withdraws any clearance an earlier run left.
+    let clearance = PromotionClearance::minted_by_measured_promotion_tests(reference, &tests).ok();
     let card = registry
         .get_mut(reference)
         .ok_or_else(|| Error::not_found(format!("no model registered as {reference}")))?;
     card.promotion_tests = Some(tests.clone());
+    match clearance {
+        Some(clearance) => registry.lodge_clearance(clearance),
+        None => registry.withdraw_clearance(reference),
+    }
     Ok(tests)
 }

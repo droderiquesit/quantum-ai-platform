@@ -16,6 +16,7 @@ use qip_core::error::{Error, Result};
 use qip_core::{Duration, ModelId, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The functional category of a model or reasoner.
 ///
@@ -463,6 +464,84 @@ impl PromotionTests {
             }
         }
         None
+    }
+}
+
+/// The proof that a promotion's tests were measured, and not merely written
+/// down (R12-MODEL-4021, blueprint §10.1).
+///
+/// The failure it prevents: [`PromotionTests`] is a record. Its fields are
+/// public and it derives `Deserialize`, so any caller holding a registry
+/// mutably — or any card read back from storage — could carry a passing
+/// [`ADVERSARIAL_TEST`] that no attack ever ran, and
+/// [`ModelRegistry::promote_artifact`] trusted the record alone. A guard that
+/// holds because every caller happens to run the suite first is a convention,
+/// and the next caller does not. A clearance is the measurement itself: it has
+/// private fields, no `Deserialize`, no `Default` and no `Clone`, so the only
+/// way to hold one is to be handed it by the constructor, and the constructor
+/// refuses a record on which any promotion test is missing or failed.
+///
+/// Rust cannot restrict a public constructor to one other crate, so the
+/// constructor is called in production code only by the kernel's
+/// `central::models::run_promotion_tests`, at the end of a run that measured
+/// every test — the adversarial perturbation suite included — on the
+/// artifact's own bytes. `qip-acceptance`'s `model_promotion_clearance` suite
+/// is what holds that: it refuses the constructor in any other production
+/// source, the pattern ADR 0430 uses for `qip_risk::gate::DeterministicGate`.
+/// Tests may mint one; a unit test of the registry is not a path a model
+/// reaches production by.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PromotionClearance {
+    reference: String,
+    artifact_digest: String,
+    window: String,
+    ran_at: Timestamp,
+}
+
+impl PromotionClearance {
+    /// Mint a clearance for `reference` from the promotion tests just
+    /// measured on it, refusing when any test in [`PROMOTION_TESTS`] is
+    /// missing or failed.
+    ///
+    /// **Called by `qip_kernel::central::models::run_promotion_tests` alone in
+    /// production code.** The name is long and specific so that the
+    /// acceptance scan refusing it elsewhere cannot be satisfied by a
+    /// near-miss or collide with an unrelated `new`.
+    pub fn minted_by_measured_promotion_tests(
+        reference: &str,
+        tests: &PromotionTests,
+    ) -> Result<Self> {
+        if let Some(gap) = tests.gap(&tests.artifact_digest) {
+            return Err(Error::denied(format!(
+                "no promotion clearance for {reference}: {gap}"
+            )));
+        }
+        Ok(Self {
+            reference: reference.to_string(),
+            artifact_digest: tests.artifact_digest.clone(),
+            window: tests.window.clone(),
+            ran_at: tests.ran_at,
+        })
+    }
+
+    /// The model reference the tests were measured on.
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+
+    /// The artifact digest the tests were measured on.
+    pub fn artifact_digest(&self) -> &str {
+        &self.artifact_digest
+    }
+
+    /// The recorded window the tests ran over.
+    pub fn window(&self) -> &str {
+        &self.window
+    }
+
+    /// When the tests ran.
+    pub fn ran_at(&self) -> Timestamp {
+        self.ran_at
     }
 }
 
@@ -943,6 +1022,14 @@ impl ModelCard {
 pub struct ModelRegistry {
     cards: BTreeMap<String, ModelCard>,
     packages: BTreeMap<String, Package>,
+    /// The clearance each reference's last measured promotion-test run
+    /// minted, keyed by the reference the clearance names (R12-MODEL-4021).
+    /// Never serialised and never rebuilt from a card: a registry read back
+    /// from storage holds none, so a restored record admits nothing until
+    /// the tests run again. Shared behind an `Arc` only so a scratch copy
+    /// of the registry carries it; nothing can construct or relabel one.
+    /// Bounded by the cards, one per reference.
+    clearances: BTreeMap<String, Arc<PromotionClearance>>,
 }
 
 /// The four kinds of package the registry holds (MODEL-068).
@@ -1391,6 +1478,27 @@ impl ModelRegistry {
         Ok(())
     }
 
+    /// Hold `clearance` as the one that admits its reference's promotion,
+    /// replacing any earlier one (R12-MODEL-4021). Taking the clearance by
+    /// value is the point: a caller can lodge only what it was minted.
+    pub fn lodge_clearance(&mut self, clearance: PromotionClearance) {
+        self.clearances
+            .insert(clearance.reference.clone(), Arc::new(clearance));
+    }
+
+    /// Drop any clearance held for `reference`. A run whose tests failed
+    /// withdraws the clearance an earlier run left, so a failed measurement
+    /// is never outvoted by a stale passing one.
+    pub fn withdraw_clearance(&mut self, reference: &str) {
+        self.clearances.remove(reference);
+    }
+
+    /// The clearance held for `reference`, if its last promotion-test run
+    /// in this process passed every test.
+    pub fn clearance(&self, reference: &str) -> Option<&PromotionClearance> {
+        self.clearances.get(reference).map(Arc::as_ref)
+    }
+
     /// Promote a model together with the artifact a deployment will carry
     /// (ADR 0083's promote stage), and return the artifact named by its
     /// digest for the composition root to write.
@@ -1399,7 +1507,9 @@ impl ModelRegistry {
     /// is not the digest of its payload (the bytes are not the bytes), a
     /// card that would not promote on its own terms — no passing evaluation
     /// — a card whose four promotion tests are missing, failed or were run
-    /// on other bytes (ADR 0392), and a card already promoted with a
+    /// on other bytes (ADR 0392), a card holding no [`PromotionClearance`]
+    /// for these bytes — its tests written down rather than measured
+    /// (R12-MODEL-4021) — and a card already promoted with a
     /// *different* artifact. The last
     /// is the one a reader might expect to be allowed: re-promoting a
     /// version with new bytes is a different model wearing the same name,
@@ -1450,6 +1560,37 @@ impl ModelRegistry {
                 "{} cannot be promoted: {gap}",
                 artifact.reference
             )));
+        }
+        // R12-MODEL-4021: the record above is what the refusal names; the
+        // clearance is what admits. A passing record nobody measured — written
+        // through `get_mut`, or read back on a stored card — carries no
+        // clearance, and a clearance measured on other bytes admits nothing.
+        match self.clearances.get(&artifact.reference) {
+            None => {
+                return Err(Error::denied(format!(
+                    "{} cannot be promoted: its promotion tests on record carry no clearance; \
+                     a clearance is minted only by running the promotion tests, the \
+                     adversarial perturbation suite included, on this process's registry — \
+                     run them on a recorded window before promoting it",
+                    artifact.reference
+                )));
+            }
+            Some(clearance)
+                if clearance.reference != artifact.reference
+                    || clearance.artifact_digest != artifact.digest =>
+            {
+                return Err(Error::denied(format!(
+                    "{} cannot be promoted: its clearance was measured on {} at artifact {} \
+                     and this is {} at artifact {}; run the promotion tests on the bytes \
+                     being promoted",
+                    artifact.reference,
+                    clearance.reference,
+                    clearance.artifact_digest,
+                    artifact.reference,
+                    artifact.digest
+                )));
+            }
+            Some(_) => {}
         }
         self.promote(&artifact.reference, at)?;
         let card = self.get_mut(&artifact.reference).ok_or_else(|| {

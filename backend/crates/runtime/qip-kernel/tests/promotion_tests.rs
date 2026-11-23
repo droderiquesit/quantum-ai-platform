@@ -654,3 +654,123 @@ fn a_model_fragile_only_to_a_joint_nudge_fails_its_adversarial_test() -> Result<
     );
     Ok(())
 }
+
+/// R12-MODEL-4021, the clause the skeptic named "a convention, not a
+/// structure": a caller holding the registry mutably rewrites a failed
+/// adversarial result as passed, and `Platform::promote_model` — the door the
+/// deep brain's promote stage uses — refuses it, because only a measured run
+/// of `run_promotion_tests` mints the clearance the registry demands, and the
+/// run that measured this model withdrew it. Before the clearance the
+/// registry read the record alone, and this forgery promoted.
+///
+/// Premise first, on a fresh platform and registry: the same artifact,
+/// measured by the smooth in-tree model, earns a clearance and promotes; so
+/// the refusal below is about the attack's verdict, not about the artifact.
+///
+/// Mutations: drop the clearance match in `ModelRegistry::promote_artifact`
+/// — the forged record promotes and the `expect_err` fires; lodge the
+/// clearance in `run_promotion_tests` whatever the verdict — the forged
+/// record promotes the same way.
+#[test]
+fn a_failed_adversarial_result_rewritten_as_passed_is_not_promoted() -> Result<()> {
+    let teacher = teacher("bar-linear-forged")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("forged-recorded", 200, 400)?;
+
+    let mut platform_measured = platform()?;
+    let mut measured = registry_with(&teacher)?;
+    let tests =
+        platform_measured.test_model_for_promotion(&mut measured, &artifact, &recorded, start())?;
+    assert_eq!(tests.gap(&artifact.digest), None, "premise: all five pass");
+    assert!(
+        measured.clearance(&artifact.reference).is_some(),
+        "premise: a measured passing run lodges a clearance"
+    );
+    platform_measured.promote_model(&mut measured, &artifact, None, &[], start())?;
+
+    let mut platform = platform()?;
+    let mut registry = registry_with(&teacher)?;
+    let stepped = run_promotion_tests(&Stepping, &mut registry, &artifact, &recorded, start())?;
+    assert!(
+        !passed(&stepped, ADVERSARIAL_TEST),
+        "premise: the step fails its attack: {}",
+        evidence(&stepped, ADVERSARIAL_TEST)
+    );
+    assert!(
+        registry.clearance(&artifact.reference).is_none(),
+        "premise: a failed run lodges no clearance"
+    );
+    // The forgery: every result on the card rewritten as passed.
+    let card = registry
+        .get_mut(&artifact.reference)
+        .expect("premise: the card is registered");
+    for test in card
+        .promotion_tests
+        .as_mut()
+        .expect("premise: the run wrote its record")
+        .results
+        .values_mut()
+    {
+        test.passed = true;
+    }
+    assert_eq!(
+        registry
+            .get(&artifact.reference)
+            .and_then(|card| card.promotion_tests.as_ref())
+            .and_then(|tests| tests.gap(&artifact.digest)),
+        None,
+        "premise: the forged record passes every test on these bytes"
+    );
+
+    let error = platform
+        .promote_model(&mut registry, &artifact, None, &[], start())
+        .expect_err("a forged adversarial result must not promote");
+    assert!(
+        error
+            .message()
+            .contains("its promotion tests on record carry no clearance"),
+        "{}",
+        error.message()
+    );
+    assert!(
+        platform.model_promotions().is_empty(),
+        "a refused promotion must leave no promotion"
+    );
+    Ok(())
+}
+
+/// R12-MODEL-4021: a later run that fails withdraws the clearance an earlier
+/// passing run lodged, so a stale measurement never outvotes a fresh one.
+/// The registry keeps one clearance per reference; this is what makes it the
+/// last measurement's.
+///
+/// Mutation: drop the `withdraw_clearance` arm in `run_promotion_tests` —
+/// the clearance survives the failed run and the second assertion fires.
+#[test]
+fn a_failed_run_withdraws_the_clearance_a_passing_run_left() -> Result<()> {
+    let teacher = teacher("bar-linear-withdrawn")?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let recorded = window("withdrawn-recorded", 200, 400)?;
+    let mut registry = registry_with(&teacher)?;
+    run_promotion_tests(
+        &InTreeProvider,
+        &mut registry,
+        &artifact,
+        &recorded,
+        start(),
+    )?;
+    assert!(
+        registry.clearance(&artifact.reference).is_some(),
+        "premise: the passing run lodged a clearance"
+    );
+    let stepped = run_promotion_tests(&Stepping, &mut registry, &artifact, &recorded, start())?;
+    assert!(
+        !passed(&stepped, ADVERSARIAL_TEST),
+        "premise: the second run fails"
+    );
+    assert!(
+        registry.clearance(&artifact.reference).is_none(),
+        "a failed run left the earlier clearance in place"
+    );
+    Ok(())
+}

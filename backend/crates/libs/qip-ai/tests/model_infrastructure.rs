@@ -806,7 +806,7 @@ fn drift_on_a_degenerate_sample_is_neutral() {
 
 // --- promote with an artifact (ADR 0083) --------------------------------------
 
-use qip_ai::registry::{PROMOTION_TESTS, PromotionTest, PromotionTests};
+use qip_ai::registry::{PROMOTION_TESTS, PromotionClearance, PromotionTest, PromotionTests};
 use qip_ai::serving::{ModelArtifact, ModelFormat, digest_of};
 
 /// The card with the four promotion tests on record, passed, on
@@ -836,6 +836,23 @@ fn tested_on(mut card: ModelCard, artifact: &ModelArtifact) -> ModelCard {
     card
 }
 
+/// Register `card` and lodge the clearance its passing record would have
+/// earned (R12-MODEL-4021). Production lodges one only from the kernel's
+/// `run_promotion_tests`; the registry is a library and runs no test, so
+/// these tests of its other refusals mint the clearance themselves. A card
+/// whose record has a missing or failed test gets none, because the
+/// constructor refuses it.
+fn register_tested(registry: &mut ModelRegistry, card: ModelCard) -> qip_core::error::Result<()> {
+    let clearance = card.promotion_tests.as_ref().and_then(|tests| {
+        PromotionClearance::minted_by_measured_promotion_tests(&card.reference(), tests).ok()
+    });
+    registry.register(card)?;
+    if let Some(clearance) = clearance {
+        registry.lodge_clearance(clearance);
+    }
+    Ok(())
+}
+
 fn artifact_for(card: &ModelCard, intercept: f64) -> ModelArtifact {
     ModelArtifact::new(
         card.reference(),
@@ -853,8 +870,7 @@ fn promoting_with_an_artifact_names_it_on_the_card_and_publishes_it_under_its_di
     let mut registry = ModelRegistry::new();
     let card = evaluated_card(now(), true);
     let artifact = artifact_for(&card, 0.1);
-    registry
-        .register(tested_on(card, &artifact))
+    register_tested(&mut registry, tested_on(card, &artifact))
         .expect("a registry below its cap admits a card");
     assert!(
         registry
@@ -950,8 +966,7 @@ fn a_version_cannot_be_re_promoted_with_different_bytes_under_the_same_reference
     let first = artifact_for(&card, 0.1);
     let second = artifact_for(&card, 0.3);
     assert_ne!(first.digest, second.digest, "the premise failed");
-    registry
-        .register(tested_on(card, &first))
+    register_tested(&mut registry, tested_on(card, &first))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&first, now()).unwrap();
 
@@ -1014,16 +1029,14 @@ fn a_registered_model_keeps_all_six_attributes_and_rolls_back_to_the_parent_arti
     let mut registry = ModelRegistry::new();
     let parent = successor_card("2.1.0");
     let parent_artifact = artifact_for(&parent, 0.1);
-    registry
-        .register(tested_on(parent, &parent_artifact))
+    register_tested(&mut registry, tested_on(parent, &parent_artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&parent_artifact, now()).unwrap();
 
     let child = successor_card("2.2.0");
     let child_artifact = artifact_for(&child, 0.2);
     assert_ne!(parent_artifact.digest, child_artifact.digest, "premise");
-    registry
-        .register(tested_on(child, &child_artifact))
+    register_tested(&mut registry, tested_on(child, &child_artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&child_artifact, now()).unwrap();
     registry.retire("regime-classifier@2.1.0", now()).unwrap();
@@ -1072,8 +1085,7 @@ fn a_model_with_no_recorded_parent_cannot_be_rolled_back() {
     let mut registry = ModelRegistry::new();
     let card = successor_card("2.1.0");
     let artifact = artifact_for(&card, 0.1);
-    registry
-        .register(tested_on(card, &artifact))
+    register_tested(&mut registry, tested_on(card, &artifact))
         .expect("a registry below its cap admits a card");
     registry.promote_artifact(&artifact, now()).unwrap();
 
@@ -1402,9 +1414,7 @@ fn an_artifact_is_refused_while_any_one_of_its_four_promotion_tests_is_missing_f
     let other_bytes = artifact_for(&card, 0.3);
     let attempt = |card: ModelCard| {
         let mut registry = ModelRegistry::new();
-        registry
-            .register(card)
-            .expect("a registry below its cap admits a card");
+        register_tested(&mut registry, card).expect("a registry below its cap admits a card");
         let outcome = registry.promote_artifact(&artifact, now());
         let after = registry.get("regime-classifier@2.1.0").unwrap().clone();
         (outcome, after)
@@ -1465,5 +1475,188 @@ fn an_artifact_is_refused_while_any_one_of_its_four_promotion_tests_is_missing_f
     refused(
         tested_on(card, &other_bytes),
         &format!("its promotion tests ran on artifact {}", other_bytes.digest),
+    );
+}
+
+// --- the promotion clearance (R12-MODEL-4021) -----------------------------------
+
+/// R12-MODEL-4021: a passing record nobody measured promotes nothing. Before
+/// the clearance, `promote_artifact` trusted `ModelCard::promotion_tests`
+/// alone, and that record has public fields: a caller holding the registry
+/// mutably could write a passing adversarial result no attack produced, and
+/// the model was promoted. Premise first: the same card, with the same
+/// record, promotes once the clearance that record earns is lodged — so the
+/// refusal is about the missing measurement and nothing else.
+///
+/// Mutation: drop the clearance match in `promote_artifact` — the forged
+/// card promotes and the `expect_err` fires.
+#[test]
+fn a_passing_record_with_no_clearance_promotes_nothing() {
+    let card = evaluated_card(now(), true);
+    let artifact = artifact_for(&card, 0.1);
+
+    let mut cleared = ModelRegistry::new();
+    register_tested(&mut cleared, tested_on(card.clone(), &artifact))
+        .expect("a registry below its cap admits a card");
+    assert!(
+        cleared.clearance("regime-classifier@2.1.0").is_some(),
+        "premise: the passing record earned a clearance"
+    );
+    assert!(
+        cleared.promote_artifact(&artifact, now()).is_ok(),
+        "premise: a measured card promotes"
+    );
+
+    let mut forged = ModelRegistry::new();
+    forged
+        .register(tested_on(card, &artifact))
+        .expect("a registry below its cap admits a card");
+    assert!(
+        forged
+            .get("regime-classifier@2.1.0")
+            .and_then(|card| card.promotion_tests.as_ref())
+            .is_some_and(|tests| tests.gap(&artifact.digest).is_none()),
+        "premise: the record on the card passes every test on these bytes"
+    );
+    let error = forged
+        .promote_artifact(&artifact, now())
+        .expect_err("a record with no clearance must not promote");
+    assert_eq!(error.code(), "denied");
+    assert!(
+        error
+            .message()
+            .contains("its promotion tests on record carry no clearance"),
+        "{error}"
+    );
+    let after = forged.get("regime-classifier@2.1.0").unwrap();
+    assert_eq!(after.stage, ModelStage::Development);
+    assert_eq!(after.artifact_digest, None);
+}
+
+/// R12-MODEL-4021: a clearance admits the reference and the bytes it was
+/// measured on, and no other. Two ways of borrowing one, each refused with
+/// the card left where it was: a clearance measured on version 2.1.0 does
+/// not admit 2.2.0, whose record was written by hand; and a clearance
+/// measured on one artifact does not admit other bytes under the same
+/// reference, though the record on the card was rewritten to name them.
+///
+/// Mutation: drop the digest comparison in `promote_artifact`'s clearance
+/// match — the second promotion succeeds and its `expect_err` fires.
+#[test]
+fn a_clearance_measured_on_another_version_or_other_bytes_admits_nothing() {
+    // Another version.
+    let mut registry = ModelRegistry::new();
+    let measured = successor_card("2.1.0");
+    let measured_artifact = artifact_for(&measured, 0.1);
+    register_tested(&mut registry, tested_on(measured, &measured_artifact))
+        .expect("a registry below its cap admits a card");
+    let unmeasured = successor_card("2.2.0");
+    let unmeasured_artifact = artifact_for(&unmeasured, 0.2);
+    registry
+        .register(tested_on(unmeasured, &unmeasured_artifact))
+        .expect("a registry below its cap admits a card");
+    assert_eq!(
+        registry
+            .clearance("regime-classifier@2.1.0")
+            .map(PromotionClearance::artifact_digest),
+        Some(measured_artifact.digest.as_str()),
+        "premise: 2.1.0 holds a clearance on its own bytes"
+    );
+    let error = registry
+        .promote_artifact(&unmeasured_artifact, now())
+        .expect_err("another version's clearance must not admit 2.2.0");
+    assert!(
+        error
+            .message()
+            .contains("its promotion tests on record carry no clearance"),
+        "{error}"
+    );
+    assert_eq!(
+        registry.get("regime-classifier@2.2.0").unwrap().stage,
+        ModelStage::Development
+    );
+
+    // Other bytes under the same reference.
+    let mut registry = ModelRegistry::new();
+    let card = evaluated_card(now(), true);
+    let tested = artifact_for(&card, 0.1);
+    let swapped = artifact_for(&card, 0.3);
+    assert_ne!(tested.digest, swapped.digest, "premise: two artifacts");
+    register_tested(&mut registry, tested_on(card.clone(), &tested))
+        .expect("a registry below its cap admits a card");
+    // The record is rewritten to name the swapped bytes; the clearance still
+    // names the bytes that were measured.
+    registry
+        .register(tested_on(card, &swapped))
+        .expect("a replacement is admitted");
+    assert_eq!(
+        registry
+            .clearance("regime-classifier@2.1.0")
+            .map(PromotionClearance::artifact_digest),
+        Some(tested.digest.as_str()),
+        "premise: the clearance names the measured bytes"
+    );
+    let error = registry
+        .promote_artifact(&swapped, now())
+        .expect_err("a clearance on other bytes must not admit these");
+    assert_eq!(error.code(), "denied");
+    assert!(
+        error.message().contains(&format!(
+            "its clearance was measured on regime-classifier@2.1.0 at artifact {}",
+            tested.digest
+        )),
+        "{error}"
+    );
+    let after = registry.get("regime-classifier@2.1.0").unwrap();
+    assert_eq!(after.stage, ModelStage::Development);
+    assert_eq!(after.artifact_digest, None);
+}
+
+/// R12-MODEL-4021: the constructor itself refuses a record on which any
+/// promotion test is missing or failed, so even the one production minter
+/// cannot clear a model its own measurement failed. Premise first: the
+/// complete passing record mints.
+///
+/// Mutation: drop the `gap` check in `minted_by_measured_promotion_tests` —
+/// the failed adversarial record mints and the `is_err` assertion fires.
+#[test]
+fn no_clearance_is_minted_from_a_record_whose_adversarial_test_failed_or_is_missing() {
+    let card = evaluated_card(now(), true);
+    let artifact = artifact_for(&card, 0.1);
+    let passing = tested_on(card.clone(), &artifact)
+        .promotion_tests
+        .expect("premise: a record");
+    let minted =
+        PromotionClearance::minted_by_measured_promotion_tests("regime-classifier@2.1.0", &passing)
+            .expect("premise: a complete passing record mints");
+    assert_eq!(minted.reference(), "regime-classifier@2.1.0");
+    assert_eq!(minted.artifact_digest(), artifact.digest);
+
+    let mut failed = passing.clone();
+    failed
+        .results
+        .get_mut(qip_ai::registry::ADVERSARIAL_TEST)
+        .expect("premise: the record holds an adversarial result")
+        .passed = false;
+    let refusal =
+        PromotionClearance::minted_by_measured_promotion_tests("regime-classifier@2.1.0", &failed);
+    assert!(
+        refusal.is_err(),
+        "a failed adversarial test minted a clearance"
+    );
+    assert!(
+        refusal
+            .unwrap_err()
+            .message()
+            .contains("it failed its adversarial test"),
+        "the refusal must name the failed test"
+    );
+
+    let mut missing = passing;
+    missing.results.remove(qip_ai::registry::ADVERSARIAL_TEST);
+    assert!(
+        PromotionClearance::minted_by_measured_promotion_tests("regime-classifier@2.1.0", &missing)
+            .is_err(),
+        "a record with no adversarial test minted a clearance"
     );
 }
