@@ -760,6 +760,66 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         (record.correct > 0).then_some(row.spend.cost),
         "one scored call: the cost per correct call is the whole bill or none"
     );
+
+    Ok(())
+}
+
+/// R12-FINOPS-10139. The failure this guards: the benefit join was computed
+/// in process memory, read by nothing outside it and lost on restart, so no
+/// reader could set a rung's billed cost and latency against the calls it got
+/// right. The cycle that bills a rung now records the join's figures on that
+/// rung's gauges, equal to the report's own.
+#[test]
+fn a_rung_that_bought_a_correct_call_has_its_cost_and_latency_per_correct_call_recorded()
+-> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let panel = qip_cost_router::IntelligenceTier::MultiAgentReasoning;
+    let prediction = platform
+        .predictions()
+        .first()
+        .cloned()
+        .expect("premise: a claim was written");
+    let horizon = prediction.proposition.resolves_at;
+    let calm: Vec<SensedRecord> = (0..40)
+        .map(|i| {
+            let at = horizon.saturating_sub(Duration::from_mins((40 - i) * 60));
+            hourly_bar("AAA", at, 100.0, 100.0 + 0.01 * i as f64)
+        })
+        .collect();
+    platform.observe(calm);
+    platform.run_cycle(horizon.saturating_add(Duration::from_mins(1)));
+    let row = platform
+        .model_benefit()
+        .into_iter()
+        .find(|b| b.model == panel.as_str())
+        .expect("premise: the panel's rung is reported");
+    // Premises: the rung was billed, and LEARN graded its one call correct,
+    // so both divisions have a figure.
+    assert_eq!((row.correct, row.observations), (1, 1), "{row:?}");
+    assert!(
+        row.spend.charges > 0 && row.spend.cost > Decimal::ZERO,
+        "{row:?}"
+    );
+    let cost = row.cost_per_correct.expect("a cost per correct call");
+    let latency = row.latency_per_correct.expect("a latency per correct call");
+    // One correct call: each figure is the rung's whole bill.
+    assert_eq!(cost, row.spend.cost);
+    assert_eq!(latency, row.spend.latency);
+
+    let snapshot = recorded(&platform);
+    let rung = labels([("model", panel.as_str())]);
+    assert_eq!(
+        snapshot.gauge(names::MODEL_COST_PER_CORRECT, &rung),
+        Some(cost.to_f64()),
+        "the rung's cost per correct call is not on its gauge"
+    );
+    assert_eq!(
+        snapshot.gauge(names::MODEL_LATENCY_PER_CORRECT, &rung),
+        Some(latency.as_secs_f64()),
+        "the rung's latency per correct call is not on its gauge"
+    );
     Ok(())
 }
 

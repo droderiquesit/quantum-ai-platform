@@ -1385,6 +1385,18 @@ fn a_failed_fit_is_reported_as_a_failure_and_not_as_a_model() -> Result<()> {
     )
     .expect_err("a failing fit must not return an artifact");
     assert!(error.message().contains("failed"), "{}", error.message());
+    // The trainer's own reason reaches the caller, rather than "failed" with
+    // nothing to act on (R12-FINOPS-10139, where the deep brain's fits now
+    // come through this call).
+    let JobState::Failed(reason) = &failed.state else {
+        panic!("premise: the job failed");
+    };
+    assert!(!reason.is_empty(), "premise: the trainer gave a reason");
+    assert!(
+        error.message().ends_with(&format!(": {reason}")),
+        "{}",
+        error.message()
+    );
     Ok(())
 }
 

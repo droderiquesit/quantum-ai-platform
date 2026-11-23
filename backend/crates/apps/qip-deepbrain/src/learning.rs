@@ -145,8 +145,11 @@ use qip_training::campaign::{CampaignDraft, TrainingCampaign};
 use qip_training::dataset::TrainingDataset;
 use qip_training::distill::{Distillation, FidelityPolicy, StudentForm, distil};
 use qip_training::estimators::{DRIFT_BUCKETS, FeatureEstimators, StreamingDrift, degraded_models};
-use qip_training::job::TrainingSpec;
-use qip_training::local::{LocalTrainer, ModelFamily, SkillPolicy, TrainedTeacher};
+use qip_training::job::{
+    Capacity, JobPriority, JobScheduling, LocalTrainingProvider, QueueQuotas, TrainingJob,
+    TrainingProvider, TrainingSpec, run_to_completion,
+};
+use qip_training::local::{ModelFamily, SkillPolicy, TrainedTeacher};
 use qip_training::serve::InTreeProvider;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -431,6 +434,53 @@ fn promotion_subject(name: &str) -> Option<&str> {
 struct FittedSample {
     subject: String,
     columns: BTreeMap<String, Vec<f64>>,
+}
+
+/// The queue every fit the learning desk runs is charged to (R12-FINOPS-10139).
+pub const RESEARCH_TRAINING_QUEUE: &str = "central-research";
+
+/// Unfinished jobs the research queue may hold at once (R12-FINOPS-10139).
+///
+/// Provisional, stated under the owner's 2026-11-23 instruction to decide
+/// for them: one, the smallest bound under which a round still runs, because
+/// a round fits its baseline to completion before it submits its challenger.
+/// A second unfinished job in the queue — a round started before the last
+/// finished, or a fit nobody accounted for — is refused before it runs
+/// rather than adding unbudgeted compute behind the desk's back.
+pub const RESEARCH_QUEUE_CONCURRENCY: usize = 1;
+
+/// Polls the in-process provider needs to finish a job: one to start it, one
+/// to fit it. The bound `run_to_completion` polls within.
+const LOCAL_TRAINING_POLLS: usize = 2;
+
+/// Where every desk fit is placed: the research queue, on Spot capacity, at
+/// standard priority (R12-FINOPS-10139's "Spot where safe").
+///
+/// Spot is safe here because a research fit lost mid-run costs a rerun on the
+/// next round and nothing else — no model in service waits on it; the
+/// incumbent keeps serving. `JobScheduling::validate` refuses the unsafe
+/// pairing (Spot with `Critical`) at submit, so a later change marking these
+/// fits critical without moving them on demand stops rather than runs. The
+/// in-process provider has no capacity classes, so the placement is recorded
+/// on the job and carried to any provider the desk is later given.
+pub fn research_scheduling() -> JobScheduling {
+    JobScheduling {
+        queue: RESEARCH_TRAINING_QUEUE.to_string(),
+        capacity: Capacity::Spot,
+        priority: JobPriority::Standard,
+    }
+}
+
+/// The training provider a learning round submits through, holding the
+/// research queue's concurrency quota (R12-FINOPS-10139).
+///
+/// Before this the desk called `LocalTrainer::fit` directly, so the quota the
+/// provider port enforces bounded nothing in any running process. Built per
+/// round so the provider's job table, which keeps each job's dataset, cannot
+/// grow for the life of the process.
+pub fn research_training_provider(seed: u64) -> LocalTrainingProvider {
+    LocalTrainingProvider::new(seed)
+        .with_quotas(QueueQuotas::new().with(RESEARCH_TRAINING_QUEUE, RESEARCH_QUEUE_CONCURRENCY))
 }
 
 /// How the learning loop is tuned.
@@ -1091,6 +1141,9 @@ pub struct LearningDesk {
     fits: u64,
     seed: u64,
     stats: LearningStats,
+    /// The jobs of the latest round that produced a model, as the provider
+    /// left them: queue, capacity and terminal state (R12-FINOPS-10139).
+    training_jobs: Vec<TrainingJob>,
 }
 
 impl std::fmt::Debug for LearningDesk {
@@ -1133,6 +1186,7 @@ impl LearningDesk {
             fits: 0,
             seed,
             stats: LearningStats::default(),
+            training_jobs: Vec::new(),
         }
     }
 
@@ -1230,6 +1284,11 @@ impl LearningDesk {
 
     pub const fn stats(&self) -> LearningStats {
         self.stats
+    }
+
+    /// The training jobs the latest round submitted (R12-FINOPS-10139).
+    pub fn training_jobs(&self) -> &[TrainingJob] {
+        &self.training_jobs
     }
 
     /// Refill the registry from the cards the platform's log holds, once
@@ -2820,6 +2879,7 @@ impl LearningDesk {
             .with_horizon(Horizon::Intraday)
             .with_holdout(self.config.holdout_fraction)
             .with_seed(self.seed)
+            .with_scheduling(research_scheduling())
         };
         let spec = spec_for(chosen);
 
@@ -2829,15 +2889,39 @@ impl LearningDesk {
         // not fit. The challenger's is not: a refused challenger is reported
         // on the choice and given no outcome on the board, because a fit
         // that never happened is not evidence that the class fails here.
-        let trainer = LocalTrainer::new();
+        //
+        // Both fits go through the research queue's provider, through the
+        // training port's own door, `run_to_completion`, so the queue's
+        // concurrency quota bounds every fit this desk makes
+        // (R12-FINOPS-10139). One fit at a time: the baseline finishes
+        // before the challenger is submitted.
+        let mut provider = research_training_provider(self.seed ^ self.fits);
+        let fitted_baseline = run_to_completion(
+            &mut provider,
+            spec_for(BASELINE_CLASS),
+            &dataset,
+            now,
+            LOCAL_TRAINING_POLLS,
+        );
+        let fitted_challenger = run_to_completion(
+            &mut provider,
+            spec_for(CHALLENGER_CLASS),
+            &dataset,
+            now,
+            LOCAL_TRAINING_POLLS,
+        );
+        self.training_jobs = [&fitted_baseline, &fitted_challenger]
+            .into_iter()
+            .filter_map(|fitted| fitted.as_ref().ok())
+            .map(|artifact| provider.poll(&artifact.job, now))
+            .collect::<Result<Vec<_>>>()?;
+        let challenger = fitted_challenger.map(|artifact| artifact.teacher);
         // The baseline is calibrated on the fit set (never the holdout its
         // skill is judged on) and put on record before the challenger is
         // fitted: a challenger is only ever evaluated against a baseline the
         // registry can show, calibration included (ADR 0006, MODEL-031).
         let (fit_set, _) = dataset.split_at_fraction(spec.holdout_fraction)?;
-        let baseline = trainer
-            .fit(&spec_for(BASELINE_CLASS), &dataset, now)?
-            .calibrated_on(&fit_set)?;
+        let baseline = fitted_baseline?.teacher.calibrated_on(&fit_set)?;
         let baseline_registration = register_fit(
             &mut self.registry,
             &baseline,
@@ -2857,7 +2941,6 @@ impl LearningDesk {
             stamp_provenance(card, &provenance);
             card.self_fitted = true;
         }
-        let challenger = trainer.fit(&spec_for(CHALLENGER_CLASS), &dataset, now);
         // Skill is judged by the evaluator from the predictions each class
         // made on the holdout tail, never read from the fit's own
         // diagnostics (R12-MODEL-6001): the trainer that produced a model is
@@ -7306,6 +7389,114 @@ mod tests {
             (targets[0] - target).abs() < 1e-12,
             "the first target is not the return into the next bar"
         );
+    }
+
+    #[test]
+    fn a_learning_round_fits_through_the_research_queue_on_spot_at_standard_priority() -> Result<()>
+    {
+        // The failure this guards (R12-FINOPS-10139): the desk called the
+        // trainer directly, so the queue quota the provider port enforces
+        // bounded no fit any running process made, and no fit stated the
+        // capacity it may be placed on.
+        let mut desk = learning_desk();
+        assert!(desk.training_jobs().is_empty(), "premise: no round has run");
+        let bars = super::tests_support::learnable(400);
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("the round"))?;
+        assert!(round.registration.is_some(), "premise: the round fitted");
+
+        let jobs = desk.training_jobs();
+        assert_eq!(
+            jobs.len(),
+            2,
+            "the baseline and the challenger are each a job"
+        );
+        let families: Vec<&str> = jobs.iter().map(|job| job.spec.family.as_str()).collect();
+        assert_eq!(
+            families,
+            vec![BASELINE_CLASS.as_str(), CHALLENGER_CLASS.as_str()]
+        );
+        for job in jobs {
+            assert_eq!(job.spec.scheduling.queue, "central-research");
+            assert_eq!(job.spec.scheduling.capacity, Capacity::Spot);
+            assert_eq!(job.spec.scheduling.priority, JobPriority::Standard);
+            assert_eq!(job.state, qip_training::job::JobState::Succeeded);
+            assert_eq!(job.provider, "local-trainer");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_research_queue_refuses_a_second_unfinished_fit_and_admits_one_once_the_first_ends()
+    -> Result<()> {
+        // The bound a round runs under: one fit at a time, and a second
+        // refused before it runs rather than charged as unbudgeted compute.
+        assert_eq!(RESEARCH_QUEUE_CONCURRENCY, 1);
+        let rows: Vec<Vec<f64>> = (0..40).map(|i| vec![f64::from(i)]).collect();
+        let targets: Vec<f64> = (0..40).map(|i| f64::from(i) * 0.5).collect();
+        let times: Vec<Timestamp> = (0..40)
+            .map(|i| at().saturating_add(qip_core::Duration::from_mins(i)))
+            .collect();
+        let data = TrainingDataset::new("queue", vec!["x".to_string()], rows, targets, times)?;
+        let spec = |version: &str| {
+            TrainingSpec::new(
+                "bar-q",
+                version,
+                "central-research",
+                "queue",
+                BASELINE_CLASS,
+            )
+            .with_scheduling(research_scheduling())
+        };
+        let mut provider = research_training_provider(3);
+        let first = provider.submit(spec("0.1.0"), &data, at())?;
+        let Err(error) = provider.submit(spec("0.2.0"), &data, at()) else {
+            panic!("a second unfinished fit in the research queue was admitted");
+        };
+        assert_eq!(error.code(), "denied");
+        assert!(
+            error.message().contains("against a quota of 1"),
+            "refused for the wrong reason: {}",
+            error.message()
+        );
+        provider.poll(&first.id, at())?;
+        let finished = provider.poll(&first.id, at())?;
+        assert!(finished.state.is_terminal(), "premise: the first fit ended");
+        provider.submit(spec("0.2.0"), &data, at())?;
+        Ok(())
+    }
+
+    #[test]
+    fn a_critical_fit_on_the_research_placement_is_refused_before_it_runs() -> Result<()> {
+        // Spot only where safe: a fit something live waits on is never put
+        // on capacity that can be reclaimed mid-run.
+        let rows: Vec<Vec<f64>> = (0..40).map(|i| vec![f64::from(i)]).collect();
+        let targets: Vec<f64> = (0..40).map(|i| f64::from(i) * 0.5).collect();
+        let times: Vec<Timestamp> = (0..40)
+            .map(|i| at().saturating_add(qip_core::Duration::from_mins(i)))
+            .collect();
+        let data = TrainingDataset::new("queue", vec!["x".to_string()], rows, targets, times)?;
+        let mut provider = research_training_provider(3);
+        let standard = TrainingSpec::new(
+            "bar-q",
+            "0.1.0",
+            "central-research",
+            "queue",
+            BASELINE_CLASS,
+        )
+        .with_scheduling(research_scheduling());
+        // Premise: the same spec at standard priority is admitted.
+        research_training_provider(4).submit(standard.clone(), &data, at())?;
+        let critical = standard.with_scheduling(JobScheduling {
+            priority: JobPriority::Critical,
+            ..research_scheduling()
+        });
+        let Err(error) = provider.submit(critical, &data, at()) else {
+            panic!("a critical fit was admitted onto Spot capacity");
+        };
+        assert!(error.message().contains("may not run on Spot capacity"));
+        Ok(())
     }
 }
 

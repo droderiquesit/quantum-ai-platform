@@ -526,8 +526,14 @@ pub fn run_to_completion(
             return provider.artifact(&job.id);
         }
         if state.state.is_terminal() {
+            // The provider's reason is carried, not dropped: "failed" alone
+            // tells an operator nothing about what to fix.
+            let reason = match &state.state {
+                JobState::Failed(reason) | JobState::Cancelled(reason) => reason.as_str(),
+                _ => "",
+            };
             return Err(Error::io(format!(
-                "training job {} finished as {} after {} poll(s)",
+                "training job {} finished as {} after {} poll(s): {reason}",
                 job.id,
                 state.state.as_str(),
                 poll + 1

@@ -944,6 +944,16 @@ pub mod names {
     pub const CYCLE_COMPUTE_COST: &str = "qip_cycle_compute_cost_units";
     pub const COMPUTE_SPEND: &str = "qip_compute_spend_units";
 
+    /// What each model rung's billed spend bought, per correct call
+    /// (R12-FINOPS-10139): compute units and billed seconds over the calls
+    /// LEARN graded correct, labelled by the rung
+    /// (`IntelligenceTier::as_str`, an enum). Absent for a rung with no
+    /// correct call, because a division by zero is not a figure. Before these
+    /// the join lived only in process memory and no reader outside the
+    /// process could set a rung's cost against what it bought.
+    pub const MODEL_COST_PER_CORRECT: &str = "qip_model_cost_per_correct_units";
+    pub const MODEL_LATENCY_PER_CORRECT: &str = "qip_model_latency_per_correct_seconds";
+
     /// Resyncs of the capital reservation ledger that found holds exceeding
     /// equity — the book claiming more capital is reserved than exists.
     ///
