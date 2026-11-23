@@ -387,6 +387,94 @@ fn a_restarted_platform_resumes_its_promotions_from_the_log_alone() -> Result<()
     Ok(())
 }
 
+/// Round-81 review, R12-MODEL-4021: a promotion that names a distilled
+/// student carries, under the record's signature, what the student's own
+/// attack measured, and that is the record a restart puts back. Until the
+/// review `promote_model_from` wrote a line for each of the teacher's tests
+/// and none for the student, so no record on any log could show that a
+/// student named to the cells had been attacked, and the restart could not
+/// tell one that was from one that was not. Fails if the writer stops
+/// pushing the line (the record lacks it, and the restart quarantines the
+/// record and drops the student from the manifest), or if a complete record
+/// stops being readmitted at the card door or the manifest.
+#[test]
+fn a_promotion_naming_a_student_records_the_students_attack_and_a_restart_puts_both_back()
+-> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-kernel-student-attack-{}-{}",
+        std::process::id(),
+        start().as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let path = directory.join("events.jsonl");
+    let teacher = teacher("bar-linear-sat", "0.1.0")?;
+    let student = DistilledModel::linear("bar-linear-sat", 0.1, vec![0.5, -0.25])?;
+    let artifact = InTreeProvider::pack(&teacher)?;
+    let reference;
+    let card;
+    let first_manifest;
+    {
+        let mut first = platform_serving(PlatformConfig::default().with_event_log_file(&path))?;
+        let mut registry = ModelRegistry::new();
+        reference = registered(&mut registry, &teacher)?;
+        clear_student(&mut registry, &artifact, &student, start())?;
+        first.promote_model(&mut registry, &artifact, Some(&student), &[], start())?;
+        let record = first
+            .model_promotions()
+            .get(&reference)
+            .ok_or_else(|| Error::not_found("the promotion"))?;
+        assert_eq!(
+            record.distilled.as_ref().map(|entry| entry.digest.clone()),
+            Some(student.digest()),
+            "premise: the record names the student"
+        );
+        let prefix = format!(
+            "{}: student {}: ",
+            qip_ai::registry::DISTILLED_ADVERSARIAL_TEST,
+            student.digest()
+        );
+        assert!(
+            record.stages.iter().any(|stage| stage.starts_with(&prefix)),
+            "the record names a student and carries no line for its attack: {:?}",
+            record.stages
+        );
+        assert!(record.records_every_promotion_test());
+        assert!(
+            first.promotion_verifies(record),
+            "the student's line is not under the record's signature"
+        );
+        first_manifest = first.model_manifest()?.manifest().clone();
+        assert_eq!(
+            first_manifest.models.get(student.name()),
+            Some(&student.digest()),
+            "premise: the live process names the student"
+        );
+        card = registry
+            .get(&reference)
+            .cloned()
+            .ok_or_else(|| Error::not_found("the card"))?;
+    }
+    let mut restart_config = PlatformConfig::default().with_event_log_file(&path);
+    restart_config.seed ^= 1;
+    let restarted = platform_serving(restart_config)?;
+    assert!(
+        restarted.quarantined_model_promotions().is_empty(),
+        "a complete record was quarantined: {:?}",
+        restarted.quarantined_model_promotions()
+    );
+    assert!(restarted.model_promotions().contains_key(&reference));
+    assert_eq!(
+        restarted.model_manifest()?.manifest(),
+        &first_manifest,
+        "the restart dropped the student a complete record names"
+    );
+    let mut refilled = ModelRegistry::new();
+    restarted.readmit_promoted_card(&mut refilled, card)?;
+    assert!(refilled.admitted_at(&reference, &artifact.digest));
+    let _ = std::fs::remove_dir_all(&directory);
+    Ok(())
+}
+
 #[test]
 fn an_artifact_whose_arity_disagrees_with_its_card_is_refused_before_anything_changes() -> Result<()>
 {

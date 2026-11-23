@@ -453,6 +453,13 @@ pub struct Platform {
     /// `Platform::promote_model`. What the `trained_models` slot is
     /// produced from; see `crate::model_serving`.
     pub(crate) model_promotions: BTreeMap<String, crate::model_serving::ModelPromotion>,
+    /// The promotion records the restart refused to put back into
+    /// `model_promotions`, by reference, with why (R12-MODEL-4021): a record
+    /// that does not show every promotion test, or that names a student and
+    /// does not show the student's attack. Reported as a capture problem at
+    /// assembly and readable through
+    /// [`Platform::quarantined_model_promotions`]; written only there.
+    pub(crate) quarantined_promotions: BTreeMap<String, String>,
     /// Every registered model card as this process last journaled it, by
     /// reference, rebuilt from the log at assembly and written only by
     /// `Platform::journal_model_registry` (R12-MODEL-9003). What lets a card
@@ -7003,6 +7010,9 @@ impl Platform {
             .map(|limit| (limit.name.clone(), RuleActivity::new()))
             .collect();
 
+        // Rebuilt before the literal so the records the restart refused to
+        // put back can be reported once the platform exists (R12-MODEL-4021).
+        let resumed_promotions = crate::model_serving::resume_model_promotions(&event_log)?;
         let mut platform = Self {
             central,
             insights: crate::central::insights::CellInsights::new(config.seed),
@@ -7010,7 +7020,8 @@ impl Platform {
             admitted_sources: BTreeMap::new(),
             references: Self::resume_references(&event_log)?,
             model_provider,
-            model_promotions: crate::model_serving::resume_model_promotions(&event_log)?,
+            model_promotions: resumed_promotions.promoted,
+            quarantined_promotions: resumed_promotions.quarantined,
             world_snapshots: crate::world_snapshot::resume(&event_log)?,
             journaled_cards: crate::model_serving::resume_model_registrations(&event_log)?,
             model_pack: crate::model_serving::resume_model_pack(&event_log)?,
@@ -7424,6 +7435,10 @@ impl Platform {
         // resumed — after `resume_book`, so a restarted process stands behind
         // the positions it actually holds.
         platform.reseed_survival_ceiling(now);
+        // A quarantined promotion record is reported, never dropped silently:
+        // LEARN surfaces each line on the first cycle's record.
+        let quarantined: Vec<String> = platform.quarantined_promotions.values().cloned().collect();
+        platform.capture_problems.extend(quarantined);
         Ok(platform)
     }
 
@@ -33840,7 +33855,13 @@ mod decide_tests {
             moved_by: None,
             evidence: None,
             permitted_locations: None,
-            stages: Vec::new(),
+            // A line per promotion test, as this build writes one: the
+            // restart now also quarantines a record that lacks them
+            // (R12-MODEL-4021), and this test is about the workload check.
+            stages: qip_ai::registry::PROMOTION_TESTS
+                .iter()
+                .map(|name| format!("{name}: measured on window w"))
+                .collect(),
             rollback_parent: None,
             signature: None,
             at: Timestamp::from_secs(1_760_000_000),
@@ -33856,7 +33877,7 @@ mod decide_tests {
             .expect("journaled");
         let restored = resume_model_promotions(built.event_log()).expect("a built family restores");
         assert!(
-            restored.contains_key("qi-built@0.1.0"),
+            restored.promoted.contains_key("qi-built@0.1.0"),
             "premise: {restored:?}"
         );
 
@@ -33999,6 +34020,262 @@ mod decide_tests {
             "{}",
             refused.message()
         );
+    }
+
+    /// A promotion record of `bar-linear@{version}` at `digest`, naming
+    /// `student` to the cells, carrying one line per name in `tests`.
+    fn student_record(
+        version: &str,
+        digest: &str,
+        student: Option<&str>,
+        tests: &[&str],
+    ) -> crate::model_serving::ModelPromotion {
+        crate::model_serving::ModelPromotion {
+            reference: format!("bar-linear@{version}"),
+            name: "bar-linear".to_string(),
+            format: qip_ai::serving::ModelFormat::TeacherLinear,
+            artifact_digest: digest.to_string(),
+            arity: 2,
+            distilled: student.map(|name| crate::model_serving::DistilledManifestEntry {
+                name: name.to_string(),
+                digest: format!("{name}-digest"),
+            }),
+            displaced: Vec::new(),
+            producer: crate::model_serving::ModelProducer::TrainingPipeline,
+            moved_by: None,
+            evidence: None,
+            permitted_locations: None,
+            stages: tests
+                .iter()
+                .map(|name| format!("{name}: measured on window w"))
+                .collect(),
+            rollback_parent: None,
+            signature: None,
+            at: Timestamp::from_secs(1_760_000_000),
+        }
+    }
+
+    /// The card a restarted desk would readmit for `bar-linear@{version}`.
+    fn production_card(version: &str, digest: &str) -> qip_ai::registry::ModelCard {
+        let mut card = qip_ai::registry::ModelCard::new(
+            qip_core::ModelId::from_string(format!("m-{version}")),
+            "bar-linear",
+            version,
+            "desk",
+            Timestamp::from_secs(1_760_000_000),
+        );
+        card.stage = qip_ai::registry::ModelStage::Production;
+        card.artifact_digest = Some(digest.to_string());
+        card
+    }
+
+    /// A process over the event log at `path`, as a composition root would
+    /// assemble one; `seed` keeps a restart off the first run's ids.
+    fn over_log(path: &std::path::Path, seed_flip: u64) -> Platform {
+        let mut config = PlatformConfig::default().with_event_log_file(path);
+        config.seed ^= seed_flip;
+        let (context, _clock) =
+            qip_core::Context::deterministic(Timestamp::from_secs(1_760_000_000), config.seed);
+        Platform::new(
+            config,
+            context,
+            Telemetry::silent(),
+            listed_test_universe(&["AAPL", "MSFT"]),
+            LimitSet::conservative_default(),
+        )
+        .expect("the platform assembles over the log")
+    }
+
+    /// Journal `records` through one process over a fresh log, then assemble
+    /// a second over the same file: the restart a deployed binary performs.
+    fn restarted_over(
+        name: &str,
+        records: Vec<crate::model_serving::ModelPromotion>,
+    ) -> (Platform, std::path::PathBuf) {
+        let directory = std::env::temp_dir().join(format!(
+            "qip-kernel-{name}-{}-{}",
+            std::process::id(),
+            Timestamp::from_secs(1_760_000_000).as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let path = directory.join("events.jsonl");
+        {
+            let mut first = over_log(&path, 0);
+            for record in records {
+                first
+                    .journal_record(
+                        record,
+                        crate::model_serving::MODEL_PROMOTION_ORIGIN,
+                        Timestamp::from_secs(1_760_000_000),
+                    )
+                    .expect("journaled");
+            }
+        }
+        (over_log(&path, 1), directory)
+    }
+
+    /// Round-81 review, R12-MODEL-4021: the restart door and the card door
+    /// now read a promotion record the same way. `readmit_promoted_card`
+    /// refused a card whose record came from a build before the adversarial
+    /// test was a promotion test, while `resume_model_promotions` put the
+    /// same record back in the promoted set — and `model_manifest_targeted`
+    /// named its distilled student to the cells from there, so a restart put
+    /// an unattacked model and its student back on the manifest with the
+    /// card refused. The legacy record also carries `distilled_adversarial`,
+    /// which a substring match on `adversarial` would take for the teacher's
+    /// attack. The record is quarantined, reported and not dropped silently.
+    ///
+    /// Mutations: drop the `records_every_promotion_test` branch in
+    /// `resume_model_promotions` (the legacy record is restored and its
+    /// student named); quarantine without recording it (the report is
+    /// missing).
+    #[test]
+    fn a_legacy_promotion_record_is_quarantined_at_restart_and_its_student_is_not_on_the_manifest()
+    {
+        use qip_ai::registry::{
+            ADVERSARIAL_TEST, CALIBRATION_TEST, CLASSICAL_BASELINE_TEST,
+            DISTILLED_ADVERSARIAL_TEST, ModelRegistry, PROMOTION_TESTS, REPLAY_TEST,
+            RISK_ENVELOPE_TEST,
+        };
+        let legacy_digest = "a".repeat(64);
+        let full_digest = "c".repeat(64);
+        let legacy = student_record(
+            "1",
+            &legacy_digest,
+            Some("student-legacy"),
+            &[
+                REPLAY_TEST,
+                CALIBRATION_TEST,
+                CLASSICAL_BASELINE_TEST,
+                RISK_ENVELOPE_TEST,
+                DISTILLED_ADVERSARIAL_TEST,
+            ],
+        );
+        let mut every: Vec<&str> = PROMOTION_TESTS.to_vec();
+        every.push(DISTILLED_ADVERSARIAL_TEST);
+        let full = student_record("2", &full_digest, Some("student-full"), &every);
+        // Premises: the legacy record lacks exactly the teacher's attack, and
+        // the complete one — a control on the same log — carries every line.
+        assert!(PROMOTION_TESTS.contains(&ADVERSARIAL_TEST));
+        assert!(
+            !legacy
+                .stages
+                .iter()
+                .any(|stage| stage.starts_with("adversarial: "))
+        );
+        assert!(!legacy.records_every_promotion_test());
+        assert!(full.records_every_promotion_test());
+
+        let (restarted, directory) = restarted_over("legacy-quarantine", vec![legacy, full]);
+        assert!(
+            restarted.model_promotions().contains_key("bar-linear@2"),
+            "premise: a complete record is restored on this log"
+        );
+        assert!(
+            !restarted.model_promotions().contains_key("bar-linear@1"),
+            "a record showing no adversarial test was restored to the promoted set"
+        );
+        let manifest = restarted
+            .model_manifest()
+            .expect("the complete record's student is named")
+            .manifest()
+            .clone();
+        assert_eq!(
+            manifest.models.get("student-full"),
+            Some(&"student-full-digest".to_string()),
+            "premise: the restart names a complete record's student"
+        );
+        assert!(
+            !manifest.models.contains_key("student-legacy"),
+            "the unattacked model's student is back on the manifest: {:?}",
+            manifest.models
+        );
+        let why = restarted
+            .quarantined_model_promotions()
+            .get("bar-linear@1")
+            .cloned()
+            .expect("the legacy record was dropped without being reported");
+        assert!(why.contains("does not show every promotion test"), "{why}");
+        assert!(
+            restarted.capture_problems.contains(&why),
+            "the quarantine is not on the record LEARN surfaces: {:?}",
+            restarted.capture_problems
+        );
+        // And the card door agrees with the restart door.
+        assert!(
+            restarted
+                .readmit_promoted_card(
+                    &mut ModelRegistry::new(),
+                    production_card("1", &legacy_digest)
+                )
+                .is_err(),
+            "the legacy record's card was readmitted"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Round-81 review, R12-MODEL-4021: a record that names a distilled
+    /// student must show the student's own attack. The teacher's five lines
+    /// say nothing about the model the cells run inline, so a record with
+    /// them and without `distilled_adversarial` is refused at both doors,
+    /// while the same record naming no student — the control — restores.
+    ///
+    /// Mutation: drop the `distilled` clause from
+    /// `ModelPromotion::records_every_promotion_test` (the record is restored
+    /// and its student named).
+    #[test]
+    fn a_record_naming_a_student_without_the_students_attack_is_refused_at_restart_and_at_the_card_door()
+     {
+        use qip_ai::registry::{ModelRegistry, PROMOTION_TESTS};
+        let digest = "d".repeat(64);
+        let control_digest = "e".repeat(64);
+        let unattacked = student_record("4", &digest, Some("student-unattacked"), &PROMOTION_TESTS);
+        let control = student_record("5", &control_digest, None, &PROMOTION_TESTS);
+        // Premise: the two records carry the same lines and differ only in
+        // naming a student.
+        assert_eq!(unattacked.stages, control.stages);
+        assert!(control.records_every_promotion_test());
+        assert!(!unattacked.records_every_promotion_test());
+
+        let (restarted, directory) =
+            restarted_over("student-unattacked", vec![unattacked, control]);
+        assert!(
+            restarted.model_promotions().contains_key("bar-linear@5"),
+            "premise: the control restores"
+        );
+        assert!(
+            !restarted.model_promotions().contains_key("bar-linear@4"),
+            "a record naming a student nobody attacked was restored"
+        );
+        assert!(
+            restarted
+                .model_manifest()
+                .ok()
+                .is_none_or(|issue| !issue.manifest().models.contains_key("student-unattacked")),
+            "the unattacked student is on the manifest"
+        );
+        let why = restarted
+            .quarantined_model_promotions()
+            .get("bar-linear@4")
+            .cloned()
+            .expect("the record was dropped without being reported");
+        assert!(
+            why.contains("and distilled_adversarial for the student it names"),
+            "{why}"
+        );
+        assert!(
+            restarted
+                .readmit_promoted_card(&mut ModelRegistry::new(), production_card("4", &digest))
+                .is_err(),
+            "the card of a record naming an unattacked student was readmitted"
+        );
+        restarted
+            .readmit_promoted_card(
+                &mut ModelRegistry::new(),
+                production_card("5", &control_digest),
+            )
+            .expect("premise: the control's card is readmitted");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// R12-WORLD-9035: the cycle grows a future tree from the held world

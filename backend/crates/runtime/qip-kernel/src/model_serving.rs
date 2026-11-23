@@ -326,14 +326,23 @@ impl ModelPromotion {
     /// restart would return a model nobody attacked to production. Matched
     /// on the delimited name before the first `": "`, never as a substring,
     /// because `distilled_adversarial` contains `adversarial`.
+    ///
+    /// A record that names a distilled student must also carry a
+    /// [`qip_ai::registry::DISTILLED_ADVERSARIAL_TEST`] line: the student is
+    /// the model the cells run inline, and until the round-81 review no
+    /// record could show it had been attacked — `promote_model_from` wrote
+    /// lines for the teacher's tests alone, so a student checked only for
+    /// fidelity and one the suite attacked read the same on the log.
     pub fn records_every_promotion_test(&self) -> bool {
-        qip_ai::registry::PROMOTION_TESTS.iter().all(|name| {
-            self.stages.iter().any(|stage| {
-                stage
-                    .split_once(": ")
-                    .is_some_and(|(head, _)| head == *name)
-            })
-        })
+        let recorded = |name: &str| {
+            self.stages
+                .iter()
+                .any(|stage| stage.split_once(": ").is_some_and(|(head, _)| head == name))
+        };
+        qip_ai::registry::PROMOTION_TESTS
+            .iter()
+            .all(|name| recorded(name))
+            && (self.distilled.is_none() || recorded(qip_ai::registry::DISTILLED_ADVERSARIAL_TEST))
     }
 }
 
@@ -789,6 +798,17 @@ fn evaluation_evidence(registry: &ModelRegistry, reference: &str) -> Result<Stri
     ))
 }
 
+/// The promoted set a restarted process rebuilds from the log, and the
+/// records it refused to put back (R12-MODEL-4021).
+#[derive(Debug, Default)]
+pub(crate) struct ResumedPromotions {
+    /// What the `trained_models` slot is produced from after the restart.
+    pub(crate) promoted: BTreeMap<String, ModelPromotion>,
+    /// By reference, why a record for it was not put back. A reference a
+    /// later, complete record restored again is not listed.
+    pub(crate) quarantined: BTreeMap<String, String>,
+}
+
 /// Rebuild the promoted set from the log alone, in log order, applying
 /// each record exactly as [`Platform::promote_model`] applied it.
 ///
@@ -797,17 +817,60 @@ fn evaluation_evidence(registry: &ModelRegistry, reference: &str) -> Result<Stri
 /// does not hold as built stops the restart, rather than putting back a
 /// model the live seam would refuse. No legitimate record of that kind can
 /// exist today (ADR 0150 decision 5), so the refusal names the record.
-/// [`Platform::rollback_model`] restores a record from the same log and
-/// needs no check of its own: every record it can read either passed
-/// [`Platform::promote_model_from`] in this process or passed this one at
-/// start.
-pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<BTreeMap<String, ModelPromotion>> {
-    let mut promoted = BTreeMap::new();
+///
+/// And the same test-record check [`Platform::readmit_promoted_card`] makes
+/// (R12-MODEL-4021, round-81 review). Until it, the card door refused a
+/// record from a build before the adversarial test was a promotion test
+/// while this function put the same record back in the promoted set, and
+/// [`Platform::model_manifest_targeted`] named its distilled student to the
+/// cells from there: an unattacked model back on the manifest after a
+/// restart, with its card refused. Such a record is quarantined rather than
+/// stopping the restart, because a log that legitimately holds one from an
+/// older build would otherwise never start again: its displacements still
+/// apply (the models it retired stay retired), it is not inserted, and it
+/// is listed in [`ResumedPromotions::quarantined`], which assembly reports
+/// as a capture problem — never dropped silently.
+///
+/// [`Platform::rollback_model`] restores a record from the same log and does
+/// not make this check itself. What it reactivates must be a card in the
+/// caller's registry at the digest the log recorded, and a restarted desk
+/// refills that registry through [`Platform::readmit_promoted_card`], which
+/// refuses a quarantined record's card; a registry filled some other way is
+/// not held by this function.
+pub(crate) fn resume_model_promotions(log: &EventLog) -> Result<ResumedPromotions> {
+    let mut resumed = ResumedPromotions::default();
     for record in promotions_in(log)? {
         require_restorable(&record)?;
-        apply_promotion(&mut promoted, record);
+        if record.records_every_promotion_test() {
+            resumed.quarantined.remove(&record.reference);
+            apply_promotion(&mut resumed.promoted, record);
+        } else {
+            for displaced in &record.displaced {
+                resumed.promoted.remove(displaced);
+            }
+            resumed.quarantined.insert(
+                record.reference.clone(),
+                format!(
+                    "the promotion record of {} at artifact {} journaled at {} does not show \
+                     every promotion test ({}{}); it is not restored to the promoted set — \
+                     promote it again through the tests",
+                    record.reference,
+                    record.artifact_digest,
+                    record.at.to_rfc3339(),
+                    qip_ai::registry::PROMOTION_TESTS.join(", "),
+                    if record.distilled.is_some() {
+                        format!(
+                            ", and {} for the student it names",
+                            qip_ai::registry::DISTILLED_ADVERSARIAL_TEST
+                        )
+                    } else {
+                        String::new()
+                    }
+                ),
+            );
+        }
     }
-    Ok(promoted)
+    Ok(resumed)
 }
 
 /// The live seam's workload check, for a promotion read back from the log.
@@ -1160,6 +1223,14 @@ impl Platform {
 
     pub fn model_promotions(&self) -> &BTreeMap<String, ModelPromotion> {
         &self.model_promotions
+    }
+
+    /// The promotion records this process's restart refused to put back into
+    /// [`Self::model_promotions`], by reference, with why (R12-MODEL-4021).
+    /// Empty unless the log holds a record that does not show every promotion
+    /// test — or names a student without the student's attack.
+    pub fn quarantined_model_promotions(&self) -> &BTreeMap<String, String> {
+        &self.quarantined_promotions
     }
 
     /// Name the desk that moves the production alias in this process
@@ -1519,6 +1590,29 @@ impl Platform {
                     artifact.reference
                 ))
             })?;
+            stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
+        }
+        // R12-MODEL-4021 (round-81 review): a promotion that names a student
+        // names the model the cells run inline, so the signed record carries
+        // what the student's own attack measured — the line
+        // `run_promotion_tests_with_student` wrote under the same default
+        // policy, on the same rows, read off the card like the four above.
+        // Without it no record could show a named student was attacked, and
+        // a restart could not tell one that was from one that was not.
+        if distilled.is_some() {
+            let name = qip_ai::registry::DISTILLED_ADVERSARIAL_TEST;
+            let test = tests
+                .results
+                .get(name)
+                .filter(|test| test.passed)
+                .ok_or_else(|| {
+                    Error::denied(format!(
+                        "{} is not promoted naming a distilled student: its card holds no \
+                         passing {name} test to record; run the promotion tests with the \
+                         student before naming it",
+                        artifact.reference
+                    ))
+                })?;
             stages.push(format!("{name}: {} on {}", test.evidence, tests.window));
         }
         stages.push(format!("verifier: {verified}"));
