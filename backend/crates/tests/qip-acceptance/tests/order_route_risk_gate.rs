@@ -2787,3 +2787,172 @@ fn a_risk_discovery_naming_a_concentration_refuses_nothing_and_the_limit_on_it_d
         refused.message()
     );
 }
+
+// --- no model inside a gated decision (R12-RISK-3022) ----------------------
+
+/// Every name by which the kernel reaches a model for inference, found by
+/// reading what it imports and calls (`qip_ai::serving`, `qip_ai::language`):
+/// the serving types and the provider the platform holds, the language model
+/// it hands the organisation, the methods that serve or forecast from a
+/// model card, and the organisation itself, whose agents call the language
+/// model. `ModelPort` and `forecast_with` were looked for and are named
+/// nowhere in the tree; `qip-language-providers` is not a kernel dependency
+/// and is listed so that a new edge to it cannot arrive unseen.
+const MODEL_SURFACE: [&str; 20] = [
+    "qip_ai::serving",
+    "qip_ai::language",
+    "qip_language_providers",
+    "ModelProvider",
+    "ServedModel",
+    "ModelArtifact",
+    "NoProvider",
+    "LanguageModel",
+    "DeterministicModel",
+    "JudgedRouting",
+    "model_provider",
+    "language_model",
+    "serve",
+    "serve_model",
+    "stage_card_forecasts",
+    "standing_card_forecasts",
+    "complete",
+    "complete_structured",
+    "organisation",
+    "Organisation",
+];
+
+/// The cost router's arms that place a decision on a model rung, by the
+/// receiver the kernel holds the router under: `select` answers a
+/// determinism-not-required decision with a `JudgedRouting`, `escalate`
+/// climbs it, `route` is the router's general entry. A gated decision asks
+/// `determine` and nothing else.
+const MODEL_ROUTES: [&str; 3] = ["select", "escalate", "route"];
+
+/// Which of [`MODEL_SURFACE`] and `cost_router.`[`MODEL_ROUTES`] `code`
+/// names.
+fn model_surface_named(code: &str) -> Vec<String> {
+    let mut named: Vec<String> = MODEL_SURFACE
+        .iter()
+        .filter(|token| !token_offsets(code, token).is_empty())
+        .map(|token| token.to_string())
+        .collect();
+    for route in MODEL_ROUTES {
+        if token_offsets(code, route)
+            .into_iter()
+            .any(|at| code[..at].trim_end().ends_with("cost_router."))
+        {
+            named.push(format!("cost_router.{route}"));
+        }
+    }
+    named
+}
+
+/// Every chain from a gated kernel function to a kernel function that names
+/// a model-serving surface, as `root -> .. -> callee names [..] (file)`.
+fn gated_model_reach(functions: &[KernelFn]) -> Vec<String> {
+    let roots = gated_kernel_functions(functions);
+    kernel_closure(functions, &roots)
+        .into_iter()
+        .filter_map(|(chain, function)| {
+            let named = model_surface_named(&function.body);
+            (!named.is_empty())
+                .then(|| format!("{} names {named:?} ({})", chain.join(" -> "), function.file))
+        })
+        .collect()
+}
+
+/// The model-surface scan on a fixture: a gated decision that serves a
+/// model two calls down, through its own method and a free function, and a
+/// gated decision that asks the router to `select` a rung, are both
+/// reported with the chain; an ungated function that serves a model, and a
+/// gated one that only asks the router to `determine`, are not.
+///
+/// Mutations: drop `"model_provider"` and `"serve"` from [`MODEL_SURFACE`] —
+/// the first chain is not reported; drop the `cost_router.` arm of
+/// [`model_surface_named`] — the second is not.
+#[test]
+fn the_model_surface_scan_reports_a_gated_decision_that_reaches_a_model() {
+    let fixture = "impl Platform {\n    \
+                   fn decide(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) {\n        crate::sizing::score_it(now);\n    }\n    \
+                   fn judged(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let placed = self.cost_router.select(&context);\n    }\n    \
+                   fn routed(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let routing = self.cost_router.determine(subject, conditions);\n    }\n    \
+                   fn research(&self, artifact: &Artifact) {\n        \
+                   self.model_provider.serve(artifact);\n    }\n}\n\
+                   fn score_it(now: Timestamp) {\n    \
+                   let served = PLATFORM.model_provider.serve(&artifact);\n}\n";
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let reached: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reached,
+        BTreeSet::from([
+            "decide -> Platform::helper -> score_it names [\"model_provider\", \"serve\"] \
+             (fixture.rs)"
+                .to_string(),
+            "judged names [\"cost_router.select\"] (fixture.rs)".to_string(),
+        ]),
+        "the scan did not report exactly the gated decisions that reach a model"
+    );
+}
+
+/// R12-RISK-3022 (d): no kernel function that makes a hard-limit decision
+/// under the deterministic gate, nor any kernel function it reaches by name
+/// and owner, names a model-serving surface. `qip-kernel` links `qip-ai`, so
+/// the compiler cannot hold this for the kernel the way it holds it for the
+/// risk engine; this scan is what does.
+///
+/// The failure this prevents: a model call inside sizing, sign-off,
+/// release, the plane's halt or the leverage decision failed no test, so a
+/// gated decision could have become a judged one while still carrying the
+/// gate that says it was determined.
+///
+/// Mutation: in `Platform::survival_figures`, read
+/// `self.model_provider.name()` — this fails naming the chain
+/// `seed_survival_ceiling -> Platform::survival_figures`.
+#[test]
+fn no_gated_kernel_decision_reaches_a_model_serving_surface() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    // Premise: the names are the kernel's real inference surface, each
+    // named somewhere in its production source, so a clean result is the
+    // gated closure not reaching them rather than a list of names nobody
+    // uses.
+    let named_anywhere: BTreeSet<String> = functions
+        .iter()
+        .flat_map(|function| model_surface_named(&function.body))
+        .collect();
+    for surface in [
+        "model_provider",
+        "serve",
+        "serve_model",
+        "stage_card_forecasts",
+        "language_model",
+        "organisation",
+        "cost_router.select",
+    ] {
+        assert!(
+            named_anywhere.contains(surface),
+            "premise: the kernel names `{surface}` somewhere: {named_anywhere:?}"
+        );
+    }
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            roots.contains(function),
+            "premise: `{function}` is a root: {roots:?}"
+        );
+    }
+    let reached = gated_model_reach(&functions);
+    assert!(
+        reached.is_empty(),
+        "a gated hard-limit decision reaches a model-serving surface, so the gate it carries \
+         no longer says the decision was determined: {reached:?}"
+    );
+}
