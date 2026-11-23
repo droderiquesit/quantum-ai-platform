@@ -289,6 +289,13 @@ pub struct KillSwitchTrip {
     pub reason: String,
     /// Scope: `None` is global, otherwise the strategy or instrument halted.
     pub scope: Option<String>,
+    /// The cost router's rationale for the deterministic decision this halt
+    /// was made under, when a kernel-side hard-limit decision tripped it
+    /// through [`KillSwitch::trip_scope_under`] (R12-RISK-3022). `None` for an
+    /// operator's trip, the edge cell's own reflexes and the risk monitor's
+    /// verdict, whose routing the kernel keeps beside the monitor's pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routed: Option<String>,
 }
 
 /// One recorded clearing of a halt.
@@ -351,6 +358,7 @@ impl KillSwitch {
             tripped_by: tripped_by.into(),
             reason: reason.into(),
             scope: None,
+            routed: None,
         };
         self.history.push(trip.clone());
         // A later trip does not overwrite an earlier one: the first reason is
@@ -368,12 +376,50 @@ impl KillSwitch {
         tripped_by: impl Into<String>,
         reason: impl Into<String>,
     ) {
-        let scope = scope.into();
+        self.record_scoped(scope.into(), at, tripped_by.into(), reason.into(), None);
+    }
+
+    /// Stop one scope on a hard-limit decision the cost router determined
+    /// (R12-RISK-3022, ADR 0430).
+    ///
+    /// The kernel's halts — a cell whose records do not reconcile with the
+    /// venue — go through here, never through [`Self::trip_scope`]: the gate
+    /// is the witness that the decision to halt was routed as one that must be
+    /// a function of its inputs, and its rationale is kept on the trip so an
+    /// incident review reads which determined decision stopped the scope. The
+    /// halt itself is exactly the one [`Self::trip_scope`] records; the gate
+    /// changes what is written beside it, never whether it fires.
+    pub fn trip_scope_under(
+        &mut self,
+        gate: &qip_risk::gate::DeterministicGate,
+        scope: impl Into<String>,
+        at: Timestamp,
+        tripped_by: impl Into<String>,
+        reason: impl Into<String>,
+    ) {
+        self.record_scoped(
+            scope.into(),
+            at,
+            tripped_by.into(),
+            reason.into(),
+            Some(gate.rationale().to_string()),
+        );
+    }
+
+    fn record_scoped(
+        &mut self,
+        scope: String,
+        at: Timestamp,
+        tripped_by: String,
+        reason: String,
+        routed: Option<String>,
+    ) {
         let trip = KillSwitchTrip {
             at,
-            tripped_by: tripped_by.into(),
-            reason: reason.into(),
+            tripped_by,
+            reason,
             scope: Some(scope.clone()),
+            routed,
         };
         self.history.push(trip.clone());
         self.scoped.entry(scope).or_insert(trip);

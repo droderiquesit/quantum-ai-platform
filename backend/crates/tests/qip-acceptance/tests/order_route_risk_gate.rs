@@ -936,32 +936,18 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
         .find("#[cfg(test)]")
         .map_or(source.as_str(), |at| &source[..at]);
 
-    // Each function: from one `fn ` item start to the next.
-    let starts: Vec<usize> = production
-        .match_indices("    pub fn ")
-        .chain(production.match_indices("    fn "))
-        .map(|(at, _)| at)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    // Each function at any visibility — `pub(crate) fn`, `const fn` and the
+    // rest split an item as `fn` does — and a limit check by either name:
+    // `PreTradeChecker::check` is the same evaluation as
+    // `check_with_working`, and a method reaching it would bypass nothing a
+    // scan for only one name could see.
     let mut checking = Vec::new();
     let mut ungated = Vec::new();
-    for (index, start) in starts.iter().enumerate() {
-        let end = starts.get(index + 1).copied().unwrap_or(production.len());
-        let item = &production[*start..end];
-        if !item.contains(".check_with_working(") {
+    for (name, item) in function_items(production) {
+        if !item.contains(".check_with_working(") && !item.contains(".check(") {
             continue;
         }
-        let name = item
-            .trim_start()
-            .trim_start_matches("pub ")
-            .trim_start_matches("fn ")
-            .split('(')
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let signature = &item[..item.find('{').unwrap_or(item.len())];
-        if !demands_the_gate(signature) {
+        if !demands_the_gate(signature_of(item)) {
             ungated.push(name.clone());
         }
         checking.push(name);
@@ -980,11 +966,13 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
          `Platform::determine_pretrade(..)?.gate()` (R12-RISK-3022, ADR 0430)"
     );
 
-    // A literal is the struct name after `=` or a closure's `|`; the
-    // declaration, the `impl` and a `-> SubmissionResult {` return type are
-    // not results.
-    let literals = production.matches("= SubmissionResult {").count()
-        + production.matches("| SubmissionResult {").count();
+    // Every `SubmissionResult {` is a literal except the declaration, the
+    // `impl` and a `-> SubmissionResult {` return type, so a literal after
+    // `return`, `Ok(` or anything else is counted too.
+    let literals = production.matches("SubmissionResult {").count()
+        - production.matches("pub struct SubmissionResult {").count()
+        - production.matches("impl SubmissionResult {").count()
+        - production.matches("-> SubmissionResult {").count();
     assert!(
         literals > 0,
         "premise: the manager builds submission results"
@@ -996,5 +984,349 @@ fn every_order_manager_limit_check_demands_the_deterministic_gate() {
         literals + 1,
         "every SubmissionResult the manager builds, and the ladder admission, must carry the \
          gate's rationale"
+    );
+}
+/// Whether `line` declares a function, at any visibility and with any of the
+/// qualifiers Rust allows before `fn`, and its name if so.
+///
+/// The order-manager scan once split items only on `    pub fn ` and
+/// `    fn `, so a `pub(crate) fn`, `pub(super) fn` or `const fn` written after
+/// `OrderManager::submit` was read as part of `submit`, and an ungated limit
+/// check inside it passed under `submit`'s gate (round 80's review).
+fn function_name(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    if let Some(after) = rest.strip_prefix("pub") {
+        rest = after.trim_start();
+        if let Some(after) = rest.strip_prefix('(') {
+            rest = after.split_once(')')?.1.trim_start();
+        }
+    }
+    for qualifier in ["const ", "async ", "unsafe ", "extern \"C\" "] {
+        if let Some(after) = rest.strip_prefix(qualifier) {
+            rest = after.trim_start();
+        }
+    }
+    let rest = rest.strip_prefix("fn ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every function in `source`, as its name and its text from the line that
+/// declares it to the line before the next declaration.
+fn function_items(source: &str) -> Vec<(String, &str)> {
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for line in source.split_inclusive('\n') {
+        if let Some(name) = function_name(line) {
+            starts.push((offset, name));
+        }
+        offset += line.len();
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(index, (start, name))| {
+            let end = starts
+                .get(index + 1)
+                .map_or(source.len(), |(next, _)| *next);
+            (name.clone(), &source[*start..end])
+        })
+        .collect()
+}
+
+/// A function's signature: its text up to the brace that opens its body.
+fn signature_of(item: &str) -> &str {
+    &item[..item.find('{').unwrap_or(item.len())]
+}
+
+#[test]
+fn the_function_splitter_reads_every_visibility_and_qualifier() {
+    let source = "    pub fn a(gate: &DeterministicGate) {\n        x.check(y);\n    }\n\
+                  \x20   pub(crate) fn b() {\n        x.check(y);\n    }\n\
+                  \x20   const fn c() {}\n    pub(super) async fn d() {}\n    fn e() {}\n";
+    let names: Vec<String> = function_items(source)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, ["a", "b", "c", "d", "e"]);
+    let (_, b) = &function_items(source)[1];
+    assert!(
+        !demands_the_gate(signature_of(b)),
+        "b's item must not inherit a's gate"
+    );
+}
+
+/// The kernel functions that make a book-level hard-limit decision, and the
+/// call by which each one makes it (R12-RISK-3022).
+///
+/// Each is the only caller of its call in the kernel's production source, and
+/// each must demand `gate: &DeterministicGate` by signature and record the
+/// gate's rationale. The calls that only *restrict* — `Proposal::veto`,
+/// `SurvivalGovernor::release_nothing`, which lowers the survival ceiling to
+/// what the book stands in — are deliberately not here: a restriction needs
+/// no witness, and demanding one would let a router refusal stop a control
+/// from tightening.
+const KERNEL_HARD_LIMIT_CALLS: [(&str, &str); 4] = [
+    ("size_survival", "self.governor.size("),
+    ("seed_survival_ceiling", "self.governor.seed("),
+    ("sign_off_drafts", "proposal.approve("),
+    ("advance_released", "proposal.release("),
+];
+
+/// R12-RISK-3022 beyond the order manager: the survival waterfall, the
+/// sign-off of a draft and the release of an approved proposal are each made
+/// only by a kernel function that demands, by signature, the deterministic
+/// gate only the cost router mints, and records its rationale.
+///
+/// The failure this prevents: until this change the three decisions were
+/// made inline in DECIDE and ACT with no routing at all — deterministic by
+/// the absence of a model in the call, not by anything a reader could check —
+/// so a second path to `Proposal::approve` or `SurvivalGovernor::size`
+/// written without asking the router compiled and ran exactly as well.
+#[test]
+fn every_kernel_hard_limit_decision_demands_the_deterministic_gate() {
+    let mut found: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut ungated = Vec::new();
+    let mut unrecorded = Vec::new();
+    let mut kernel_files = Vec::new();
+    rust_files(
+        &crates_root().join("runtime/qip-kernel/src"),
+        &mut kernel_files,
+    );
+    assert!(
+        kernel_files.len() > 10,
+        "premise: the kernel's sources were found"
+    );
+    for path in &kernel_files {
+        let source = std::fs::read_to_string(path).expect("kernel source is readable");
+        let production = qip_acceptance::production_text(&source);
+        for (name, item) in function_items(&production) {
+            for (_, call) in KERNEL_HARD_LIMIT_CALLS {
+                if !item.contains(call) {
+                    continue;
+                }
+                found
+                    .entry(call.to_string())
+                    .or_default()
+                    .push(name.clone());
+                if !demands_the_gate(signature_of(item)) {
+                    ungated.push(format!("{name} ({call})"));
+                }
+                if !item.contains("gate.rationale().to_string()") {
+                    unrecorded.push(format!("{name} ({call})"));
+                }
+            }
+        }
+    }
+    // Premise, and the exact placement: each call is made by exactly the one
+    // function named for it, so a second caller is a failure here whether or
+    // not it took a gate.
+    for (function, call) in KERNEL_HARD_LIMIT_CALLS {
+        assert_eq!(
+            found.get(call).map(Vec::as_slice),
+            Some(&[function.to_string()][..]),
+            "`{call}` must be made by `{function}` alone in the kernel's production source"
+        );
+    }
+    assert!(
+        ungated.is_empty(),
+        "these kernel functions make a hard-limit decision without demanding \
+         `gate: &DeterministicGate`: {ungated:?}. Take the gate from \
+         `Platform::determine_book_decision(..)?.gate()` (R12-RISK-3022, ADR 0430)"
+    );
+    assert!(
+        unrecorded.is_empty(),
+        "these kernel functions take the gate but do not record its rationale: {unrecorded:?}"
+    );
+}
+
+/// R12-RISK-3022 on the kill-switch path beyond `RiskMonitor::enforce`: no
+/// kernel production source trips the kill switch through the ungated
+/// `KillSwitch::trip_scope` or `trip_global`, and every kernel function that
+/// trips a scope under a gate demands that gate by signature.
+///
+/// The failure this prevents: the central plane halted a cell whose records
+/// did not reconcile with `kill_switch.trip_scope(..)`, a hard-limit decision
+/// made with no routing, and nothing distinguished it from an operator's
+/// trip. A kernel halt now goes through `trip_scope_under`, or through the
+/// monitor's `enforce`, which acts on a verdict the routed monitor gave.
+#[test]
+fn every_kernel_kill_switch_trip_demands_the_deterministic_gate() {
+    let mut kernel_files = Vec::new();
+    rust_files(
+        &crates_root().join("runtime/qip-kernel/src"),
+        &mut kernel_files,
+    );
+    let mut ungated_trips = Vec::new();
+    let mut gated = Vec::new();
+    let mut ungated = Vec::new();
+    for path in &kernel_files {
+        let source = std::fs::read_to_string(path).expect("kernel source is readable");
+        let production = qip_acceptance::production_text(&source);
+        for call in [".trip_scope(", ".trip_global("] {
+            if production.contains(call) {
+                ungated_trips.push(format!("{} ({call})", path.display()));
+            }
+        }
+        for (name, item) in function_items(&production) {
+            if item.contains(".trip_scope_under(") {
+                if !demands_the_gate(signature_of(item)) {
+                    ungated.push(name.clone());
+                }
+                gated.push(name);
+            }
+        }
+    }
+    assert!(
+        ungated_trips.is_empty(),
+        "the kernel trips the kill switch without a deterministic gate: {ungated_trips:?}. \
+         Use `KillSwitch::trip_scope_under` with a gate from \
+         `Platform::determine_book_decision` (R12-RISK-3022)"
+    );
+    assert_eq!(
+        gated,
+        ["ingest"],
+        "premise: the central plane's ingest is the kernel's one gated trip"
+    );
+    assert!(
+        ungated.is_empty(),
+        "these kernel functions trip a scope under a gate they do not demand: {ungated:?}"
+    );
+}
+
+// --- the edge cell's pre-trade check (DECISION, R12-RISK-3022) -------------
+
+/// The crates that can put a model on a decision: the language-model crate,
+/// its providers, and the cost router, whose `Judged` arm names a model rung.
+///
+/// The edge cell's `CellRiskGate` calls `PreTradeChecker::check`, and a cell
+/// cannot hold a router-minted `DeterministicGate`: the router links
+/// `qip-ai`. So the cell's pre-trade check is held to never route to a model
+/// by its dependency closure instead — neither `qip-edge` nor the binary that
+/// hosts it links any of these, directly or through any crate they link.
+const MODEL_CRATES: [&str; 3] = ["qip-ai", "qip-language-providers", "qip-cost-router"];
+
+/// Each workspace crate's normal dependencies on other workspace crates, read
+/// from its `Cargo.toml`. Dev-dependencies are left out: they never reach the
+/// binary a node runs.
+fn workspace_dependencies() -> BTreeMap<String, BTreeSet<String>> {
+    let mut manifests = BTreeMap::new();
+    for group in std::fs::read_dir(crates_root()).expect("the crates root is readable") {
+        let group = group.expect("a crate group").path();
+        let Ok(crates) = std::fs::read_dir(&group) else {
+            continue;
+        };
+        for krate in crates.flatten() {
+            let manifest = krate.path().join("Cargo.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            let name = krate.file_name().to_string_lossy().to_string();
+            manifests.insert(name, normal_dependencies(&text));
+        }
+    }
+    manifests
+}
+
+/// The `qip-*` names a manifest lists under `[dependencies]` or a
+/// `[target.*.dependencies]` table.
+fn normal_dependencies(manifest: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut in_dependencies = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_dependencies = line == "[dependencies]"
+                || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
+            continue;
+        }
+        if !in_dependencies {
+            continue;
+        }
+        let key: String = line
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        if key.starts_with("qip-") {
+            found.insert(key);
+        }
+    }
+    found
+}
+
+/// Every model crate reachable from `root`, with the path that reaches it.
+fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Vec<String> {
+    let mut reached = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![vec![root.to_string()]];
+    while let Some(path) = stack.pop() {
+        let at = path.last().cloned().unwrap_or_default();
+        if !seen.insert(at.clone()) {
+            continue;
+        }
+        if MODEL_CRATES.contains(&at.as_str()) {
+            reached.push(path.join(" -> "));
+            continue;
+        }
+        for next in manifests.get(&at).into_iter().flatten() {
+            let mut longer = path.clone();
+            longer.push(next.clone());
+            stack.push(longer);
+        }
+    }
+    reached
+}
+
+#[test]
+fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
+    let manifests = workspace_dependencies();
+    // Premise: the manifests were read and the walk sees what it must. Every
+    // model crate is a workspace member, the cost router reaches `qip-ai`, and
+    // the cell links the crate whose checker it calls.
+    for model in MODEL_CRATES {
+        assert!(
+            manifests.contains_key(model),
+            "premise: {model} is a workspace crate"
+        );
+    }
+    assert!(
+        manifests["qip-cost-router"].contains("qip-ai"),
+        "premise: the cost router links the language-model crate"
+    );
+    assert!(
+        manifests["qip-edge"].contains("qip-risk-engine"),
+        "premise: the cell links the crate whose PreTradeChecker its risk gate calls"
+    );
+    assert!(
+        manifests["qip-edge-node"].contains("qip-edge"),
+        "premise: the node links the cell"
+    );
+
+    for root in ["qip-edge", "qip-edge-node"] {
+        let reached = model_reach(&manifests, root);
+        assert!(
+            reached.is_empty(),
+            "{root} can reach a crate that routes to a model, so the cell's pre-trade check \
+             is no longer held deterministic by its closure: {reached:?}"
+        );
+    }
+
+    // The same walk on a scratch copy of the manifest data with one model
+    // edge added two links below the cell: it must be found, or the clean
+    // result above is the walk failing to look.
+    let mut scratch = manifests.clone();
+    scratch
+        .get_mut("qip-risk")
+        .expect("qip-risk is a workspace crate")
+        .insert("qip-cost-router".to_string());
+    let reached = model_reach(&scratch, "qip-edge-node");
+    assert!(
+        reached
+            .iter()
+            .any(|path| path.ends_with("-> qip-risk -> qip-cost-router")),
+        "a model edge added below the cell went unseen: {reached:?}"
     );
 }

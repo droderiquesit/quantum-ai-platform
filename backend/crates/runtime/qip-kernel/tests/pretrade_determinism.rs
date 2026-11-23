@@ -135,3 +135,84 @@ fn the_order_manager_ran_the_pre_trade_check_under_the_routing_the_platform_kept
     assert_eq!(refusals[0].routed, routing.rationale());
     Ok(())
 }
+
+/// The router's opening words for a determined decision about `subject`,
+/// written out here so the assertion does not read the subject back through
+/// the kernel that routed it.
+fn determined(subject: &str) -> String {
+    format!(
+        "'{subject}' must be a function of its inputs, so it is answered in deterministic code under "
+    )
+}
+
+/// R12-RISK-3022 on the kill-switch path beyond the risk monitor: a cell
+/// whose records do not reconcile is halted by `Platform::ingest_cell_report`
+/// — the seam `qip-api`'s mesh hands every cell report to — under a gate the
+/// cost router minted for that halt, and the trip the operator reads carries
+/// the router's rationale. Fails if the central plane trips the cell's scope
+/// through the ungated `KillSwitch::trip_scope`, or if the platform hands
+/// the plane a gate determined for another decision.
+#[test]
+fn a_cell_halted_for_a_reconciliation_break_was_halted_under_a_determined_routing() -> Result<()> {
+    use qip_compliance::incident::HaltScope;
+    use qip_kernel::central::{BreakOrigin, CellReport, ReconciliationBreak};
+    use qip_kernel::platform::HardLimitDecision;
+
+    let mut platform = platform()?;
+    assert!(
+        platform.autonomy().kill_switch().history().is_empty(),
+        "premise: nothing has tripped"
+    );
+    let broken = CellReport::new("cell-lon-1", start()).with_break(ReconciliationBreak {
+        instrument: "AAA".to_string(),
+        cell_quantity: dec!("10"),
+        external_quantity: dec!("4"),
+        detail: "six lots the venue has no record of".to_string(),
+        origin: BreakOrigin::Book,
+    });
+    let ingestion = platform.ingest_cell_report(broken, start())?;
+    assert_eq!(
+        ingestion.halted,
+        Some(HaltScope::Cell("cell-lon-1".to_string())),
+        "premise: a break halts the cell"
+    );
+    let trip = platform
+        .autonomy()
+        .kill_switch()
+        .scoped_trip("cell-lon-1")
+        .expect("premise: the cell's scope is tripped");
+    let routed = trip
+        .routed
+        .as_deref()
+        .expect("the halt was tripped under no deterministic gate");
+    assert!(
+        routed.starts_with(&determined("reconciliation halt for cell-lon-1")),
+        "the halt was tripped under a gate for another decision: {routed}"
+    );
+    assert_eq!(
+        platform.hard_limit_routing(HardLimitDecision::ReconciliationHalt),
+        Some(routed),
+        "the platform kept a different routing from the one the plane tripped under"
+    );
+    Ok(())
+}
+
+/// R12-RISK-3022 on the survival waterfall: the ceiling the survival limit
+/// refuses a gross-raising order against is seeded at assembly — on
+/// `PlatformConfig::default`, as every composition root builds the platform
+/// — under a gate the cost router minted for it. Fails if the seed stops
+/// recording the gate it ran under.
+#[test]
+fn the_survival_ceiling_is_seeded_at_assembly_under_a_determined_routing() -> Result<()> {
+    use qip_kernel::platform::HardLimitDecision;
+
+    let platform = platform()?;
+    let rationale = platform
+        .hard_limit_routing(HardLimitDecision::SurvivalCeiling)
+        .expect("the survival ceiling was seeded under no deterministic gate");
+    assert!(
+        rationale.starts_with(&determined("survival ceiling for the book")),
+        "the survival ceiling was seeded under a gate for another decision: {rationale}"
+    );
+    Ok(())
+}

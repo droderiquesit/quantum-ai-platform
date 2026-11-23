@@ -56,6 +56,7 @@ use qip_learning_engine::attribution::{Attribution, Attributor, PositionPeriod};
 use qip_lifecycle::horizon::HorizonAssurance;
 use qip_mesh::delta::{DeltaOrder, DeltaRefusal};
 use qip_observability::metrics::{Metrics, labels, names};
+use qip_risk::gate::DeterministicGate;
 use qip_risk_engine::autonomy::KillSwitch;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -2684,8 +2685,16 @@ impl CentralPlane {
     /// already has one and two kill switches is one too many: an operator
     /// looking at `qip_risk_engine::autonomy` must see every halt, including
     /// the ones the central plane caused.
+    ///
+    /// The gate is the witness the halt decision demands (R12-RISK-3022): a
+    /// cell whose records do not reconcile is stopped by a hard-limit decision
+    /// the cost router determined, and `Platform::ingest_cell_report` obtains
+    /// it from `Platform::determine_book_decision` before the report is read.
+    /// It changes nothing about whether the halt fires — only that the trip
+    /// carries the rationale of the decision it was made under.
     pub fn ingest(
         &mut self,
+        gate: &DeterministicGate,
         report: CellReport,
         kill_switch: &mut KillSwitch,
         now: Timestamp,
@@ -2819,7 +2828,8 @@ impl CentralPlane {
             // Scoped, not global. The other cells' books still reconcile, and
             // stopping them would turn one cell's bookkeeping failure into the
             // platform's outage.
-            kill_switch.trip_scope(
+            kill_switch.trip_scope_under(
+                gate,
                 report.cell.clone(),
                 now,
                 "central-plane:reconciliation",
@@ -3784,6 +3794,14 @@ const fn order_direction(side: BookSide) -> Decimal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A gate minted by hand for a test that drives the central plane directly.
+    /// Production obtains it from `Platform::determine_book_decision`; a test of
+    /// the plane is not a path an order takes (R12-RISK-3022).
+    fn halt_gate() -> qip_risk::gate::DeterministicGate {
+        qip_risk::gate::DeterministicGate::minted_by_router_determination(
+            "test: reconciliation halt",
+        )
+    }
     use qip_capital::exposure::CellPosition;
     use qip_contracts::venue::VenueId;
     use qip_core::{Currency, dec};
@@ -3957,7 +3975,7 @@ mod tests {
                 .with_episodes(vec![episode.clone()])
         };
         plane
-            .ingest(report(), autonomy.kill_switch_mut(), now())
+            .ingest(&halt_gate(), report(), autonomy.kill_switch_mut(), now())
             .expect("a report carrying one episode ingests");
         assert_eq!(plane.episodes(CELL), &[episode.clone()][..]);
 
@@ -3965,7 +3983,7 @@ mod tests {
         // carry it: still one.
         let later = now().saturating_add(Duration::from_secs(1));
         plane
-            .ingest(report(), autonomy.kill_switch_mut(), later)
+            .ingest(&halt_gate(), report(), autonomy.kill_switch_mut(), later)
             .expect("the repeated view ingests");
         assert_eq!(
             plane.episodes(CELL).len(),
@@ -3987,6 +4005,7 @@ mod tests {
             .collect();
         plane
             .ingest(
+                &halt_gate(),
                 CellReport::new(CELL, later)
                     .with_region("europe-west2")
                     .with_episodes(flood.clone()),
@@ -4038,6 +4057,7 @@ mod tests {
         // Sequence 5: the cell states ten of AAA the centre settled none of.
         let first = plane
             .ingest(
+                &halt_gate(),
                 CellReport::new(CELL, now()).with_advisory_positions(stated("10"), 5),
                 autonomy.kill_switch_mut(),
                 now(),
@@ -4057,6 +4077,7 @@ mod tests {
         let later = now().saturating_add(Duration::from_secs(1));
         let second = plane
             .ingest(
+                &halt_gate(),
                 CellReport::new(CELL, later).with_advisory_positions(Vec::new(), 7),
                 autonomy.kill_switch_mut(),
                 later,
@@ -4071,6 +4092,7 @@ mod tests {
         let backwards = later.saturating_add(Duration::from_secs(1));
         let refusal = plane
             .ingest(
+                &halt_gate(),
                 CellReport::new(CELL, backwards).with_advisory_positions(stated("3"), 6),
                 autonomy.kill_switch_mut(),
                 backwards,
@@ -4365,7 +4387,7 @@ mod tests {
                 detail: "six lots the venue has no record of".to_string(),
                 origin: BreakOrigin::Book,
             });
-        let outcome = plane.ingest(report, autonomy.kill_switch_mut(), now());
+        let outcome = plane.ingest(&halt_gate(), report, autonomy.kill_switch_mut(), now());
 
         // Premise: the ingestion really did refuse after the trip, and the
         // cell really was halted, so a count keyed on `Ok` would have missed

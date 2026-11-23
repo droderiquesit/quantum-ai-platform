@@ -193,6 +193,7 @@ use qip_reasoning_engine::engine::{ReasoningEngine, ReasoningOutcome};
 use qip_reasoning_engine::hypothesis::Claim;
 use qip_risk::aggregate::{AggregateFigures, RiskAggregates};
 use qip_risk::factor::FactorRisk;
+use qip_risk::gate::DeterministicGate;
 use qip_risk::limits::{LimitSet, MarginBasis, RiskState, VenueMargin};
 use qip_risk_engine::autonomy::{AutonomyController, OperatorIdentity};
 use qip_risk_engine::monitor::{MonitorAction, RiskMonitor};
@@ -915,6 +916,11 @@ pub struct Platform {
     /// arm, obtained through [`Router::determine`]; see
     /// [`Self::observe_book_under_routing`].
     monitor_routing: Option<DeterministicRouting>,
+    /// How the most recent kernel-side hard-limit decision of each kind was
+    /// routed (R12-RISK-3022): the survival ceiling, sign-off, release and a
+    /// reconciliation halt. Each function that makes one demands the gate the
+    /// routing mints; this is the record of which routing that was.
+    hard_limit_routings: BTreeMap<HardLimitDecision, String>,
     /// What the most recent cycle's REASON stage was routed to, and whether
     /// the panel was convened as a result.
     ///
@@ -4656,6 +4662,36 @@ impl UniverseAssembled {
     }
 }
 
+/// The subject the survival ceiling is routed under (R12-RISK-3022).
+pub const SURVIVAL_CEILING_SUBJECT: &str = "survival ceiling for the book";
+/// The subject the sign-off of draft proposals is routed under.
+pub const SIGN_OFF_SUBJECT: &str = "sign-off of the cycle's draft proposals";
+/// The subject the release of approved proposals is routed under.
+pub const RELEASE_SUBJECT: &str = "release of the cycle's approved proposals";
+
+/// A kernel-side hard-limit decision the cost router determines before the
+/// function that makes it runs (R12-RISK-3022, ADR 0430).
+///
+/// One variant per decision whose function demands a
+/// [`qip_risk::gate::DeterministicGate`] by signature: the order manager's
+/// pre-trade check and the risk monitor's pass keep their own records
+/// ([`Platform::pretrade_routing`], [`Platform::monitor_routing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HardLimitDecision {
+    /// The survival waterfall's ceiling seeded with no construction: at
+    /// assembly and when the policy changes.
+    SurvivalCeiling,
+    /// The survival waterfall and confidence governor run for a construction
+    /// in DECIDE.
+    SurvivalSizing,
+    /// The two-control sign-off of a draft proposal in ACT.
+    SignOff,
+    /// The release of approved proposals to execution in ACT.
+    Release,
+    /// The scoped halt of a cell whose records do not reconcile.
+    ReconciliationHalt,
+}
+
 /// How an attributed fill reached the user books, on the record.
 ///
 /// One variant per choice the kernel can make, so a reader of the log can
@@ -7071,6 +7107,7 @@ impl Platform {
             cost_router: Router::default(),
             pretrade_routing: None,
             monitor_routing: None,
+            hard_limit_routings: BTreeMap::new(),
             reason_routing: None,
             routing_judgements: BTreeMap::new(),
             routing_reputation: routing_reputation_resumed,
@@ -7372,7 +7409,7 @@ impl Platform {
         // The survival ceiling the installed limit reads, from the book as
         // resumed — after `resume_book`, so a restarted process stands behind
         // the positions it actually holds.
-        platform.seed_survival_ceiling(now);
+        platform.reseed_survival_ceiling(now);
         Ok(platform)
     }
 
@@ -8355,13 +8392,41 @@ impl Platform {
         // derivation reads `last_heard` and not the log.
         let (_, problems) = self.review_region_darkness(now);
         self.capture_problems.extend(problems);
+        // The halt a break causes is a hard-limit decision, so it is routed
+        // as one before the report is read (R12-RISK-3022): the plane trips
+        // the cell's scope only under the gate this routing mints. A routing
+        // the router refuses is not a reason to read the report unhalted: the
+        // platform halts globally, as the ACT stage does when the book's
+        // limits cannot be routed, and the report is refused.
+        let halt_routing = match self
+            .determine_book_decision(&format!("reconciliation halt for {reporting_cell}"))
+        {
+            Ok(routing) => routing,
+            Err(error) => {
+                let action = MonitorAction::HaltGlobally {
+                    reason: format!(
+                        "the reconciliation halt for {reporting_cell} could not be routed as a \
+                             deterministic decision ({}); halted rather than read on an unproven path",
+                        error.message()
+                    ),
+                };
+                self.monitor
+                    .enforce(&action, self.autonomy.kill_switch_mut(), now);
+                return Err(error);
+            }
+        };
+        let halt_gate = halt_routing.gate();
+        self.hard_limit_routings.insert(
+            HardLimitDecision::ReconciliationHalt,
+            halt_gate.rationale().to_string(),
+        );
         // Two disjoint fields, borrowed as fields rather than through
         // accessors, which is what lets the central plane trip the platform's
         // own switch instead of keeping one of its own.
         let Self {
             central, autonomy, ..
         } = self;
-        let ingested = central.ingest(report, autonomy.kill_switch_mut(), now);
+        let ingested = central.ingest(&halt_gate, report, autonomy.kill_switch_mut(), now);
         let ingestion = match ingested {
             Ok(ingestion) => ingestion,
             Err(error) => {
@@ -13363,7 +13428,7 @@ impl Platform {
         let signals = self.governor.signals().clone();
         self.governor = crate::survival::SurvivalGovernor::with_policy(policy);
         *self.governor.signals_mut() = signals;
-        self.seed_survival_ceiling(self.context.now());
+        self.reseed_survival_ceiling(self.context.now());
     }
 
     /// Apply the generated joint tail world to the survival reserve and hedge
@@ -13718,13 +13783,33 @@ impl Platform {
             )));
         }
         self.ledger_obligations = Some(obligations);
-        self.seed_survival_ceiling(self.context.now());
+        self.reseed_survival_ceiling(self.context.now());
         Ok(())
     }
 
     /// The ledger reading the survival waterfall withholds from, if any.
     pub fn ledger_obligations(&self) -> Option<&qip_capital::LedgerObligations> {
         self.ledger_obligations.as_ref()
+    }
+
+    /// Route the survival ceiling as a deterministic decision and seed it
+    /// under the gate the routing mints (R12-RISK-3022).
+    ///
+    /// A routing the router refuses seeds nothing higher: the ceiling falls to
+    /// what the book already stands in, exactly as a construction that sized
+    /// nothing leaves it, because a ceiling that could not be shown to be
+    /// derived deterministically is not one to trade against.
+    fn reseed_survival_ceiling(&mut self, now: Timestamp) {
+        match self.determine_book_decision(SURVIVAL_CEILING_SUBJECT) {
+            Ok(routing) => self.seed_survival_ceiling(&routing.gate(), now),
+            Err(_) => self.governor.release_nothing(
+                RiskState::from_figures(&self.aggregates).gross_exposure,
+                self.reservations
+                    .reserved_total()
+                    .checked_sub(self.yield_parked(now))
+                    .unwrap_or(Decimal::ZERO),
+            ),
+        }
     }
 
     /// Derive the survival ceiling with no construction: at assembly and when
@@ -13736,7 +13821,16 @@ impl Platform {
     /// next DECIDE re-derives the figure and reports any refusal on the cycle.
     /// Failing assembly instead would stop a process because its book is
     /// stressed — the one moment an operator most needs it running to reduce.
-    fn seed_survival_ceiling(&mut self, now: Timestamp) {
+    ///
+    /// Demands the gate the cost router mints for the survival ceiling
+    /// (R12-RISK-3022): the ceiling is what the survival limit refuses a
+    /// gross-raising order against, so deriving it is a hard-limit decision.
+    /// Reached only through [`Self::reseed_survival_ceiling`].
+    fn seed_survival_ceiling(&mut self, gate: &DeterministicGate, now: Timestamp) {
+        self.hard_limit_routings.insert(
+            HardLimitDecision::SurvivalCeiling,
+            gate.rationale().to_string(),
+        );
         let figures = self
             .deployable_capital(now)
             .and_then(|free| self.survival_figures(free, now));
@@ -18010,6 +18104,27 @@ impl Platform {
         )
     }
 
+    /// Ask the cost router to determine a book-level hard-limit decision —
+    /// the survival ceiling, sign-off, release, a reconciliation halt — as one
+    /// that must be deterministic (R12-RISK-3022).
+    ///
+    /// Beside [`Self::determine_pretrade`] and for the same reason: the gate
+    /// the routing mints is what each kernel function that makes one of those
+    /// decisions demands by signature, so a path into one that never asked the
+    /// router has nothing to pass. Routed under the book's conditions, which
+    /// label the record and choose nothing, because the `Required` arm consults
+    /// no ladder.
+    pub fn determine_book_decision(&self, subject: &str) -> Result<DeterministicRouting> {
+        self.cost_router.determine(subject, self.book_conditions())
+    }
+
+    /// The rationale of the gate the last decision of `kind` was made under,
+    /// as the cost router wrote it, or `None` if the platform has not made one
+    /// (R12-RISK-3022).
+    pub fn hard_limit_routing(&self, kind: HardLimitDecision) -> Option<&str> {
+        self.hard_limit_routings.get(&kind).map(String::as_str)
+    }
+
     /// How the last submitted order's pre-trade check was routed.
     pub fn pretrade_routing(&self) -> Option<&DeterministicRouting> {
         self.pretrade_routing.as_ref()
@@ -20658,6 +20773,34 @@ impl Platform {
         Ok(free)
     }
 
+    /// Run the survival waterfall and the confidence governor for one
+    /// construction under the gate the cost router minted for the survival
+    /// ceiling (R12-RISK-3022).
+    ///
+    /// **The only caller of `SurvivalGovernor::size`.** The waterfall's
+    /// refusals and the ceiling it sets are exactly the governor's; the gate
+    /// changes nothing about them, and its rationale is recorded as the
+    /// routing the ceiling was derived under.
+    fn size_survival(
+        &mut self,
+        gate: &DeterministicGate,
+        figures: crate::survival::LedgerFigures,
+        views: &[crate::confidence::ThesisView],
+        now: Timestamp,
+    ) -> Result<crate::survival::SizingBudget> {
+        self.hard_limit_routings.insert(
+            HardLimitDecision::SurvivalSizing,
+            gate.rationale().to_string(),
+        );
+        self.governor.size(
+            figures,
+            self.stress.as_ref().map(StressReport::worlds).as_ref(),
+            STRESS_LOSS_TOLERANCE,
+            views,
+            now,
+        )
+    }
+
     /// Size the approved theses, and say which of them had to be left out.
     ///
     /// The second half of the return is the point. A thesis whose mark cannot
@@ -20784,13 +20927,11 @@ impl Platform {
             })
             .collect();
         let figures = self.survival_figures(free, now)?;
-        let sizing = self.governor.size(
-            figures,
-            self.stress.as_ref().map(StressReport::worlds).as_ref(),
-            STRESS_LOSS_TOLERANCE,
-            &views,
-            now,
-        )?;
+        // Routed before the waterfall runs (R12-RISK-3022). A refusal here is
+        // a construction that sized nothing, which the caller answers by
+        // lowering the ceiling to what the book stands in.
+        let survival = self.determine_book_decision(SURVIVAL_CEILING_SUBJECT)?;
+        let sizing = self.size_survival(&survival.gate(), figures, &views, now)?;
         self.governor
             .signals_mut()
             .forget_theses(theses.iter().map(|thesis| thesis.hypothesis_id.as_str()));
@@ -23380,6 +23521,87 @@ impl Platform {
         outcome
     }
 
+    /// Sign off every draft that proposes something, with the two controls'
+    /// signatures, under the gate the cost router minted for the sign-off
+    /// (R12-RISK-3022).
+    ///
+    /// **The only caller of `Proposal::approve`.** Which drafts are signed and
+    /// which refusals are recorded are exactly what the loop in ACT decided
+    /// before it was extracted; the gate's rationale is recorded as the
+    /// routing the signatures were taken under. Returns how many were signed.
+    fn sign_off_drafts(
+        &mut self,
+        gate: &DeterministicGate,
+        now: Timestamp,
+        sign_off_problems: &mut Vec<String>,
+    ) -> u64 {
+        self.hard_limit_routings
+            .insert(HardLimitDecision::SignOff, gate.rationale().to_string());
+        let mut signed = 0u64;
+        for proposal in &mut self.proposals {
+            if !matches!(proposal.status(), ProposalStatus::Draft) {
+                continue;
+            }
+            // A proposal with no legs proposes nothing. `stage_decide`
+            // records one on every quiet cycle so the log says the cycle
+            // ran and chose not to trade, and signing those off would put
+            // a risk and a compliance signature against a decision neither
+            // control examined — filling the audit trail with approvals
+            // that approved nothing, and making a real approval harder to
+            // find rather than easier.
+            if proposal.is_empty() {
+                continue;
+            }
+            match proposal.approve(
+                now,
+                vec!["risk-monitor".to_string(), "compliance".to_string()],
+            ) {
+                // Counted from `approve` returning, not from the draft
+                // being offered to it. A proposal that reached this call
+                // and was rejected by it is not a signed proposal, and a
+                // counter incremented before the call would say the
+                // signatures were taken whenever they were merely asked
+                // for.
+                Ok(()) => signed += 1,
+                Err(error) => sign_off_problems.push(format!(
+                    "{} could not be approved: {}",
+                    proposal.proposal_id.as_str(),
+                    error.message()
+                )),
+            }
+        }
+        signed
+    }
+
+    /// Advance every proposal the release loop offered to `Released`, under
+    /// the gate the cost router minted for the release (R12-RISK-3022).
+    ///
+    /// **The only caller of `Proposal::release`.** Which proposals advance,
+    /// and the problem recorded when one cannot, are exactly what the loop in
+    /// ACT did before it was extracted; the gate's rationale is recorded as
+    /// the routing the release was made under.
+    fn advance_released(
+        &mut self,
+        gate: &DeterministicGate,
+        offered: &[String],
+        now: Timestamp,
+        problems: &mut Vec<String>,
+    ) {
+        self.hard_limit_routings
+            .insert(HardLimitDecision::Release, gate.rationale().to_string());
+        for proposal in &mut self.proposals {
+            if offered.contains(&proposal.proposal_id.as_str().to_string())
+                && let Err(error) = proposal.release(now)
+            {
+                problems.push(format!(
+                    "{} was released but its status could not be advanced: {}",
+                    proposal.proposal_id.as_str(),
+                    error.message()
+                ));
+            }
+        }
+    }
+
     /// The ACT stage proper: the risk monitor, sizing, sign-off, release and
     /// the quote loop. Wrapped by [`Self::stage_act`], which is the only
     /// caller.
@@ -23580,40 +23802,20 @@ impl Platform {
             );
         }
         if signable {
-            let at = now;
-            let mut signed = 0u64;
-            for proposal in &mut self.proposals {
-                if !matches!(proposal.status(), ProposalStatus::Draft) {
-                    continue;
-                }
-                // A proposal with no legs proposes nothing. `stage_decide`
-                // records one on every quiet cycle so the log says the cycle
-                // ran and chose not to trade, and signing those off would put
-                // a risk and a compliance signature against a decision neither
-                // control examined — filling the audit trail with approvals
-                // that approved nothing, and making a real approval harder to
-                // find rather than easier.
-                if proposal.is_empty() {
-                    continue;
-                }
-                match proposal.approve(
-                    at,
-                    vec!["risk-monitor".to_string(), "compliance".to_string()],
-                ) {
-                    // Counted from `approve` returning, not from the draft
-                    // being offered to it. A proposal that reached this call
-                    // and was rejected by it is not a signed proposal, and a
-                    // counter incremented before the call would say the
-                    // signatures were taken whenever they were merely asked
-                    // for.
-                    Ok(()) => signed += 1,
-                    Err(error) => sign_off_problems.push(format!(
-                        "{} could not be approved: {}",
-                        proposal.proposal_id.as_str(),
+            // Routed before a signature is taken (R12-RISK-3022). A routing the
+            // router refuses signs nothing, which is the restrictive answer:
+            // an unsigned draft is never released.
+            let signed = match self.determine_book_decision(SIGN_OFF_SUBJECT) {
+                Ok(routing) => self.sign_off_drafts(&routing.gate(), now, &mut sign_off_problems),
+                Err(error) => {
+                    sign_off_problems.push(format!(
+                        "no proposal was signed off: the sign-off could not be routed as a \
+                         deterministic decision ({})",
                         error.message()
-                    )),
+                    ));
+                    0
                 }
-            }
+            };
             if signed > 0 {
                 self.telemetry
                     .metrics
@@ -23678,6 +23880,30 @@ impl Platform {
             // green, which is how the gap was found.
             return crate::quote_loop::review(self, now, outcome);
         }
+
+        // Routed before anything is released (R12-RISK-3022). A routing the
+        // router refuses releases nothing on this cycle: the approved
+        // proposals stay approved, no order is built from them, and the
+        // reason reaches the report.
+        let release = match self.determine_book_decision(RELEASE_SUBJECT) {
+            Ok(routing) => routing,
+            Err(error) => {
+                let mut outcome = StageOutcome::ran(
+                    Stage::Act,
+                    0,
+                    format!("{releasable} approved proposal(s) were not released"),
+                )
+                .with_problem(format!(
+                    "the release could not be routed as a deterministic decision ({})",
+                    error.message()
+                ));
+                for problem in sign_off_problems {
+                    outcome = outcome.with_problem(problem);
+                }
+                return crate::quote_loop::review(self, now, outcome);
+            }
+        };
+        let release_gate = release.gate();
 
         // Release them. Until this loop existed the stage counted approved
         // proposals and returned, so the platform sensed, reasoned, sized and
@@ -23898,17 +24124,7 @@ impl Platform {
                 ));
             }
         }
-        for proposal in &mut self.proposals {
-            if offered.contains(&proposal.proposal_id.as_str().to_string())
-                && let Err(error) = proposal.release(now)
-            {
-                problems.push(format!(
-                    "{} was released but its status could not be advanced: {}",
-                    proposal.proposal_id.as_str(),
-                    error.message()
-                ));
-            }
-        }
+        self.advance_released(&release_gate, &offered, now, &mut problems);
 
         let mut outcome = StageOutcome::ran(
             Stage::Act,
@@ -35828,6 +36044,77 @@ mod decide_tests {
              too: {}",
             platform.capital.drawdown()
         );
+    }
+
+    /// R12-RISK-3022 on the trading spine: the survival waterfall's sizing,
+    /// the two-control sign-off and the release each ran under a gate the cost
+    /// router minted for that decision, through the DECIDE and ACT stages a
+    /// deployed binary's cycle runs. Each rationale is the router's own
+    /// sentence about the subject the kernel routed — compared against the
+    /// subject written out here, not looked up through the kernel. Fails if
+    /// any of the three gated functions stops recording the gate it was
+    /// handed, or if a stage reaches the decision some other way.
+    #[test]
+    fn sizing_sign_off_and_release_each_ran_under_a_gate_the_router_determined() {
+        let mut platform = small_book_platform();
+        feed_history(&mut platform, "AAPL", 30);
+        feed_history(&mut platform, "MSFT", 30);
+        platform.pending_theses.push(justified(thesis("AAPL", 0.6)));
+        platform
+            .pending_theses
+            .push(justified(thesis("MSFT", -0.4)));
+        for kind in [
+            HardLimitDecision::SurvivalSizing,
+            HardLimitDecision::SignOff,
+            HardLimitDecision::Release,
+        ] {
+            assert_eq!(
+                platform.hard_limit_routing(kind),
+                None,
+                "premise: no {kind:?} decision has been made before the cycle"
+            );
+        }
+
+        let now = Timestamp::from_secs(1_760_000_100);
+        platform.stage_decide(now);
+        let sized = platform.proposals.last().expect("a proposal is recorded");
+        assert!(!sized.is_empty(), "premise: legs were sized");
+        let correlation = CorrelationId::from_string("corr-gated-release");
+        let outcome = platform.stage_act(now, &correlation);
+        assert!(
+            platform
+                .proposals
+                .iter()
+                .any(|proposal| matches!(proposal.status(), ProposalStatus::Released { .. })),
+            "premise: the sized proposal was signed and released: {:?}",
+            outcome.problems
+        );
+
+        for (kind, subject) in [
+            (
+                HardLimitDecision::SurvivalSizing,
+                "survival ceiling for the book",
+            ),
+            (
+                HardLimitDecision::SignOff,
+                "sign-off of the cycle's draft proposals",
+            ),
+            (
+                HardLimitDecision::Release,
+                "release of the cycle's approved proposals",
+            ),
+        ] {
+            let rationale = platform
+                .hard_limit_routing(kind)
+                .unwrap_or_else(|| panic!("{kind:?} ran under no recorded gate"));
+            assert!(
+                rationale.starts_with(&format!(
+                    "'{subject}' must be a function of its inputs, so it is answered in \
+                     deterministic code under "
+                )),
+                "{kind:?} ran under a gate for another decision: {rationale}"
+            );
+        }
     }
 
     #[test]

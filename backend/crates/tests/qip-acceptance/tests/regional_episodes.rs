@@ -129,11 +129,18 @@ fn an_episode_recorded_at_a_cell_reaches_the_central_store() -> Result<()> {
     let report = CellReport::new(decoded.standing.cell.clone(), decoded.standing.at)
         .with_region(decoded.standing.region.clone())
         .with_episodes(decoded.interval.episodes.clone());
-    plane.ingest(report, &mut kill_switch, t(11))?;
+    plane.ingest(&halt_gate(), report, &mut kill_switch, t(11))?;
     assert_eq!(
         plane.episodes(CELL),
         &recorded[..],
         "the episode the cell recorded is not what the centre holds"
     );
     Ok(())
+}
+
+/// A gate minted by hand for a test that drives the central plane directly.
+/// Production obtains it from `Platform::determine_book_decision`; a test of
+/// the plane is not a path an order takes (R12-RISK-3022).
+fn halt_gate() -> qip_risk::gate::DeterministicGate {
+    qip_risk::gate::DeterministicGate::minted_by_router_determination("test: reconciliation halt")
 }

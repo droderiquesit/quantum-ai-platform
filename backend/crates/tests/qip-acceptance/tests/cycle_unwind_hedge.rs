@@ -475,6 +475,7 @@ fn a_broken_cycle_is_unwound_and_hedged_end_to_end() -> Result<()> {
     let mut plane = CentralPlane::new(&[7u8; 32], qip_kernel::central::CentralConfig::default())?;
     let mut kill_switch = KillSwitch::new();
     plane.ingest(
+        &halt_gate(),
         CellReport::new(CELL, t(12))
             .with_advisory_positions(delta.positions.clone(), delta.positions_as_of),
         &mut kill_switch,
@@ -483,7 +484,9 @@ fn a_broken_cycle_is_unwound_and_hedged_end_to_end() -> Result<()> {
     let older =
         CellReport::new(CELL, t(13)).with_advisory_positions(Vec::new(), delta.positions_as_of - 1);
     assert!(
-        plane.ingest(older, &mut kill_switch, t(13)).is_err(),
+        plane
+            .ingest(&halt_gate(), older, &mut kill_switch, t(13))
+            .is_err(),
         "a statement that went backwards was absorbed"
     );
     Ok(())
@@ -565,4 +568,11 @@ fn the_failed_passs_kept_report_lets_the_centre_settle_the_leftover_leg() -> Res
         ingestion.advisory_disagreements
     );
     Ok(())
+}
+
+/// A gate minted by hand for a test that drives the central plane directly.
+/// Production obtains it from `Platform::determine_book_decision`; a test of
+/// the plane is not a path an order takes (R12-RISK-3022).
+fn halt_gate() -> qip_risk::gate::DeterministicGate {
+    qip_risk::gate::DeterministicGate::minted_by_router_determination("test: reconciliation halt")
 }
