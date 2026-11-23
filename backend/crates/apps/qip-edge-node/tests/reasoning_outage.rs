@@ -298,8 +298,8 @@ fn run(centre_stops: bool) -> Result<Run> {
     };
     for pass in 0..PASSES {
         // Two seconds apart, so the whole run sits inside the thirty seconds
-        // the simulated venue's session lasts with nothing answering its
-        // heartbeat — which nothing in the pass loop does.
+        // the simulated venue's session lasted with nothing answering its
+        // heartbeat — which the pass has done since 2026-11-23.
         let now = t(10 + 2 * pass as i64);
         if pass == 1 {
             // The venue lists the instrument from the second pass, so the
