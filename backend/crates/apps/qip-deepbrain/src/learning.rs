@@ -4472,6 +4472,89 @@ mod tests {
         Ok(())
     }
 
+    /// R12-MODEL-4021, the case the default policy was calibrated for and an
+    /// independent skeptic showed no promote-stage test refused: a really
+    /// fitted boosted-stumps candidate whose prediction hangs on one split
+    /// in the middle of its data. The series' next return is a fixed size in
+    /// the direction of the last one, so the challenger the board prefers
+    /// fits a split on `return_1` at zero, where the last return is densest.
+    /// Under the DEFAULT policy — the one the deployed desk holds — it is
+    /// refused at the promote stage for that one feature. The control is the
+    /// same series fitted by the readable baseline, which the same default
+    /// suite admits and the desk promotes through its shadow stage, so the
+    /// refusal is the split and not the series or the suite.
+    ///
+    /// Mutation: open the single-feature share in `PerturbationPolicy::default`
+    /// (`max_single_feature_share: 1.0`) — the stump is no longer refused for
+    /// feature 0 and the refusal assertion fails.
+    #[test]
+    fn a_fitted_candidate_hanging_on_one_split_is_refused_under_the_default_policy() -> Result<()> {
+        let bars = super::tests_support::split_driven(400);
+        let mut desk = learning_desk();
+        for _ in 0..60 {
+            desk.observe_class(&CHALLENGER_CLASS, REGIME, true);
+            desk.observe_class(&BASELINE_CLASS, REGIME, false);
+        }
+        let round = desk
+            .maybe_learn(&subject(), &bars, REGIME, 1, at())?
+            .ok_or_else(|| Error::not_found("a round on a cadence of every cycle"))?;
+        let choice = round
+            .class_choice
+            .as_ref()
+            .ok_or_else(|| Error::not_found("a class choice"))?;
+        assert_eq!(
+            choice.registered,
+            CHALLENGER_CLASS.as_str(),
+            "premise: the candidate is the fitted boosted stumps"
+        );
+        assert_eq!(
+            desk.perturbation,
+            qip_training::adversarial::PerturbationPolicy::default(),
+            "premise: the desk attacks under the default policy"
+        );
+        assert!(
+            desk.candidate
+                .as_ref()
+                .is_some_and(|candidate| candidate.passed_skill_bar),
+            "premise: the stump cleared the skill bar, so only the attack can refuse it"
+        );
+        let mut platform = serving_platform()?;
+        let refused = desk
+            .promote_candidate(&mut platform, at())?
+            .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(&refused, PromotionOutcome::NotPromoted { reason, .. }
+                if reason.contains("adversarial perturbation suite: a nudge of feature 0 alone")),
+            "{}",
+            refused.describe()
+        );
+        assert!(platform.model_promotions().is_empty());
+
+        // The control: the same series, the baseline class, the same default
+        // suite, promoted through its shadow stage.
+        let mut baseline = learning_desk();
+        let mut platform = serving_platform()?;
+        baseline.maybe_learn(&subject(), &bars, REGIME, 1, at())?;
+        assert_eq!(
+            baseline.perturbation,
+            qip_training::adversarial::PerturbationPolicy::default()
+        );
+        let promoted = through_shadow_on(
+            &mut baseline,
+            &mut platform,
+            |step| super::tests_support::split_driven(400 + step)[step..].to_vec(),
+            1,
+            at(),
+        )?
+        .ok_or_else(|| Error::not_found("a candidate"))?;
+        assert!(
+            matches!(promoted, PromotionOutcome::Promoted { .. }),
+            "{}",
+            promoted.describe()
+        );
+        Ok(())
+    }
+
     /// R12-MODEL-9003: a process that dies anywhere around a promotion
     /// restarts able to read every version and still promote on the subject.
     /// The cards a promotion moves are journaled before its record, and the
@@ -7543,6 +7626,38 @@ mod tests_support {
             1000..2700 => -0.6,
             _ => 0.9,
         })
+    }
+
+    /// A series whose next return is a fixed 0.002 in the direction of the
+    /// last one, plus the same uniform shocks `learnable` draws. The last
+    /// return is densest at zero, so a tree fitted on it splits in the middle
+    /// of its own data: the fixture for a one-dominant-split candidate
+    /// (R12-MODEL-4021).
+    pub(super) fn split_driven(count: usize) -> Vec<Bar> {
+        let mut rng = Xoshiro256::seeded(0x1EA2);
+        let mut bars = rising(count);
+        let mut level = 100.0_f64;
+        let mut previous = 0.0_f64;
+        for bar in &mut bars {
+            let shock = rng.uniform(-0.004, 0.004);
+            let push = if previous > 0.0 {
+                0.002
+            } else if previous < 0.0 {
+                -0.002
+            } else {
+                0.0
+            };
+            let ret = push + shock;
+            previous = ret;
+            level *= 1.0 + ret;
+            bar.close = Decimal::from_f64(level).unwrap_or(Decimal::ONE);
+            bar.open = Decimal::from_f64(level * (1.0 - ret / 2.0)).unwrap_or(Decimal::ONE);
+            bar.high = Decimal::from_f64(level * 1.001).unwrap_or(Decimal::ONE);
+            bar.low = Decimal::from_f64(level * 0.999).unwrap_or(Decimal::ONE);
+            bar.volume =
+                Decimal::from_f64(1_000.0 * (1.0 + rng.uniform(-0.2, 0.2))).unwrap_or(Decimal::ONE);
+        }
+        bars
     }
 
     /// `rising(count)` re-priced as an AR(1) return series with the given
