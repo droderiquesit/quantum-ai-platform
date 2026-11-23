@@ -688,7 +688,6 @@ impl OrderManager {
     /// have one invented for it, because the cap would then bind against a
     /// name nobody chose.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &mut self,
         gate: &DeterministicGate,
