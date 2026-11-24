@@ -15,7 +15,7 @@
 //! committed universe catalogue, `PlatformConfig::default()` — and read only
 //! what `run_cycle` left behind.
 
-#![allow(clippy::panic_in_result_fn)]
+#![allow(clippy::panic_in_result_fn, clippy::expect_used)] // integration tests may expect: a panic is the failure report
 
 use std::collections::BTreeSet;
 
@@ -323,7 +323,9 @@ fn an_immaterial_release_on_the_default_feed_yields_no_reaction_record() -> Resu
                 SensedRecord::Fundamental(f) if f.period_end == at => {
                     published.push(format!("{}:{}:{}", f.entity_id, f.metric, at.as_nanos()));
                 }
-                SensedRecord::News(n) if n.item_id == format!("earnings-NWSC-{}", at.as_nanos()) => {
+                SensedRecord::News(n)
+                    if n.item_id == format!("earnings-NWSC-{}", at.as_nanos()) =>
+                {
                     published.push(format!("{}:ent-northwind", n.item_id));
                 }
                 _ => {}
@@ -334,7 +336,11 @@ fn an_immaterial_release_on_the_default_feed_yields_no_reaction_record() -> Resu
     }
     // Premise: both records of the immaterial release were published, and
     // the loop did react to material events on the same run.
-    assert_eq!(published.len(), 2, "the immaterial release was not published whole");
+    assert_eq!(
+        published.len(),
+        2,
+        "the immaterial release was not published whole"
+    );
     assert!(
         platform
             .reaction_episodes()

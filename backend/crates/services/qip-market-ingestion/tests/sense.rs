@@ -1139,7 +1139,11 @@ fn the_default_world_publishes_material_releases_that_name_their_issuers_instrum
             _ => None,
         })
         .collect();
-    assert_eq!(fundamentals.len(), releases.len(), "one fundamental per release");
+    assert_eq!(
+        fundamentals.len(),
+        releases.len(),
+        "one fundamental per release"
+    );
     for fundamental in &fundamentals {
         assert!(
             fundamental.is_significant_surprise(0.05),
@@ -1173,7 +1177,10 @@ fn the_default_world_publishes_material_releases_that_name_their_issuers_instrum
             .find(|i| i.contract.is_none() && i.entity_id.as_deref() == Some(entity))
             .map(|i| i.object_id.as_str().to_string());
         assert_eq!(
-            primary[0].identifiers.get(IdentifierKind::Internal).map(str::to_string),
+            primary[0]
+                .identifiers
+                .get(IdentifierKind::Internal)
+                .map(str::to_string),
             issued,
             "the story {} does not name its issuer's instrument",
             story.item_id

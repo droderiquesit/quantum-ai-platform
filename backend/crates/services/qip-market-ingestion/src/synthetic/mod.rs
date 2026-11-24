@@ -20,11 +20,11 @@ use qip_market::quote::Tick;
 use serde::{Deserialize, Serialize};
 
 use crate::adapter::{DataAdapter, MarketDataAdapter, SensedRecord, SourceDescriptor};
-use qip_financial::identifiers::IdentifierKind;
-use qip_financial::intelligence::NewsItem;
 use book::BookParameters;
 use narrative::SyntheticCompany;
 use price::{FactorModel, PriceState, ProcessParameters, Regime};
+use qip_financial::identifiers::IdentifierKind;
+use qip_financial::intelligence::NewsItem;
 
 /// The terms of a dated, cash-settled contract the exchange lists on one of
 /// its own names.
@@ -534,7 +534,6 @@ impl SyntheticEnvironment {
         let intensity = price::intraday_intensity(position);
         let fraction_of_day = self.config.step.as_days_f64();
 
-
         for index in 0..self.instruments.len() {
             records.extend(self.step_instrument(
                 index,
@@ -960,7 +959,8 @@ impl SyntheticEnvironment {
                     .find(|c| &c.entity_id == entity_id)
                     .cloned()
                 {
-                    let story = narrative::supply_chain_story(&company, *severity, at, &mut self.rng);
+                    let story =
+                        narrative::supply_chain_story(&company, *severity, at, &mut self.rng);
                     records.push(SensedRecord::News(Box::new(self.name_instruments(story))));
                     if let Some(instrument) = self
                         .instruments
