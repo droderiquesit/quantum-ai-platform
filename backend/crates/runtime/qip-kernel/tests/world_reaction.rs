@@ -318,7 +318,11 @@ fn a_material_event_on_the_default_feed_yields_multi_asset_reaction_records_at_t
 /// drop the `reaction_contradictions.extend` in `react_to_world_events`.
 #[test]
 fn a_contradicting_reaction_on_the_default_feed_lowers_a_causal_edges_confidence() -> Result<()> {
-    let Run { platform, .. } = run(10, |p| !p.reaction_contradictions().is_empty())?;
+    let Run {
+        platform,
+        last_cycle,
+        ..
+    } = run(10, |p| !p.reaction_contradictions().is_empty())?;
     let contradiction = platform
         .reaction_contradictions()
         .first()
@@ -371,6 +375,155 @@ fn a_contradicting_reaction_on_the_default_feed_lowers_a_causal_edges_confidence
             .iter()
             .any(|id| id.starts_with(&format!("reaction:{}:", contradiction.episode_id))),
         "the edge does not cite the reaction that contradicted it"
+    );
+    // The propagation model reads the lowered confidence: a unit event of
+    // the class reaches the effect through this edge carrying the edge's
+    // strength times its confidence now, below what it carried before the
+    // contradiction. Read with no floor, so a small reaction is still seen.
+    let known_at = world
+        .causal()
+        .last_updated()
+        .expect("the graph was updated");
+    let propagated = world
+        .causal()
+        .propagate(&edge.cause, 1.0, 1, 0.0, last_cycle, known_at);
+    let reached = propagated
+        .effects
+        .iter()
+        .find(|e| e.target == edge.effect)
+        .expect("the contradicted edge no longer propagates");
+    let index = world
+        .causal()
+        .edges()
+        .iter()
+        .position(|e| std::ptr::eq(e, edge))
+        .expect("the edge's position");
+    assert_eq!(
+        reached.edges,
+        vec![index],
+        "premise: the effect was not reached through the contradicted edge"
+    );
+    assert!(
+        (reached.magnitude.abs() - edge.strength * edge.confidence).abs() < 1e-12,
+        "{} -> {} propagated {}, not strength {} times confidence {}",
+        edge.cause,
+        edge.effect,
+        reached.magnitude,
+        edge.strength,
+        edge.confidence
+    );
+    assert!(
+        reached.magnitude.abs() < edge.strength * contradiction.confidence_before,
+        "the contradiction did not lower what {} -> {} propagates",
+        edge.cause,
+        edge.effect
+    );
+    Ok(())
+}
+
+/// The floor `qip-world-model`'s `WorldModel::propagate` applies: an effect
+/// below a tenth of a per cent of a unit shock is truncated as noise. A literal, so a change there is caught here
+/// rather than followed.
+const PROPAGATION_FLOOR: f64 = 0.001;
+
+/// A reaction episode updates the causal propagation model, not only an
+/// edge's fields: once the loop has learnt an edge from a material event's
+/// class to an instrument, a unit shock at that class-named cause, through
+/// the world model's own `propagate` (the call
+/// `Platform::stress_through_the_graph` makes), reaches the instrument with
+/// the edge's signed transmission, dated by the lag the market took — the
+/// episode's measured event-to-reaction time, minutes on minute bars.
+///
+/// Mutations (each fired): `apply_reaction` adds no edge (nothing is
+/// learnt); the edge's lag back to `lag_bars` days (the effect is dated days
+/// late).
+#[test]
+fn a_reaction_learnt_edge_carries_a_class_named_shock_to_the_instrument_at_the_measured_lag()
+-> Result<()> {
+    let learnt = |p: &Platform| {
+        p.world().causal().edges().iter().any(|e| {
+            e.evidence.iter().any(|id| id.starts_with("reaction:"))
+                && e.transmission().abs() >= 2.0 * PROPAGATION_FLOOR
+        })
+    };
+    let Run {
+        platform,
+        last_cycle,
+        ..
+    } = run(10, learnt)?;
+    let world = platform.world();
+    let edge = world
+        .causal()
+        .edges()
+        .iter()
+        .find(|e| {
+            e.evidence.iter().any(|id| id.starts_with("reaction:"))
+                && e.transmission().abs() >= 2.0 * PROPAGATION_FLOOR
+        })
+        .expect("ten days of the default feed taught the graph no edge above the floor");
+    // Premise: everything the class-named cause transmits was learnt from a
+    // reaction, so the propagation below reads the loop and nothing else.
+    let from_cause: Vec<_> = world
+        .causal()
+        .edges()
+        .iter()
+        .filter(|e| e.cause == edge.cause)
+        .collect();
+    assert!(
+        from_cause
+            .iter()
+            .all(|e| e.evidence.iter().any(|id| id.starts_with("reaction:"))),
+        "premise: an edge from {} was produced by something other than a reaction",
+        edge.cause
+    );
+    // The episode that established the edge: its first evidence line.
+    let first = edge.evidence.first().expect("the edge cites its reaction");
+    let episode_id = first
+        .strip_prefix("reaction:")
+        .and_then(|rest| rest.rsplit_once(":event_at="))
+        .map(|(id, _)| id)
+        .expect("a reaction evidence line names its episode");
+    let episode = platform
+        .reaction_episodes()
+        .iter()
+        .find(|e| e.episode_id == episode_id)
+        .expect("the establishing episode is recorded");
+    let measured = episode.reaction_time.since(episode.event_time);
+    // Premise: minute bars, so the market took minutes and not days.
+    assert!(
+        measured > Duration::ZERO && measured <= Duration::from_mins(25),
+        "premise: the episode {episode_id} took {measured:?}, not minutes"
+    );
+
+    let known_at = world
+        .causal()
+        .last_updated()
+        .expect("the graph was updated");
+    let propagation = world.propagate(&edge.cause, 1.0, 1, last_cycle, known_at);
+    let reached = propagation
+        .effects
+        .iter()
+        .find(|e| e.target == edge.effect)
+        .unwrap_or_else(|| {
+            panic!(
+                "a unit shock at {} did not reach {} through the edge the reaction taught",
+                edge.cause, edge.effect
+            )
+        });
+    assert!(
+        (reached.magnitude - edge.signed_transmission()).abs() < 1e-12,
+        "{} reached {} at {}, not the edge's transmission {}",
+        edge.cause,
+        edge.effect,
+        reached.magnitude,
+        edge.signed_transmission()
+    );
+    assert_eq!(
+        reached.expected_at.since(last_cycle),
+        measured,
+        "the effect of {} on {} is dated by something other than the lag the market took",
+        edge.cause,
+        edge.effect
     );
     Ok(())
 }

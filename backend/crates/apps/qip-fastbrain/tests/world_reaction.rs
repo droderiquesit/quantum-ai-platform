@@ -34,6 +34,18 @@
 //!   seed therefore meets its first material release about thirteen hours
 //!   after start, and holds all three horizons about twenty seconds later.
 //!
+//! **Whether a deployed node lives that long is not shown here, and on
+//! committed configuration it does not.** Measured 2026-11-24 on a debug
+//! build of `qip-fastbrain` with its defaults and `QIP_DEPLOYMENT=local`:
+//! resident memory rose from 142 MB to 1.72 GB over 110 s (about 700
+//! cycles, roughly 2.4 MB a cycle), and a heap profile of 80 cycles put the
+//! growth in `qip_events::log::EventLog::append` — the in-memory event log
+//! the committed `memory` store keeps, about 41,700 records after 80 cycles,
+//! bounded only by `qip_events::log::DEFAULT_CAPACITY` (one million). Cloud
+//! Run gives the fast brain 2 GiB (`catalogue.tf`), so the node is killed in
+//! minutes, hours before the release above. The reaction loop is not what
+//! grows; what bounds the log for this node is a capacity nobody has stated.
+//!
 //! That first release is Kestrel's, a synthetic supplier that lists no
 //! instrument. Until this test ran, the loop paired only macro releases and
 //! listed companies with the feed's instruments, so the first material event
@@ -331,5 +343,236 @@ fn a_material_release_at_the_fast_brains_cadence_yields_reaction_records_at_thre
         "the 20-bar reaction is dated {:?} after the release, not on second bars",
         twentieth.reaction_time.since(at)
     );
+    Ok(())
+}
+
+/// The first `n` material company releases on the committed seed, as
+/// `(entity, instant)`, found on a scout feed identical to the node's.
+fn first_releases(config: &FastBrainConfig, n: usize) -> Result<Vec<(String, Timestamp)>> {
+    let interval = config.cycle_interval;
+    let mut scout = Feed::synthetic(config.seed, interval, start());
+    let mut now = start();
+    loop {
+        now = now.saturating_add(interval);
+        assert!(
+            now < start().saturating_add(Duration::from_days(4)),
+            "premise: fewer than {n} material company releases in four days of the committed feed"
+        );
+        scout.poll(now, &mut |_| Ok(()))?;
+        let found: Vec<(String, Timestamp)> = environment(&scout)
+            .fired_events()
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ScriptedEventKind::EarningsSurprise { entity_id, .. } => {
+                    Some((entity_id.clone(), e.at))
+                }
+                _ => None,
+            })
+            .collect();
+        if found.len() >= n {
+            return Ok(found.into_iter().take(n).collect());
+        }
+    }
+}
+
+/// The event id the platform gives a company release on the synthetic feed.
+fn release_id(feed: &Feed, entity: &str, at: Timestamp) -> String {
+    let ticker = environment(feed)
+        .companies()
+        .iter()
+        .find(|c| c.entity_id == entity)
+        .map(|c| c.ticker.clone())
+        .expect("the entity is a company");
+    format!("earnings-{ticker}-{}:{entity}", at.as_nanos())
+}
+
+/// A contradicting reaction at the fast brain's committed cadence lowers a
+/// causal edge's confidence: the first material company release teaches the
+/// graph edges from its class to the instruments that moved its way, and the
+/// second release of the same class, measured on the same second bars and
+/// ticks through `node::step_with`, moves at least one of them against the
+/// edge, which then holds a lower confidence, cites the episode, and is kept.
+///
+/// Like the test above it is fast-forwarded, and it is fast-forwarded twice:
+/// the feed is polled alone to [`LEAD`] before each release and the platform
+/// stepped from there to [`SETTLE`] after it, so between the two releases
+/// the platform is a node that sensed nothing for some hours, its clock
+/// moved to where the feed is. Cycling those hours at a debug build's cost is
+/// not a test. What the second window measures needs only the bars around
+/// the second release and the edges the first left in the graph.
+///
+/// Mutation (fired): every held edge treated as agreeing in
+/// `granger::apply_reaction` (no contradiction is recorded).
+#[test]
+fn a_contradicting_reaction_at_the_fast_brains_cadence_lowers_a_causal_edges_confidence()
+-> Result<()> {
+    let config = FastBrainConfig::default();
+    let interval = config.cycle_interval;
+    assert_eq!(
+        interval,
+        Duration::from_millis(100),
+        "premise: the fast brain's committed cycle interval moved"
+    );
+    let releases = first_releases(&config, 2)?;
+
+    let mut feed = Feed::synthetic(config.seed, interval, start());
+    let mut now = start();
+    let skip_to = |feed: &mut Feed, now: &mut Timestamp, until: Timestamp| -> Result<()> {
+        while now.saturating_add(interval) <= until {
+            *now = now.saturating_add(interval);
+            feed.poll(*now, &mut |_| Ok(()))?;
+        }
+        Ok(())
+    };
+    skip_to(&mut feed, &mut now, releases[0].1.saturating_sub(LEAD))?;
+
+    let clock = Arc::new(ManualClock::new(now));
+    let platform_config = PlatformConfig::default();
+    let context = qip_core::Context::new(clock.clone(), platform_config.seed);
+    let text = std::fs::read_to_string(COMMITTED).expect("the committed catalogue is readable");
+    let universe = qip_financial::catalogue::load(&text, now)
+        .expect("the committed catalogue loads")
+        .universe;
+    let mut platform = Platform::new(
+        platform_config,
+        context,
+        Telemetry::silent(),
+        universe,
+        LimitSet::conservative_default(),
+    )?;
+    let mut sensing = SensePath::new(&platform)?;
+    let window = |feed: &mut Feed,
+                  platform: &mut Platform,
+                  sensing: &mut SensePath,
+                  now: &mut Timestamp,
+                  until: Timestamp|
+     -> Result<()> {
+        clock.set(*now);
+        while *now < until {
+            clock.advance(interval);
+            *now = clock.now();
+            node::step_with(sensing, platform, feed, *now, MAXIMUM_BUDGET)?;
+        }
+        Ok(())
+    };
+
+    // The first release: edges learnt, nothing contradicted yet.
+    let first_id = release_id(&feed, &releases[0].0, releases[0].1);
+    window(
+        &mut feed,
+        &mut platform,
+        &mut sensing,
+        &mut now,
+        releases[0].1.saturating_add(SETTLE),
+    )?;
+    let first_episodes: Vec<_> = platform
+        .reaction_episodes()
+        .iter()
+        .filter(|e| e.episode_id.rsplit_once('@').map(|(id, _)| id) == Some(first_id.as_str()))
+        .collect();
+    assert_eq!(
+        first_episodes
+            .iter()
+            .map(|e| e.lag_bars)
+            .collect::<Vec<_>>(),
+        vec![1, 5, 20],
+        "premise: the first release {first_id} did not react at the three horizons"
+    );
+    let class = first_episodes[0].event_name.clone();
+    let learnt: Vec<(String, f64)> = platform
+        .world()
+        .causal()
+        .edges()
+        .iter()
+        .filter(|e| e.cause == class)
+        .map(|e| (e.effect.clone(), e.confidence))
+        .collect();
+    assert!(
+        !learnt.is_empty(),
+        "premise: the first release taught the graph no edge from {class}"
+    );
+    assert!(
+        platform.reaction_contradictions().is_empty(),
+        "premise: a contradiction before any edge was held"
+    );
+
+    // The gap, then the second release.
+    skip_to(&mut feed, &mut now, releases[1].1.saturating_sub(LEAD))?;
+    let second_id = release_id(&feed, &releases[1].0, releases[1].1);
+    window(
+        &mut feed,
+        &mut platform,
+        &mut sensing,
+        &mut now,
+        releases[1].1.saturating_add(SETTLE),
+    )?;
+    let second_class = platform
+        .reaction_episodes()
+        .iter()
+        .find(|e| e.episode_id.rsplit_once('@').map(|(id, _)| id) == Some(second_id.as_str()))
+        .map(|e| e.event_name.clone())
+        .unwrap_or_else(|| panic!("the second release {second_id} yielded no reaction record"));
+    assert_eq!(
+        second_class, class,
+        "premise: the two releases are not of one class, so the second cannot weigh the first's \
+         edges"
+    );
+
+    let contradictions: Vec<_> = platform
+        .reaction_contradictions()
+        .iter()
+        .filter(|c| c.episode_id.rsplit_once('@').map(|(id, _)| id) == Some(second_id.as_str()))
+        .collect();
+    assert!(
+        !contradictions.is_empty(),
+        "no reaction to {second_id} at the fast brain's cadence contradicted an edge the first \
+         release taught"
+    );
+    let world = platform.world();
+    for contradiction in contradictions {
+        assert_eq!(contradiction.cause, class);
+        assert!(
+            contradiction.expected_sign * contradiction.observed_sign < 0.0,
+            "a contradiction whose observed move agreed with the edge"
+        );
+        let held_before = learnt
+            .iter()
+            .find(|(effect, _)| *effect == contradiction.effect)
+            .map(|(_, confidence)| *confidence)
+            .expect("the contradicted edge is one the first release taught");
+        assert!(
+            (contradiction.confidence_before - held_before).abs() < 1e-12,
+            "the contradiction weighed {}, not the {held_before} the first release left",
+            contradiction.confidence_before
+        );
+        assert!(
+            contradiction.confidence_after < contradiction.confidence_before,
+            "{} -> {} was not lowered: {} -> {}",
+            contradiction.cause,
+            contradiction.effect,
+            contradiction.confidence_before,
+            contradiction.confidence_after
+        );
+        let edge = world
+            .causal()
+            .edges()
+            .iter()
+            .find(|e| e.cause == class && e.effect == contradiction.effect)
+            .expect("the contradicted edge is kept in the graph, not deleted");
+        assert!(
+            edge.confidence <= contradiction.confidence_after,
+            "the graph holds {} for {} -> {}, above the lowered {}",
+            edge.confidence,
+            edge.cause,
+            edge.effect,
+            contradiction.confidence_after
+        );
+        assert!(
+            edge.evidence
+                .iter()
+                .any(|id| id.starts_with(&format!("reaction:{}:", contradiction.episode_id))),
+            "the edge does not cite the reaction that contradicted it"
+        );
+    }
     Ok(())
 }

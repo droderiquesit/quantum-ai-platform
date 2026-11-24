@@ -360,10 +360,10 @@ pub fn establish_precedence_from_reaction(
 
     let (effect_id, _reaction_magnitude, _direction) = &reaction.affected_instruments[0];
 
-    // Convert the reaction lag (in bars) to a Duration. The caller provides
-    // the bar interval; here we assume a 1-bar-per-hour default for demo.
-    // In production, the caller would pass the actual bar interval.
-    let lag = Duration::from_secs(reaction.lag_bars as i64 * 3600);
+    // The lag the market took, as measured from event to reaction. This
+    // assumed one bar per hour until 2026-11-24, a cadence no feed was
+    // checked to have.
+    let lag = reaction.duration();
 
     // Build an evidence string that names this reaction episode.
     let evidence_id = format!(
@@ -496,7 +496,12 @@ pub fn apply_reaction(
                 instrument,
                 mechanism,
                 strength,
-                Duration::from_secs(reaction.lag_bars as i64 * 86_400),
+                // The lag the market actually took: event to reaction, as
+                // measured. Until 2026-11-24 this was `lag_bars` days, which
+                // read a 20-second-bar reaction on the fast brain's feed as a
+                // 20-day lag, and every propagation through the edge dated
+                // its effect three weeks late.
+                reaction.duration(),
                 now,
             )?
             .with_confidence(reaction.confidence * TEMPORAL_PRECEDENCE_CONFIDENCE_CEILING)?
