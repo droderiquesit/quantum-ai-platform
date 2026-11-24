@@ -315,7 +315,9 @@ fn no_public_registry_door_moves_a_card_into_production() {
 /// `qip-kernel/tests/promotion_tests.rs`; this half holds the shapes those
 /// tests cannot see — derives, field visibility, and the deep brain's order.
 ///
-/// Mutations: derive `Clone` on either proof — the derive assertion fires;
+/// Mutations: derive `Clone` on either proof — the derive assertion fires,
+/// and a `#[derive(Clone)]` line above the existing one fires the
+/// every-attribute assertion that the nearest-line one passes;
 /// make a field `pub` — the field assertion fires; promote in the deep brain
 /// before testing — the order assertion fires; restore through
 /// `self.registry.register(` — the restore assertion fires.
@@ -340,6 +342,14 @@ fn the_proofs_cannot_be_copied_or_decoded_and_the_deep_brain_obtains_them() {
             "#[derive(Debug, PartialEq, Eq)]",
             "`{declaration}` must not derive Clone, Default, Serialize or Deserialize: each \
              is a way to hold one the constructor did not hand out"
+        );
+        // The line above is the nearest `#[derive]` only. A second one, or
+        // a `cfg_attr` derive, anywhere on the item derives as surely.
+        let derived = derived_on_item(&source, declaration);
+        assert_eq!(
+            derived, PROOF_DERIVES,
+            "`{declaration}` derives {derived:?} across all its attributes: anything beyond \
+             Debug, PartialEq and Eq is a way to hold one the constructor did not hand out"
         );
         let body = at + declaration.len();
         let fields =
@@ -511,6 +521,278 @@ fn derived_traits(derive: &str) -> Vec<String> {
         .collect()
 }
 
+/// `text` split at its outermost commas, each part trimmed, empty parts
+/// (a trailing comma) dropped.
+fn top_level_parts(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (at, character) in text.char_indices() {
+        match character {
+            '(' | '[' | '{' | '<' => depth += 1,
+            ')' | ']' | '}' | '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(text[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+/// The arguments of `attribute` if it is `name(..)`: `derive(Clone, Debug)`
+/// is `derive` with `Clone, Debug`. The attribute's path is compared by its
+/// last segment, because `#[::core::prelude::v1::derive(Clone)]` derives as
+/// surely as `#[derive(Clone)]`; `derive_more(..)` is not `derive`.
+fn attribute_arguments<'a>(attribute: &'a str, name: &str) -> Option<&'a str> {
+    let attribute = attribute.trim();
+    let open = attribute.find('(')?;
+    let path: String = attribute[..open].split_whitespace().collect();
+    if path.rsplit("::").next() != Some(name) {
+        return None;
+    }
+    attribute[open + 1..].trim_end().strip_suffix(')')
+}
+
+/// The traits one attribute derives, each by its last path segment: a
+/// `derive(..)`, or a `cfg_attr(predicate, ..)` whose attributes derive —
+/// read through, however deeply `cfg_attr` nests.
+fn attribute_derives(attribute: &str) -> Vec<String> {
+    if let Some(list) = attribute_arguments(attribute, "derive") {
+        return top_level_parts(list)
+            .into_iter()
+            .map(|name| name.rsplit("::").next().unwrap_or(name).trim().to_string())
+            .collect();
+    }
+    if let Some(arguments) = attribute_arguments(attribute, "cfg_attr") {
+        return top_level_parts(arguments)
+            .into_iter()
+            .skip(1)
+            .flat_map(attribute_derives)
+            .collect();
+    }
+    Vec::new()
+}
+
+/// Every outer attribute on the item whose declaration begins at `at` in
+/// `text`, in source order, each as written inside its `#[..]`. Read
+/// backwards from the declaration over attributes, doc comments and block
+/// comments, and stopped at anything else, so the previous item's
+/// attributes are never read as this one's. Assumes
+/// [`code`] text, so `//` comments are already gone and no bracket sits
+/// inside a string literal.
+fn outer_attributes(text: &str, at: usize) -> Vec<String> {
+    let mut attributes = Vec::new();
+    let mut rest = text[..at].trim_end();
+    loop {
+        if let Some(before) = rest.strip_suffix("*/") {
+            let Some(open) = before.rfind("/*") else {
+                break;
+            };
+            rest = before[..open].trim_end();
+            continue;
+        }
+        if !rest.ends_with(']') {
+            break;
+        }
+        let bytes = rest.as_bytes();
+        let mut depth = 0usize;
+        let mut open = None;
+        for index in (0..bytes.len()).rev() {
+            match bytes[index] {
+                b']' => depth += 1,
+                b'[' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        open = Some(index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(open) = open.filter(|&open| open > 0 && bytes[open - 1] == b'#') else {
+            break;
+        };
+        attributes.push(rest[open + 1..rest.len() - 1].to_string());
+        rest = rest[..open - 1].trim_end();
+    }
+    attributes.reverse();
+    attributes
+}
+
+/// Every trait derived on the item `declaration` opens in `source`: each
+/// `#[derive(..)]` on it, however many and however spread among its other
+/// attributes and doc comments, and each derive inside a `#[cfg_attr(..)]`.
+fn derived_on_item(source: &str, declaration: &str) -> Vec<String> {
+    let text = code(source);
+    let at = text
+        .find(declaration)
+        .unwrap_or_else(|| panic!("premise: the source declares `{declaration}`"));
+    outer_attributes(&text, at)
+        .iter()
+        .flat_map(|attribute| attribute_derives(attribute))
+        .collect()
+}
+
+/// The whole derive list either promotion proof may carry.
+const PROOF_DERIVES: [&str; 3] = ["Debug", "PartialEq", "Eq"];
+
+/// The derives a deterministic witness, or a type holding one, may not
+/// carry: each is a way to hold a witness the cost router did not hand out.
+const WITNESS_FORBIDDEN_DERIVES: [&str; 4] = ["Clone", "Copy", "Default", "Deserialize"];
+
+/// The members of `derived` in [`WITNESS_FORBIDDEN_DERIVES`].
+fn forbidden_witness_derives(derived: &[String]) -> Vec<&String> {
+    derived
+        .iter()
+        .filter(|name| WITNESS_FORBIDDEN_DERIVES.contains(&name.as_str()))
+        .collect()
+}
+
+/// The `#[derive(..)]` line nearest above `at` among the attribute lines
+/// directly above it in `production` — the read the witness check made
+/// before [`derived_on_item`], kept so the fixtures can show it passing
+/// what the item reader refuses.
+fn nearest_derive_line(production: &str, at: usize) -> Option<&str> {
+    production[..at]
+        .lines()
+        .rev()
+        .take_while(|line| line.trim_start().starts_with("#["))
+        .find(|line| line.trim_start().starts_with("#[derive("))
+}
+
+/// The derive reader on the shapes the nearest-`#[derive]` read missed:
+/// a second `#[derive]` above the first, one above a doc comment, a
+/// `cfg_attr` derive (nested, too), a derive named by its full path, and a
+/// derive rustfmt wrapped across lines; and the previous item's derive,
+/// which is not this item's. Then the refusal itself, on all six types the
+/// two derive checks hold: a second `#[derive(Clone)]` line and a
+/// `#[cfg_attr(.., derive(serde::Deserialize))]` on each, which the nearest
+/// line passes and the item reader refuses.
+///
+/// The failure this prevents: the witness check read the one `#[derive]`
+/// nearest the declaration, so `#[derive(Clone)]` written on its own line
+/// above the existing derive, or `#[cfg_attr(feature = "x",
+/// derive(Deserialize))]` anywhere on the item, made a gate that could be
+/// copied or decoded and passed.
+///
+/// Mutations: read only the nearest `derive` attribute in
+/// [`derived_on_item`] — the several-derives case and every refusal fixture
+/// fail; drop the `cfg_attr` arm of [`attribute_derives`] — the `cfg_attr`
+/// case loses `Default`; compare the attribute path whole in
+/// [`attribute_arguments`] — the full-path case loses `Clone`.
+#[test]
+fn the_derive_reader_reads_every_derive_attribute_on_the_item() {
+    // Each type the derive checks hold, with its real attribute stack.
+    const HELD: [(&str, &str); 6] = [
+        (
+            "#[derive(Debug, PartialEq, Eq)]",
+            "pub struct PromotionClearance {",
+        ),
+        (
+            "#[derive(Debug, PartialEq, Eq)]",
+            "pub struct JournaledAdmission {",
+        ),
+        (
+            "#[derive(Debug, PartialEq, Serialize)]",
+            "pub struct DeterministicRouting {",
+        ),
+        (
+            "#[derive(Debug, PartialEq, Serialize)]\n#[serde(rename_all = \"snake_case\")]",
+            "pub enum Routing {",
+        ),
+        (
+            "#[derive(Debug, PartialEq, Serialize)]",
+            "pub struct ReasonRouting {",
+        ),
+        (
+            "#[derive(Debug, PartialEq, Eq)]",
+            "pub struct DeterministicGate {",
+        ),
+    ];
+    let shapes = [
+        ("#[derive(Clone)]", "Clone"),
+        (
+            "#[cfg_attr(feature = \"serde\", derive(serde::Deserialize))]",
+            "Deserialize",
+        ),
+    ];
+    for (stack, declaration) in HELD {
+        for (added, refused) in shapes {
+            let fixture = format!("/// The type.\n{added}\n{stack}\n{declaration}\n}}\n");
+            let production = qip_acceptance::production_text(&fixture);
+            let at = production.find(declaration).expect("premise: declared");
+            let nearest = nearest_derive_line(&production, at)
+                .unwrap_or_else(|| panic!("premise: a derive above `{declaration}`"));
+            let passed = derived_traits(nearest);
+            assert!(
+                forbidden_witness_derives(&passed).is_empty(),
+                "premise: the nearest-derive read passed `{added}` on `{declaration}`: {passed:?}"
+            );
+            let derived = derived_on_item(&fixture, declaration);
+            assert_eq!(
+                forbidden_witness_derives(&derived),
+                [refused],
+                "`{added}` on `{declaration}` was not refused: {derived:?}"
+            );
+            assert_ne!(
+                derived, PROOF_DERIVES,
+                "`{added}` on `{declaration}` read as the proofs' allowed list"
+            );
+        }
+    }
+
+    let pathed = "#[::core::prelude::v1::derive(Clone)]\n#[derive(Debug)]\n\
+                  pub struct DeterministicGate {\n}\n";
+    assert_eq!(
+        derived_on_item(pathed, "pub struct DeterministicGate {"),
+        ["Clone", "Debug"]
+    );
+    assert!(
+        derived_on_item(
+            "#[derive_more(Clone)]\npub struct DeterministicGate {\n}\n",
+            "pub struct DeterministicGate {"
+        )
+        .is_empty(),
+        "an attribute whose name begins with `derive` was read as a derive"
+    );
+    let several = "#[derive(serde::Deserialize)]\n#[must_use]\n#[derive(Debug, PartialEq)]\n\
+                   pub struct DeterministicGate {\n}\n";
+    assert_eq!(
+        derived_on_item(several, "pub struct DeterministicGate {"),
+        ["Deserialize", "Debug", "PartialEq"]
+    );
+    let documented = "/// The witness.\n#[derive(Clone)]\n/// More on it.\n/* note */\n\
+                      #[derive(Debug)]\npub struct DeterministicGate {\n}\n";
+    assert_eq!(
+        derived_on_item(documented, "pub struct DeterministicGate {"),
+        ["Clone", "Debug"]
+    );
+    let conditional = "#[cfg_attr(feature = \"serde\", derive(serde::Deserialize, Default))]\n\
+                       #[cfg_attr(test, cfg_attr(all(unix, not(miri)), derive(Clone)))]\n\
+                       #[derive(Debug)]\npub struct DeterministicRouting {\n}\n";
+    assert_eq!(
+        derived_on_item(conditional, "pub struct DeterministicRouting {"),
+        ["Deserialize", "Default", "Clone", "Debug"]
+    );
+    let wrapped = "#[derive(\n    Debug,\n    PartialEq,\n    Clone,\n)]\npub struct DeterministicGate {\n}\n";
+    assert_eq!(
+        derived_on_item(wrapped, "pub struct DeterministicGate {"),
+        ["Debug", "PartialEq", "Clone"]
+    );
+    let neighbour = "#[derive(Clone, Default)]\npub struct Record;\n\n#[derive(Debug)]\n\
+                     pub struct DeterministicGate {\n}\n";
+    assert_eq!(
+        derived_on_item(neighbour, "pub struct DeterministicGate {"),
+        ["Debug"],
+        "the previous item's derive was read as this one's"
+    );
+}
+
 /// R12-RISK-3022 (e), ADR 0430: the deterministic gate every hard-limit
 /// decision demands, and the routing whose `gate()` mints one, can be neither
 /// decoded nor copied — not by derive, and not by a hand-written impl in any
@@ -527,7 +809,18 @@ fn derived_traits(derive: &str) -> Vec<String> {
 ///
 /// Mutations: put `Deserialize` back on `DeterministicRouting`'s derive —
 /// the derive assertion fires; add `impl Clone for DeterministicGate` to
-/// `gate.rs` — the hand-impl assertion fires.
+/// `gate.rs` — the hand-impl assertion fires; add `#[derive(Clone)]` on its
+/// own line above `DeterministicGate`'s derive, or
+/// `#[cfg_attr(test, derive(Clone))]` above `DeterministicRouting`'s — the
+/// derive assertion fires, where the nearest-derive read passed both; add
+/// `#[derive(Clone)]` above `Routing`'s derive or `ReasonRouting`'s — the
+/// derive assertion fires, where neither type was read before.
+///
+/// `Routing` and `ReasonRouting` hold a `DeterministicRouting` in a field or
+/// an arm, so a derived `Clone` or `Deserialize` on either copies or decodes
+/// the routing inside it; `rustc` refuses that while `DeterministicRouting`
+/// itself has neither, which is why the derive half of this check holds all
+/// four and the hand-impl half the two.
 #[test]
 fn the_deterministic_routing_and_its_gate_cannot_be_decoded_or_copied() {
     const WITNESSES: [(&str, &str, &str); 2] = [
@@ -542,8 +835,19 @@ fn the_deterministic_routing_and_its_gate_cannot_be_decoded_or_copied() {
             "pub struct DeterministicGate {",
         ),
     ];
-    /// Each is a way to hold a witness the router did not hand out.
-    const FORBIDDEN: [&str; 4] = ["Clone", "Copy", "Default", "Deserialize"];
+    /// The types holding a `DeterministicRouting`, held to the same derives.
+    const HOLDERS: [(&str, &str, &str); 2] = [
+        (
+            "backend/crates/services/qip-cost-router/src/router.rs",
+            "Routing",
+            "pub enum Routing {",
+        ),
+        (
+            "backend/crates/runtime/qip-kernel/src/platform.rs",
+            "ReasonRouting",
+            "pub struct ReasonRouting {",
+        ),
+    ];
     /// The traits a hand-written impl may implement for either: none of them
     /// produces a value.
     const HARMLESS: [&str; 5] = ["Debug", "Display", "PartialEq", "Eq", "Serialize"];
@@ -561,26 +865,29 @@ fn the_deterministic_routing_and_its_gate_cannot_be_decoded_or_copied() {
         ["Deserialize"]
     );
 
-    for (file, ty, declaration) in WITNESSES {
-        let production = qip_acceptance::production_text(&qip_acceptance::read(file));
+    for (file, ty, declaration) in WITNESSES.into_iter().chain(HOLDERS) {
+        let source = qip_acceptance::read(file);
+        let production = qip_acceptance::production_text(&source);
         let at = production
             .find(declaration)
             .unwrap_or_else(|| panic!("premise: {file} declares `{declaration}`"));
-        let derive = production[..at]
-            .lines()
-            .rev()
-            .take_while(|line| line.trim_start().starts_with("#["))
-            .find(|line| line.trim_start().starts_with("#[derive("))
+        let derive = nearest_derive_line(&production, at)
             .unwrap_or_else(|| panic!("premise: `{ty}` carries a derive directly above it"));
-        let derived = derived_traits(derive);
+        // Every derive on the item, not the nearest one alone: a second
+        // `#[derive]` line or a `cfg_attr` derive was invisible to the read
+        // above, which is kept as the premise that the item reader reads at
+        // least what it did.
+        let nearest = derived_traits(derive);
+        let derived = derived_on_item(&source, declaration);
+        assert!(
+            nearest.iter().all(|name| derived.contains(name)),
+            "premise: the item's derives {derived:?} hold the nearest derive's {nearest:?}"
+        );
         assert!(
             derived.iter().any(|name| name == "Debug"),
             "premise: the derive was read: {derived:?}"
         );
-        let refused: Vec<&String> = derived
-            .iter()
-            .filter(|name| FORBIDDEN.contains(&name.as_str()))
-            .collect();
+        let refused = forbidden_witness_derives(&derived);
         assert!(
             refused.is_empty(),
             "`{ty}` derives {refused:?}: a {ty} that can be decoded, copied or defaulted is a \
