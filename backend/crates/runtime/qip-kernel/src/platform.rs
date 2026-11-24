@@ -17470,11 +17470,18 @@ impl Platform {
         // REASON is the record a replay reads and not a second account of
         // the same pass (R12-WORLD-3025, ADR 0488).
         self.brief_the_desk_on_arbitration(&review);
-        if let Err(error) = self.journal_record(review, "kernel/federation", now) {
-            problems.push(format!(
+        // Journaled in the form that writes an arbitration repeated from an
+        // unchanged tape as a reference to the pass it repeats: whole, it
+        // was 53-64% of the log's bytes on the fast brain's cadence. The
+        // stage hears the append landed before any later record may refer
+        // to this one.
+        let (record, bases) = self.federation.journal_form(&review);
+        match self.journal_record(record, "kernel/federation", now) {
+            Ok(()) => self.federation.journaled(bases),
+            Err(error) => problems.push(format!(
                 "the world model federation's review was computed and not journalled: {}",
                 error.message()
-            ));
+            )),
         }
         (detail, problems)
     }
