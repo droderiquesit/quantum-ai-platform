@@ -1691,13 +1691,13 @@ pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
 /// How old the newest bar the kernel has read may be before the self-model's
 /// health reading puts the feed row as stale (R12-WORLD-3036).
 ///
-/// A provisional figure stated under the owner's 2026-11-23 instruction: four
-/// days keeps day bars across a long weekend (Friday's bar closes on Saturday,
-/// a Tuesday cycle reads it about three and a half days old) fresh, and calls
-/// anything older a feed that has stopped. It only ever withholds evidence in
+/// A provisional figure stated under the owner's 2026-11-23 instruction: seven
+/// days, the self-model row's own horizon, outlasts any exchange holiday run a
+/// day-bar feed goes quiet over, so only a feed that has truly stopped reads
+/// stale. It only ever withholds evidence in
 /// REASON; it is deliberately not a row of `central_degradation`, so it moves
 /// no sizing multiplier.
-pub const FEED_HORIZON: Duration = Duration::from_days(4);
+pub const FEED_HORIZON: Duration = Duration::from_days(7);
 
 /// A decision DECIDE sized on a conviction it was unsure of, as the deep
 /// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
@@ -19053,35 +19053,6 @@ impl Platform {
         self.worked_opportunities
             .insert(opportunity.opportunity_id.as_str().to_string());
 
-        // R12-WORLD-3036: no thesis outside the capability boundary. A subject
-        // in an asset class the feed does not serve is refused before the
-        // panel is convened or anything is billed. A subject the universe
-        // gives no class has no class to judge and is left to the rules that
-        // govern unlisted series.
-        if let Some(subject) = opportunity.affected_objects.first()
-            && let Some(class) = self.asset_class_of(subject.as_str())
-            && self.self_model.boundary_of(&class)
-                == qip_learning_engine::self_model::BoundaryReading::Outside
-        {
-            self.telemetry.metrics.count(
-                names::OPPORTUNITIES_UNPRICED,
-                labels([("reason", "outside_capability_boundary")]),
-            );
-            // Off the queue, so a refused head does not starve the served
-            // opportunities behind it until it lapses.
-            self.queue
-                .retain(|queued| queued.opportunity_id != opportunity.opportunity_id);
-            return StageOutcome::ran(
-                Stage::Reason,
-                0,
-                format!(
-                    "no thesis was formed on {}: its asset class {class} lies outside the \
-                     capability boundary the feed serves",
-                    subject.as_str()
-                ),
-            );
-        }
-
         // Where this decision belongs on the intelligence ladder, asked before
         // anything is spent reaching it. Convening the organisation is the most
         // expensive thing a cycle does, and until this call existed it was done
@@ -22549,6 +22520,28 @@ impl Platform {
             .with_diagnosticity(anomaly.confidence().clamp(0.05, 0.95)),
         ]);
 
+        // R12-WORLD-3036: no thesis outside the capability boundary. A subject
+        // in an asset class the feed does not serve now is refused here, where
+        // the thesis would be formed, and taken off the queue so a refused
+        // head does not starve the served opportunities behind it. A subject
+        // the universe gives no class has no class to judge and is left to the
+        // rules that govern unlisted series.
+        if let Some(class) = self.asset_class_of(subject.as_str())
+            && self.self_model.boundary_of(&class)
+                == qip_learning_engine::self_model::BoundaryReading::Outside
+        {
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "outside_capability_boundary")]),
+            );
+            self.queue
+                .retain(|queued| queued.opportunity_id != opportunity.opportunity_id);
+            return Err(Error::denied(format!(
+                "no thesis was formed on {}: its asset class {class} lies outside the capability \
+                 boundary the feed serves; it re-enters once a bar in that class arrives",
+                subject.as_str()
+            )));
+        }
         // R12-WORLD-3036: the self-model's reading of each producing
         // component for this thesis — unhealthy, stale, drifted or blind —
         // withholds that origin's supporting evidence. Read here, where the

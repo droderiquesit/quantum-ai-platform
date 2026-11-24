@@ -601,11 +601,8 @@ fn bars_ending(symbol: &str, count: usize, ago: Duration) -> Vec<SensedRecord> {
 }
 
 fn reason_detail(report: &qip_kernel::cycle::CycleReport) -> String {
-    report
-        .stage(Stage::Reason)
-        .expect("reason ran")
-        .detail
-        .clone()
+    let stage = report.stage(Stage::Reason).expect("reason ran");
+    format!("{} | {}", stage.detail, stage.problems.join(" | "))
 }
 
 /// The confidence REASON gave the one thesis the cycle formed.
@@ -758,7 +755,7 @@ fn a_feed_older_than_its_horizon_reads_stale_in_health_and_reason_forms_no_thesi
     assert!(
         detail.contains(&format!(
             "no thesis was formed on {}: its asset class equity lies outside the capability \
-             boundary the feed serves",
+             boundary the feed serves;",
             object("AAA").as_str()
         )),
         "{detail}"
@@ -876,7 +873,7 @@ fn reason_refuses_a_thesis_in_an_asset_class_the_feed_no_longer_serves() -> Resu
     assert!(
         detail.contains(&format!(
             "no thesis was formed on {}: its asset class digital_asset lies outside the \
-             capability boundary the feed serves",
+             capability boundary the feed serves;",
             object("CCC").as_str()
         )),
         "{detail}\n{}",
