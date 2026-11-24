@@ -79,7 +79,8 @@ pub const DRIFT_TOLERANCE: f64 = 0.05;
 /// The population stability index at or above which a component's input reads
 /// drifted (R12-WORLD-3036, data drift).
 ///
-/// A provisional figure the owner's 2026-11-23 instruction let this row state:
+/// Decided in `docs/blueprint/owner-decisions-2026-11-23.md`, section
+/// "Figures decided on 2026-11-24", row R12-WORLD-3036:
 /// 0.25 is the conventional "significant shift" threshold and the one
 /// `qip_ai::evaluation` already calls drifting. A component whose input
 /// distribution has moved this far is reading a market its record was not
@@ -460,10 +461,16 @@ pub struct SelfModel {
     /// boundary has been declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     boundary: Option<BTreeSet<String>>,
-    /// Per component, the asset classes it has a graded outcome in. A
-    /// component known here but not in a class is blind in that class.
+    /// Per component, the sectors it has a graded resolved thesis in. A
+    /// component graded here but never in a sector is blind in that sector.
+    ///
+    /// A sector, not an asset class: `docs/blueprint/owner-decisions-2026-11-23.md`,
+    /// section "Figures decided on 2026-11-24", row R12-WORLD-3036, defines a
+    /// blind spot as a (component, sector) cell. The committed universe is
+    /// common stock only, so an asset-class cell could never read blind on
+    /// committed configuration; its five sectors can.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    graded_classes: BTreeMap<ComponentKey, BTreeSet<String>>,
+    graded_sectors: BTreeMap<ComponentKey, BTreeSet<String>>,
     /// Inputs (instrument ids) whose distribution has shifted by at least
     /// [`INPUT_DRIFT_PSI`], with the index measured, as of the newest reading.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -533,7 +540,7 @@ impl SelfModel {
             match stalest {
                 Some(key) => {
                     self.components.remove(&key);
-                    self.graded_classes.remove(&key);
+                    self.graded_sectors.remove(&key);
                 }
                 None => break,
             }
@@ -695,27 +702,27 @@ impl SelfModel {
         }
     }
 
-    /// Record that `components` were graded on a thesis in `asset_class`.
+    /// Record that `components` were graded on a resolved thesis in `sector`.
     ///
     /// Only components the model already holds a record for are noted, so the
     /// map stays bounded by [`MAX_COMPONENTS`] and an eviction clears both.
-    pub fn note_graded_class(&mut self, components: &[ComponentKey], asset_class: &str) {
-        if asset_class.trim().is_empty() {
+    pub fn note_graded_sector(&mut self, components: &[ComponentKey], sector: &str) {
+        if sector.trim().is_empty() {
             return;
         }
         for key in components {
             if self.components.contains_key(key) {
-                self.graded_classes
+                self.graded_sectors
                     .entry(key.clone())
                     .or_default()
-                    .insert(asset_class.to_string());
+                    .insert(sector.to_string());
             }
         }
     }
 
-    /// The asset classes `key` has a graded outcome in.
-    pub fn graded_classes(&self, key: &ComponentKey) -> Option<&BTreeSet<String>> {
-        self.graded_classes.get(key)
+    /// The sectors `key` has a graded resolved thesis in.
+    pub fn graded_sectors(&self, key: &ComponentKey) -> Option<&BTreeSet<String>> {
+        self.graded_sectors.get(key)
     }
 
     /// Replace the drifted-input reading with this cycle's shifts, keeping
@@ -749,40 +756,43 @@ impl SelfModel {
         self.boundary.as_ref()
     }
 
-    /// Whether `origin` (a detector or analyst id) is blind in `asset_class`:
-    /// graded in at least one class and never in this one.
-    pub fn is_blind_in(&self, origin: &str, asset_class: &str) -> bool {
-        self.graded_classes.iter().any(|(key, classes)| {
+    /// Whether `origin` (a detector or analyst id) is blind in `sector`:
+    /// graded in at least one sector and never in this one.
+    pub fn is_blind_in(&self, origin: &str, sector: &str) -> bool {
+        self.graded_sectors.iter().any(|(key, sectors)| {
             matches!(key.kind, ComponentKind::Detector | ComponentKind::Analyst)
                 && key.id == origin
-                && !classes.is_empty()
-                && !classes.contains(asset_class)
+                && !sectors.is_empty()
+                && !sectors.contains(sector)
         })
     }
 
     /// The origins whose supporting evidence REASON must withhold on a thesis
-    /// about `subject` in `asset_class`, each with the reason (R12-WORLD-3036).
+    /// about `subject` in `sector`, each with the reason (R12-WORLD-3036).
     ///
     /// Every rule only withholds: nothing here raises a factor, relaxes a
     /// limit or touches sizing. Detectors and analysts alike produce their
     /// evidence from the bars the feed delivered for the subject, so a halted
     /// platform, a non-fresh ingestion or feed row and a drifted subject each
     /// withhold every origin; a blind spot withholds the one origin that is
-    /// blind in the class.
+    /// blind in the sector.
     pub fn withheld_origins<'a>(
         &self,
         origins: impl IntoIterator<Item = &'a str>,
         subject: &str,
-        asset_class: Option<&str>,
+        sector: Option<&str>,
     ) -> BTreeMap<String, String> {
         let shared = self.shared_withholding(subject);
         let mut withheld = BTreeMap::new();
         for origin in origins {
             let reason = shared.clone().or_else(|| {
-                asset_class
-                    .filter(|class| self.is_blind_in(origin, class))
-                    .map(|class| {
-                        format!("blind spot: {origin} has graded outcomes only outside {class}")
+                sector
+                    .filter(|sector| self.is_blind_in(origin, sector))
+                    .map(|sector| {
+                        format!(
+                            "blind spot: {origin} has graded outcomes only outside the {sector} \
+                             sector"
+                        )
                     })
             });
             if let Some(reason) = reason {

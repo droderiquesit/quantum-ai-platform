@@ -953,6 +953,8 @@ fn strengths(
         .filter(|e| e.stance != Stance::Contextual)
         .map(|e| {
             let signed_weight = e.signed_weight();
+            // Weight 0, not a discount: `docs/blueprint/owner-decisions-2026-11-23.md`,
+            // section "Figures decided on 2026-11-24", row R12-WORLD-3036.
             let factor = if signed_weight > 0.0 && withheld.contains_key(&e.origin) {
                 0.0
             } else if signed_weight > 0.0 {

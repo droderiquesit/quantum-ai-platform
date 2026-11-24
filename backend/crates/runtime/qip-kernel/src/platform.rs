@@ -1691,7 +1691,8 @@ pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
 /// How old the newest bar the kernel has read may be before the self-model's
 /// health reading puts the feed row as stale (R12-WORLD-3036).
 ///
-/// A provisional figure stated under the owner's 2026-11-23 instruction: seven
+/// Decided in `docs/blueprint/owner-decisions-2026-11-23.md`, section
+/// "Figures decided on 2026-11-24", row R12-WORLD-3036: seven
 /// days, the self-model row's own horizon, outlasts any exchange holiday run a
 /// day-bar feed goes quiet over, so only a feed that has truly stopped reads
 /// stale. It only ever withholds evidence in
@@ -13413,12 +13414,12 @@ impl Platform {
             let charged = match Self::components_of(evaluation, &roster) {
                 Ok(components) => {
                     let charged = self.self_model.absorb(evaluation, &components);
-                    // The class the thesis was graded in, so a component
-                    // graded only elsewhere reads blind here (R12-WORLD-3036).
+                    // The sector the thesis was graded in, so a component
+                    // graded only elsewhere reads blind there (R12-WORLD-3036).
                     if matches!(charged, Ok(n) if n > 0)
-                        && let Some(class) = self.asset_class_of(&evaluation.subject)
+                        && let Some(sector) = self.sector_of(&evaluation.subject)
                     {
-                        self.self_model.note_graded_class(&components, &class);
+                        self.self_model.note_graded_sector(&components, &sector);
                     }
                     charged
                 }
@@ -15462,6 +15463,16 @@ impl Platform {
     /// graph, newest last (R12-WORLD-6015).
     pub fn reaction_episodes(&self) -> &[qip_world_model::reaction::ReactionEpisode] {
         &self.reaction_episodes
+    }
+
+    /// The sector the universe gives `object`, if it holds the object: the
+    /// column of the self-model's blind-spot cell (R12-WORLD-3036).
+    fn sector_of(&self, object: &str) -> Option<String> {
+        self.market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object.to_string()))
+            .map(|record| record.sector.as_str().to_string())
     }
 
     /// The asset class the universe gives `object`, if it holds the object.
@@ -22559,13 +22570,30 @@ impl Platform {
         // component for this thesis — unhealthy, stale, drifted or blind —
         // withholds that origin's supporting evidence. Read here, where the
         // thesis is formed, and nowhere near sizing or a limit.
-        let asset_class = self.asset_class_of(subject.as_str());
+        let sector = self.sector_of(subject.as_str());
         let origins: BTreeSet<&str> = std::iter::once(anomaly.detector.as_str())
             .chain(report.findings.iter().map(|f| f.agent_id.as_str()))
             .collect();
-        let withheld =
+        let mut withheld =
             self.self_model
-                .withheld_origins(origins, subject.as_str(), asset_class.as_deref());
+                .withheld_origins(origins, subject.as_str(), sector.as_deref());
+        // The detector is charged in LEARN under the claim class it raised
+        // (`components_of` keys it by `evaluation.class`, the anomaly kind),
+        // while its evidence travels under the detector's own name. Read
+        // under the name only, its blind spot never reached this thesis: a
+        // detector graded on information-technology names was weighed at
+        // full weight on an energy name. So the detector is also read under
+        // its kind, and a withholding found there is filed under the origin
+        // its evidence carries. It only ever withholds.
+        let kind = anomaly.kind.as_str();
+        if !withheld.contains_key(anomaly.detector.as_str())
+            && let Some(reason) = self
+                .self_model
+                .withheld_origins([kind], subject.as_str(), sector.as_deref())
+                .remove(kind)
+        {
+            withheld.insert(anomaly.detector.clone(), reason);
+        }
         let outcome = self.reasoning.reason_withholding(
             SynthesisInput {
                 hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
