@@ -257,6 +257,27 @@ const CONTRACT_STREAM_SALT: u64 = 0x434F_4E54_5241_4354; // "CONTRACT"
 /// material story and differs only by what that story does to the price.
 const MATERIAL_STREAM_SALT: u64 = 0x4D41_5445_5249_414C; // "MATERIAL"
 
+/// Folded into the seed for the material macro stream
+/// (`SyntheticEnvironment::macro_rng`), for the reason
+/// [`MATERIAL_STREAM_SALT`] gives: adding macro releases to the feed must not
+/// move a single earnings draw, so every seeded run that depended on when a
+/// company's release fired still sees it fire at the same instant.
+const MACRO_STREAM_SALT: u64 = 0x4D41_4352_4F52_454C; // "MACROREL"
+
+/// The one macro series the synthetic world publishes on its own, and the
+/// region it names. Deliberately not the id of any published series the
+/// platform takes a rate from (`POLICY_RATE.*`): a synthetic print must never
+/// be read as a real rate (R12-WORLD-6015).
+pub const SYNTHETIC_MACRO_SERIES: &str = "SYNTHETIC.RATES_INDEX";
+/// The region [`SYNTHETIC_MACRO_SERIES`] is published for.
+pub const SYNTHETIC_MACRO_REGION: &str = "synthetic";
+
+/// The level [`SYNTHETIC_MACRO_SERIES`] starts at, in percent: the demo
+/// world's own contract carry rate (four per cent), so the synthetic rates
+/// index starts where the synthetic world already says money costs. Not a
+/// market figure and not a forecast of one.
+pub const SYNTHETIC_MACRO_START_LEVEL: f64 = 4.0;
+
 /// The smallest earnings surprise the synthetic material stream publishes,
 /// as a fraction of consensus.
 ///
@@ -290,6 +311,11 @@ pub struct EnvironmentConfig {
     /// release with a surprise between [`MATERIAL_SURPRISE_FLOOR`] and
     /// [`MATERIAL_SURPRISE_CEILING`], its fundamental record, its story and
     /// the price's partial response, drawn from a stream of its own.
+    ///
+    /// The same rate, per series, governs the synthetic macro releases of
+    /// [`SYNTHETIC_MACRO_SERIES`] (R12-WORLD-6015), drawn from a third
+    /// stream: one figure rather than two, so a fixture that turns material
+    /// releases off turns all of them off.
     ///
     /// Why the default is not zero: routine stories are noise by design and
     /// none is material, so a feed of only those gave the platform's
@@ -338,6 +364,12 @@ pub struct SyntheticEnvironment {
     /// The stream material stories draw from, kept apart from `rng` for the
     /// reason [`MATERIAL_STREAM_SALT`] gives.
     event_rng: Xoshiro256,
+    /// The stream synthetic macro releases draw from, for the reason
+    /// [`MACRO_STREAM_SALT`] gives.
+    macro_rng: Xoshiro256,
+    /// The last published level of [`SYNTHETIC_MACRO_SERIES`], which the next
+    /// release's consensus is.
+    macro_level: f64,
     cursor: Timestamp,
     step_index: u64,
     scripted: Vec<ScriptedEvent>,
@@ -374,6 +406,8 @@ impl SyntheticEnvironment {
             rng: Xoshiro256::seeded(config.seed),
             contract_rng: Xoshiro256::seeded(config.seed ^ CONTRACT_STREAM_SALT),
             event_rng: Xoshiro256::seeded(config.seed ^ MATERIAL_STREAM_SALT),
+            macro_rng: Xoshiro256::seeded(config.seed ^ MACRO_STREAM_SALT),
+            macro_level: SYNTHETIC_MACRO_START_LEVEL,
             cursor: start,
             step_index: 0,
             scripted: Vec::new(),
@@ -593,7 +627,81 @@ impl SyntheticEnvironment {
             self.fired.push(ScriptedEvent::new(self.cursor, kind));
         }
 
+        // Material macro releases, from their own stream, at the material
+        // rate per series (R12-WORLD-6015). Consensus is the last print, so
+        // the surprise is the level's change; its magnitude is drawn from the
+        // band earnings surprises use, in percentage points, with a random
+        // sign. Whether a release is material is the platform's to judge
+        // against the series' own history, not this generator's to assert.
+        let expected_macro = self.config.material_news_per_day * fraction_of_day;
+        let macro_count = self.macro_rng.poisson(expected_macro.clamp(0.0, 20.0));
+        for _ in 0..macro_count {
+            let magnitude = self
+                .macro_rng
+                .uniform(MATERIAL_SURPRISE_FLOOR, MATERIAL_SURPRISE_CEILING);
+            let surprise = if self.macro_rng.bernoulli(0.5) {
+                magnitude
+            } else {
+                -magnitude
+            };
+            let level = self.macro_level + surprise;
+            let at = self.cursor;
+            records.extend(self.publish_macro(
+                SYNTHETIC_MACRO_SERIES,
+                SYNTHETIC_MACRO_REGION,
+                level,
+                surprise,
+                at,
+                Stream::Material,
+            ));
+            self.fired.push(ScriptedEvent::new(
+                at,
+                ScriptedEventKind::MacroSurprise {
+                    series_id: SYNTHETIC_MACRO_SERIES.into(),
+                    region: SYNTHETIC_MACRO_REGION.into(),
+                    level,
+                    surprise,
+                },
+            ));
+        }
+
         records
+    }
+
+    /// Publish one macro release — the observation, its story, and the
+    /// shock to the rates factor every instrument loading on it carries.
+    /// Shared by the scripted surprise and the material macro stream so the
+    /// two cannot come to publish different things; `stream` says which
+    /// generator the observation's `previous` draws from.
+    fn publish_macro(
+        &mut self,
+        series_id: &str,
+        region: &str,
+        level: f64,
+        surprise: f64,
+        at: Timestamp,
+        stream: Stream,
+    ) -> Vec<SensedRecord> {
+        let rng = match stream {
+            Stream::Main => &mut self.rng,
+            Stream::Material => &mut self.macro_rng,
+        };
+        let observation =
+            narrative::macro_observation(series_id, region, level, surprise, at, rng);
+        if series_id == SYNTHETIC_MACRO_SERIES {
+            self.macro_level = level;
+        }
+        // A macro surprise moves the rates factor, which propagates to
+        // every instrument loading on it.
+        if self.factors.shocks.len() > 1 {
+            self.factors.shocks[1] += surprise * 0.01;
+        }
+        vec![
+            SensedRecord::Macro(Box::new(observation)),
+            SensedRecord::News(Box::new(narrative::macro_story(
+                series_id, region, surprise, at,
+            ))),
+        ]
     }
 
     /// Name, on each mention of a company this world lists an instrument
@@ -983,22 +1091,14 @@ impl SyntheticEnvironment {
                 level,
                 surprise,
             } => {
-                records.push(SensedRecord::Macro(Box::new(narrative::macro_observation(
+                records.extend(self.publish_macro(
                     series_id,
                     region,
                     *level,
                     *surprise,
                     at,
-                    &mut self.rng,
-                ))));
-                records.push(SensedRecord::News(Box::new(narrative::macro_story(
-                    series_id, region, *surprise, at,
-                ))));
-                // A macro surprise moves the rates factor, which propagates to
-                // every instrument loading on it.
-                if self.factors.shocks.len() > 1 {
-                    self.factors.shocks[1] += surprise * 0.01;
-                }
+                    Stream::Main,
+                ));
             }
         }
         records

@@ -400,7 +400,11 @@ pub const REACTION_HORIZONS_BARS: [usize; 3] = [1, 5, 20];
 pub const CONTRADICTION_CONFIDENCE_FACTOR: f64 = 0.5;
 
 /// A reaction that went against a held edge, and what it did to the edge.
-#[derive(Clone, Debug, PartialEq)]
+///
+/// Serialisable because the kernel journals each one beside the episode
+/// that caused it (R12-WORLD-6015): a confidence change held only in memory
+/// is lost on a restart, and the log is the record of what the graph learnt.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ReactionContradiction {
     pub cause: String,
     pub effect: String,

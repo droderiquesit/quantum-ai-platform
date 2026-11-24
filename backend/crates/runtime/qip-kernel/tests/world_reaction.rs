@@ -9,6 +9,12 @@
 //! a company and the bars an instrument, with nothing joining the two; and
 //! every routine headline would have counted as evidence had it matched.
 //!
+//! Since then: macro releases are measured too, against a materiality rule
+//! on their series' own history and paired with every instrument; the
+//! shortest horizon is read from ticks, which the default feed carries; and
+//! each applied episode is journaled, so a restart rebuilds the graph from
+//! the log instead of applying anything twice.
+//!
 //! These tests drive the platform exactly as `qip-fastbrain` does — the
 //! six-instrument synthetic exchange on its default configuration
 //! (`EnvironmentConfig::default()`, which `Feed::synthetic` spreads), the
@@ -56,12 +62,22 @@ struct Run {
     platform: Platform,
     environment: SyntheticEnvironment,
     routine_stories: usize,
+    /// Every tick the feed published, as `(instrument, instant, price)`.
+    ticks: Vec<(String, Timestamp, f64)>,
+    /// Every bar the feed published, as `(instrument, open, close time, close)`.
+    bars: Vec<(String, Timestamp, Timestamp, f64)>,
+    /// The instant of the last cycle run.
+    last_cycle: Timestamp,
 }
 
 /// Feed the default synthetic exchange into a default platform, a cycle every
 /// [`CYCLE_EVERY`], until `done` holds of the platform or `days` have passed.
 fn run(days: i64, done: impl Fn(&Platform) -> bool) -> Result<Run> {
-    let config = PlatformConfig::default();
+    run_with(PlatformConfig::default(), days, done)
+}
+
+/// [`run`] on a given platform configuration.
+fn run_with(config: PlatformConfig, days: i64, done: impl Fn(&Platform) -> bool) -> Result<Run> {
     let (context, _clock) = Context::deterministic(start(), config.seed);
     let mut platform = Platform::new(
         config,
@@ -73,6 +89,9 @@ fn run(days: i64, done: impl Fn(&Platform) -> bool) -> Result<Run> {
     let mut environment = SyntheticEnvironment::demo(start(), EnvironmentConfig::default());
     let until = start().saturating_add(Duration::from_days(days));
     let mut routine_stories = 0;
+    let mut ticks = Vec::new();
+    let mut bars = Vec::new();
+    let mut last_cycle = start();
     while environment.cursor() < until {
         let records = environment.run_until(environment.cursor().saturating_add(CYCLE_EVERY));
         routine_stories += records
@@ -81,8 +100,25 @@ fn run(days: i64, done: impl Fn(&Platform) -> bool) -> Result<Run> {
                 |r| matches!(r, SensedRecord::News(item) if item.item_id.starts_with("routine-")),
             )
             .count();
+        for record in &records {
+            match record {
+                SensedRecord::Tick(tick) => ticks.push((
+                    tick.object_id.as_str().to_string(),
+                    tick.at,
+                    tick.price.to_f64(),
+                )),
+                SensedRecord::Bar(bar) => bars.push((
+                    bar.object_id.as_str().to_string(),
+                    bar.open_time,
+                    bar.close_time(),
+                    bar.close.to_f64(),
+                )),
+                _ => {}
+            }
+        }
         platform.observe(records);
-        platform.run_cycle(environment.cursor());
+        last_cycle = environment.cursor();
+        platform.run_cycle(last_cycle);
         if done(&platform) {
             break;
         }
@@ -91,6 +127,9 @@ fn run(days: i64, done: impl Fn(&Platform) -> bool) -> Result<Run> {
         platform,
         environment,
         routine_stories,
+        ticks,
+        bars,
+        last_cycle,
     })
 }
 
@@ -122,6 +161,7 @@ fn a_material_event_on_the_default_feed_yields_multi_asset_reaction_records_at_t
         platform,
         environment,
         routine_stories,
+        ..
     } = run(3, |p| {
         p.reaction_episodes()
             .iter()
@@ -357,5 +397,361 @@ fn an_immaterial_release_on_the_default_feed_yields_no_reaction_record() -> Resu
             "the immaterial event {event_id} yielded a reaction record"
         );
     }
+    Ok(())
+}
+
+/// The synthetic macro series, as the feed names it.
+const MACRO_SERIES: &str = qip_market_ingestion::synthetic::SYNTHETIC_MACRO_SERIES;
+
+/// The materiality rule the platform states for a macro release, restated
+/// here from its documented terms rather than called: a surprise is material
+/// when the series holds at least `MACRO_MATERIALITY_MIN_HISTORY` past
+/// surprises and it reaches `MACRO_MATERIALITY_SIGMAS` of their sample
+/// standard deviation. Returns, per release in order, whether it is.
+fn material_by_the_stated_rule(surprises: &[f64]) -> Vec<bool> {
+    use qip_kernel::platform::{MACRO_MATERIALITY_MIN_HISTORY, MACRO_MATERIALITY_SIGMAS};
+    surprises
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let history = &surprises[..i];
+            if history.len() < MACRO_MATERIALITY_MIN_HISTORY {
+                return false;
+            }
+            let n = history.len() as f64;
+            let mean = history.iter().sum::<f64>() / n;
+            let sd = (history.iter().map(|h| (h - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
+            sd > 0.0 && s.abs() >= MACRO_MATERIALITY_SIGMAS * sd
+        })
+        .collect()
+}
+
+/// Macro releases on the default feed are measured like company events: a
+/// release whose surprise reaches one standard deviation of its series' own
+/// past surprises yields reaction records at all three horizons, each on
+/// every instrument the feed carries, and a release that does not yields
+/// none.
+///
+/// Mutations (each fired): `with_material(material || true)` on the kernel's
+/// macro arm (an immaterial release reacts); drop the macro landing in
+/// `react_to_world_events` (the material release at 2026-10-14T08:53 reacts
+/// at no horizon).
+#[test]
+fn a_material_macro_release_on_the_default_feed_reacts_on_every_instrument_and_an_immaterial_one_does_not()
+-> Result<()> {
+    let Run {
+        platform,
+        environment,
+        last_cycle,
+        ..
+    // Fourteen whole days, not "until the first macro reaction": a stop on
+    // the first reaction stops wherever a broken rule first reacts, which
+    // under a rule that admits everything is before any release the stated
+    // rule calls material has settled — the test then failed on its premise
+    // rather than on the immaterial release reacting. The default feed's
+    // first release the stated rule calls material fires on day 13.
+    } = run(14, |_| false)?;
+    let releases: Vec<(Timestamp, f64)> = environment
+        .fired_events()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ScriptedEventKind::MacroSurprise {
+                series_id,
+                surprise,
+                ..
+            } if series_id == MACRO_SERIES => Some((e.at, *surprise)),
+            _ => None,
+        })
+        .collect();
+    let surprises: Vec<f64> = releases.iter().map(|(_, s)| *s).collect();
+    let material = material_by_the_stated_rule(&surprises);
+    // Premise: the feed published releases on both sides of the rule, old
+    // enough that every horizon has closed.
+    // Settled: the twentieth one-minute bar after the release has closed by
+    // the last cycle (it opens nineteen minutes after the release's own bar).
+    let settled = |at: Timestamp| at.saturating_add(Duration::from_mins(21)) <= last_cycle;
+    let material_settled: Vec<Timestamp> = releases
+        .iter()
+        .zip(&material)
+        .filter(|((at, _), m)| **m && settled(*at))
+        .map(|((at, _), _)| *at)
+        .collect();
+    let immaterial_settled: Vec<Timestamp> = releases
+        .iter()
+        .zip(&material)
+        .filter(|((at, _), m)| !**m && settled(*at))
+        .map(|((at, _), _)| *at)
+        .collect();
+    assert!(
+        !material_settled.is_empty(),
+        "premise: no material macro release settled ({} releases)",
+        releases.len()
+    );
+    assert!(
+        !immaterial_settled.is_empty(),
+        "premise: every macro release was material"
+    );
+    let carried: BTreeSet<String> = environment
+        .instruments()
+        .iter()
+        .map(|i| i.object_id.as_str().to_string())
+        .collect();
+    let episodes_of = |at: Timestamp| -> Vec<&qip_world_model::reaction::ReactionEpisode> {
+        let id = format!("{MACRO_SERIES}:{}", at.as_nanos());
+        platform
+            .reaction_episodes()
+            .iter()
+            .filter(|e| e.episode_id.rsplit_once('@').is_some_and(|(e, _)| e == id))
+            .collect()
+    };
+    for at in &material_settled {
+        let episodes = episodes_of(*at);
+        assert_eq!(
+            episodes.iter().map(|e| e.lag_bars).collect::<Vec<_>>(),
+            vec![1, 5, 20],
+            "the material release at {at} did not react at exactly three horizons"
+        );
+        for episode in episodes {
+            assert_eq!(episode.event_name, format!("macro/{MACRO_SERIES}"));
+            let measured: Vec<String> = episode
+                .affected_instruments
+                .iter()
+                .map(|(id, _, _)| id.clone())
+                .collect();
+            let set: BTreeSet<String> = measured.iter().cloned().collect();
+            assert_eq!(
+                set, carried,
+                "{} was not paired with every instrument",
+                episode.episode_id
+            );
+            assert_eq!(set.len(), measured.len(), "an instrument measured twice");
+        }
+    }
+    for at in &immaterial_settled {
+        assert!(
+            episodes_of(*at).is_empty(),
+            "the immaterial macro release at {at} yielded a reaction record"
+        );
+    }
+    Ok(())
+}
+
+/// The shortest horizon is read from ticks, the finest resolution the
+/// default feed carries: each instrument's move in the 1-horizon episode is
+/// its first tick after the event against its last tick before it, at the
+/// first tick's instant — and that differs from what the bars would have
+/// said, so the test can tell the two apart.
+///
+/// Mutation (fired): measure the shortest horizon from bars.
+#[test]
+fn the_shortest_reaction_horizon_is_measured_from_the_feeds_ticks() -> Result<()> {
+    let Run {
+        platform,
+        ticks,
+        bars,
+        ..
+    } = run(3, |p| {
+        p.reaction_episodes()
+            .iter()
+            .any(|e| e.episode_id.starts_with("earnings-") && e.lag_bars == 1)
+    })?;
+    let episode = platform
+        .reaction_episodes()
+        .iter()
+        .find(|e| e.episode_id.starts_with("earnings-") && e.lag_bars == 1)
+        .expect("a material release reacted at its shortest horizon");
+    let at = episode.event_time;
+    assert!(
+        episode.affected_instruments.len() > 1,
+        "premise: one instrument measured"
+    );
+    let mut differs_from_bars = false;
+    for (instrument, moved, _) in &episode.affected_instruments {
+        let mine: Vec<(Timestamp, f64)> = ticks
+            .iter()
+            .filter(|(i, _, _)| i == instrument)
+            .map(|(_, t, p)| (*t, *p))
+            .collect();
+        let base = mine
+            .iter()
+            .rev()
+            .find(|(t, _)| *t < at)
+            .map(|(_, p)| *p)
+            .expect("a tick before the event");
+        let (reacted_at, price) = *mine
+            .iter()
+            .find(|(t, _)| *t > at)
+            .expect("a tick after the event");
+        let expected = (price / base - 1.0) * 10_000.0;
+        assert!(
+            (moved - expected).abs() < 1e-9,
+            "{instrument} moved {moved} bps in {}, its ticks say {expected}",
+            episode.episode_id
+        );
+        if instrument == &episode.affected_instruments[0].0 {
+            assert_eq!(
+                episode.reaction_time, reacted_at,
+                "the reaction is not dated at the first tick after the event"
+            );
+        }
+        let series: Vec<&(String, Timestamp, Timestamp, f64)> =
+            bars.iter().filter(|(i, ..)| i == instrument).collect();
+        let first = series
+            .iter()
+            .position(|(_, open, _, _)| *open >= at)
+            .expect("a bar after the event");
+        let by_bars = (series[first].3 / series[first - 1].3 - 1.0) * 10_000.0;
+        if (by_bars - expected).abs() > 1e-9 {
+            differs_from_bars = true;
+        }
+    }
+    assert!(
+        differs_from_bars,
+        "premise: the ticks and the bars agree on every instrument, so this test cannot tell \
+         which the episode was read from"
+    );
+    assert!(
+        episode.rationale.ends_with("over 1 tick"),
+        "the episode does not say it was read from ticks: {}",
+        episode.rationale
+    );
+    Ok(())
+}
+
+/// The episodes a WorldReactionRecorded record carries in `platform`'s log.
+fn journaled_reactions(platform: &Platform) -> Vec<String> {
+    use qip_events::EventBody;
+    use qip_kernel::platform::WorldReactionRecorded;
+    platform
+        .event_log()
+        .records()
+        .iter()
+        .filter(|r| r.event.topic == WorldReactionRecorded::TOPIC)
+        .filter_map(|r| {
+            qip_streaming::envelope::StreamEnvelope::from_frame(&r.event)
+                .and_then(|e| e.decode::<WorldReactionRecorded>())
+                .ok()
+                .map(|d| d.body.episode.episode_id)
+        })
+        .collect()
+}
+
+/// The reaction-learnt edges of the causal graph, with their confidence.
+fn reaction_edges(platform: &Platform) -> Vec<(String, String, f64, usize)> {
+    platform
+        .world()
+        .causal()
+        .edges()
+        .iter()
+        .filter(|e| e.evidence.iter().any(|id| id.starts_with("reaction:")))
+        .map(|e| {
+            (
+                e.cause.clone(),
+                e.effect.clone(),
+                e.confidence,
+                e.evidence.len(),
+            )
+        })
+        .collect()
+}
+
+/// A restart rebuilds the reaction learning from the hash-chained log and
+/// applies nothing twice: every episode the first process applied is
+/// journaled with the confidence changes it caused; a second process on the
+/// same log holds the same episodes, contradictions and edge confidences
+/// before it has sensed anything; and when the feed re-delivers the same
+/// events cycle by cycle, no episode is applied or journaled again.
+///
+/// Mutations (each fired): drop the `journal_record` in
+/// `react_to_world_events` (the restart holds nothing); skip the
+/// `apply_reaction` in `resume_world_reactions` (the edges are lost); skip
+/// inserting into `reactions_resumed` (the replay applies every episode a
+/// second time).
+#[test]
+fn a_restart_rebuilds_reaction_learning_from_the_log_and_applies_nothing_twice() -> Result<()> {
+    let directory = std::env::temp_dir().join(format!(
+        "qip-world-reaction-restart-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("a scratch directory");
+    let path = directory.join("events.log");
+    let config = PlatformConfig::default().with_event_log_file(&path);
+    let first = run_with(config.clone(), 10, |p| !p.reaction_contradictions().is_empty())?;
+    let episodes: Vec<String> = first
+        .platform
+        .reaction_episodes()
+        .iter()
+        .map(|e| e.episode_id.clone())
+        .collect();
+    let contradictions = first.platform.reaction_contradictions().to_vec();
+    let edges = reaction_edges(&first.platform);
+    let journaled = journaled_reactions(&first.platform);
+    // Premise: the first process learnt something, contradicted an edge,
+    // and journaled each episode it applied exactly once.
+    assert!(!episodes.is_empty(), "premise: no reaction was applied");
+    assert!(!contradictions.is_empty(), "premise: no edge was contradicted");
+    assert!(!edges.is_empty(), "premise: no edge was learnt from a reaction");
+    assert_eq!(
+        journaled, episodes,
+        "the log does not hold exactly the episodes the process applied"
+    );
+    let last = first.last_cycle;
+    drop(first);
+
+    // The second process, on the same log, before it senses anything.
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    let mut second = Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        catalogue(),
+        LimitSet::new("world-reaction-test"),
+    )?;
+    let resumed: Vec<String> = second
+        .reaction_episodes()
+        .iter()
+        .map(|e| e.episode_id.clone())
+        .collect();
+    assert_eq!(resumed, episodes, "the restart did not rebuild the episodes");
+    assert_eq!(
+        second.reaction_contradictions(),
+        contradictions.as_slice(),
+        "the restart did not rebuild the contradictions"
+    );
+    assert_eq!(
+        reaction_edges(&second),
+        edges,
+        "the restart did not rebuild the reaction-learnt edges"
+    );
+
+    // The same feed again, cycle by cycle, to the same instant.
+    let mut environment = SyntheticEnvironment::demo(start(), EnvironmentConfig::default());
+    while environment.cursor() < last {
+        let records = environment.run_until(environment.cursor().saturating_add(CYCLE_EVERY));
+        second.observe(records);
+        second.run_cycle(environment.cursor());
+    }
+    assert_eq!(environment.cursor(), last, "premise: the replay stopped elsewhere");
+    let replayed: Vec<String> = second
+        .reaction_episodes()
+        .iter()
+        .map(|e| e.episode_id.clone())
+        .collect();
+    assert_eq!(
+        replayed, episodes,
+        "the re-delivered events were applied again"
+    );
+    assert_eq!(
+        journaled_reactions(&second),
+        episodes,
+        "the re-delivered events were journaled again"
+    );
+    assert_eq!(
+        reaction_edges(&second),
+        edges,
+        "the re-delivered events moved an edge's confidence a second time"
+    );
+    let _ = std::fs::remove_dir_all(&directory);
     Ok(())
 }
