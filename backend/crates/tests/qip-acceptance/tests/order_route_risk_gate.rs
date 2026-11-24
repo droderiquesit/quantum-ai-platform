@@ -2208,6 +2208,45 @@ fn kernel_functions(sources: &[(String, String)]) -> Vec<KernelFn> {
         .collect()
 }
 
+/// `code` with the whitespace on either side of every `.` removed, line
+/// breaks included, so a method chain reads the same however it is wrapped:
+/// `self\n    .cost_router\n    .determine(` is `self.cost_router.determine(`.
+///
+/// rustfmt breaks a chain before each `.` once it outgrows a line, and the
+/// scans matched the receiver against the text immediately before the `.`.
+/// `calls_in`'s `self.` arm stripped a trailing `self` from text that still
+/// ended in the newline and indent, so it never matched, and every wrapped
+/// own-method call in the kernel was a call the walk did not follow —
+/// twenty-seven in production on the day this was written, `Treasury`'s
+/// `self\n.check_leverage(` among them — and the model-surface scan's
+/// `cost_router.` arm read `self\n.cost_router\n.select(` as no route at
+/// all. Assumes
+/// [`code_only`] text: no `.` is left inside a comment or a literal for this
+/// to join.
+fn joined_chains(code: &str) -> String {
+    let mut joined = String::with_capacity(code.len());
+    let mut held = String::new();
+    let mut after_dot = false;
+    for c in code.chars() {
+        if c.is_whitespace() {
+            if !after_dot {
+                held.push(c);
+            }
+            continue;
+        }
+        if c == '.' {
+            after_dot = true;
+        } else {
+            joined.push_str(&held);
+            after_dot = false;
+        }
+        held.clear();
+        joined.push(c);
+    }
+    joined.push_str(&held);
+    joined
+}
+
 /// A call [`calls_in`] can follow, and where its definition is looked for.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Call {
@@ -2232,7 +2271,13 @@ enum Call {
 /// `LeverageBook::check` as the kernel's own. That is the scan's stated
 /// limit: it follows by name as far as the text names the owner. The
 /// declaration itself (`fn name(`) is not a call.
+///
+/// The body is read through [`joined_chains`] first, so a call rustfmt
+/// wrapped across lines (`self\n    .helper(..)`) is the same call as its
+/// one-line form.
 fn calls_in(body: &str) -> BTreeSet<Call> {
+    let body = joined_chains(body);
+    let body = body.as_str();
     let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let preceded_by_ident = |text: &str| text.chars().next_back().is_some_and(ident);
     let mut calls = BTreeSet::new();
@@ -2388,6 +2433,69 @@ fn the_kernel_walk_follows_calls_by_name_and_owner() {
         !reached.contains(&named(Some("Other"), "own"))
             && !reached.contains(&named(Some("Other"), "leaf")),
         "a same-named method of another type, or a method on another receiver, was followed"
+    );
+}
+
+/// A call rustfmt wrapped across lines is followed as its one-line form is:
+/// `self\n    .helper(..)` reaches `Platform::helper`, a wrapped chain
+/// `self\n    .adjust(..)\n    .unwrap_or_default()` reaches `adjust`, and a
+/// wrapped `self\n    .cost_router\n    .select(` is reported as the
+/// router's model arm. A wrapped method on a field
+/// (`self\n    .field\n    .leaf()`) is still not followed: joining the
+/// lines must not turn another receiver into `self`.
+///
+/// The failure this prevents: the `self.` arm of [`calls_in`] stripped a
+/// trailing `self` without trimming the line break before it, so none of
+/// the kernel's twenty-seven wrapped own-method calls was followed and a
+/// gated decision could reach a model through any of them unseen.
+///
+/// Mutations: make [`joined_chains`] return its input unchanged, or drop
+/// its call from `calls_in` — the wrapped call reads as no call at all
+/// (`left: {}`); drop its call from `model_surface_named` alone — the
+/// router arm goes unreported.
+#[test]
+fn the_kernel_walk_follows_a_call_rustfmt_wrapped_across_lines() {
+    let fixture = "impl Platform {\n    \
+                   fn decide(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let figures = self\n            .helper(now);\n        \
+                   let lot = self\n            .adjust(now)\n            .unwrap_or_default();\n        \
+                   self\n            .field\n            .leaf();\n    }\n    \
+                   fn helper(&self, now: Timestamp) {}\n    \
+                   fn adjust(&self, now: Timestamp) {}\n    \
+                   fn leaf(&self) {}\n    \
+                   fn judged(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let placed = self\n            .cost_router\n            .select(&context);\n    }\n}\n";
+    assert_eq!(
+        calls_in("let figures = self.helper(now);"),
+        BTreeSet::from([Call::Own("helper".to_string())]),
+        "premise: the one-line form is followed"
+    );
+    assert_eq!(
+        calls_in("let figures = self\n            .helper(now);"),
+        calls_in("let figures = self.helper(now);"),
+        "the wrapped form is not the same call as the one-line form"
+    );
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let decide = functions
+        .iter()
+        .find(|function| function.name == "decide")
+        .expect("premise: the fixture's root was split out");
+    let roots: Vec<&KernelFn> = vec![decide];
+    let reached: BTreeSet<String> = kernel_closure(&functions, &roots)
+        .into_iter()
+        .map(|(_, function)| function.name.clone())
+        .collect();
+    assert_eq!(
+        reached,
+        BTreeSet::from(["decide", "helper", "adjust"].map(str::to_string)),
+        "a wrapped own-method call was not followed, or a wrapped field method was"
+    );
+    let reported: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reported,
+        BTreeSet::from(["judged names [\"cost_router.select\"] (fixture.rs)".to_string()]),
+        "a wrapped `self.cost_router.select(` went unreported"
     );
 }
 
@@ -2829,8 +2937,11 @@ const MODEL_SURFACE: [&str; 20] = [
 const MODEL_ROUTES: [&str; 3] = ["select", "escalate", "route"];
 
 /// Which of [`MODEL_SURFACE`] and `cost_router.`[`MODEL_ROUTES`] `code`
-/// names.
+/// names, the router's arms read through [`joined_chains`] so that
+/// `self\n    .cost_router\n    .select(` is the router's `select` too.
 fn model_surface_named(code: &str) -> Vec<String> {
+    let code = joined_chains(code);
+    let code = code.as_str();
     let mut named: Vec<String> = MODEL_SURFACE
         .iter()
         .filter(|token| !token_offsets(code, token).is_empty())
