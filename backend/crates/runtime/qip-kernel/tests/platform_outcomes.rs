@@ -1070,10 +1070,24 @@ fn decide_names_the_source_of_every_planned_move_and_says_why_no_financing_is_co
     );
 
     // The funding is derived from the journalled plan, so the log alone
-    // reproduces what the sentence said.
-    let funding = platform
-        .treasury()
-        .fund_plan(plan, qip_kernel::platform::CENTRAL_TREASURY)?;
+    // reproduces what the sentence said. The undeclared treasury finances
+    // nothing, so no leverage decision is routed; the gate is offered only
+    // because the signature demands the means to route one.
+    let routed = || {
+        Ok(
+            qip_risk::gate::DeterministicGate::minted_by_router_determination(
+                "test: replaying the journalled plan's funding",
+            ),
+        )
+    };
+    let funding =
+        platform
+            .treasury()
+            .fund_plan(&routed, plan, qip_kernel::platform::CENTRAL_TREASURY)?;
+    assert_eq!(
+        funding.leverage_routed, None,
+        "premise: the replay made no leverage decision"
+    );
     assert!(
         decide.contains(&funding.describe()),
         "the sentence is the funding of the journalled plan: {decide}"

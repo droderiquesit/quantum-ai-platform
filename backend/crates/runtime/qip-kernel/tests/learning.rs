@@ -629,18 +629,27 @@ fn the_cycle_that_grades_a_thesis_scores_the_routing_that_bought_it_under_the_de
         first.summarise()
     );
     let prediction = platform.predictions()[0].clone();
-    let routing = platform
-        .reason_routing()
-        .expect("premise: REASON routed the decision")
-        .clone();
-    assert!(routing.dispatched, "premise: the panel convened");
-    let judgement = routing
-        .judgement
-        .clone()
-        .expect("a convened routing carries the judgement minted at the decision");
+    // Read in a borrow rather than cloned: a `ReasonRouting` holds a
+    // `qip_cost_router::Routing`, which is not `Clone` because its
+    // deterministic arm can mint a gate (R12-RISK-3022).
+    let (judgement, placed_under) = {
+        let routing = platform
+            .reason_routing()
+            .expect("premise: REASON routed the decision");
+        assert!(routing.dispatched, "premise: the panel convened");
+        let judgement = routing
+            .judgement
+            .clone()
+            .expect("a convened routing carries the judgement minted at the decision");
+        let placed_under = routing
+            .routing
+            .as_ref()
+            .map(|placed| placed.conditions().clone());
+        (judgement, placed_under)
+    };
     assert_eq!(
         Some(judgement.conditions()),
-        routing.routing.as_ref().map(|placed| placed.conditions()),
+        placed_under.as_ref(),
         "the judgement's conditions are not the routing's own"
     );
     let rung = judgement.model().to_string();

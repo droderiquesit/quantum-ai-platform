@@ -1067,30 +1067,7 @@ fn outside_functions(code: &str) -> String {
         if start < covered || function_name(line).is_none() {
             continue;
         }
-        // The body opens at the first `{` outside the signature's `()` and
-        // `[]`; a `;` there first ends a declaration with no body.
-        let mut nesting = 0usize;
-        let mut braces = 0usize;
-        let mut end = bytes.len();
-        for (at, &byte) in bytes.iter().enumerate().skip(start) {
-            match byte {
-                b'(' | b'[' if braces == 0 => nesting += 1,
-                b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
-                b';' if braces == 0 && nesting == 0 => {
-                    end = at + 1;
-                    break;
-                }
-                b'{' if nesting == 0 || braces > 0 => braces += 1,
-                b'}' if braces > 0 => {
-                    braces -= 1;
-                    if braces == 0 {
-                        end = at + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
+        let end = item_end(bytes, start);
         for flag in &mut blank[start..end] {
             *flag = true;
         }
@@ -1099,6 +1076,31 @@ fn outside_functions(code: &str) -> String {
     code.char_indices()
         .map(|(at, c)| if blank[at] && c != '\n' { ' ' } else { c })
         .collect()
+}
+
+/// Where the function declared at `start` ends: the brace that closes its
+/// body, or the `;` that ends a declaration with none. The body opens at the
+/// first `{` outside the signature's `()` and `[]`. Assumes [`code_only`]
+/// text, so no brace or `;` sits inside a comment or a literal.
+fn item_end(bytes: &[u8], start: usize) -> usize {
+    let mut nesting = 0usize;
+    let mut braces = 0usize;
+    for (at, &byte) in bytes.iter().enumerate().skip(start) {
+        match byte {
+            b'(' | b'[' if braces == 0 => nesting += 1,
+            b')' | b']' if braces == 0 => nesting = nesting.saturating_sub(1),
+            b';' if braces == 0 && nesting == 0 => return at + 1,
+            b'{' if nesting == 0 || braces > 0 => braces += 1,
+            b'}' if braces > 0 => {
+                braces -= 1;
+                if braces == 0 {
+                    return at + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    bytes.len()
 }
 
 #[test]
@@ -1140,11 +1142,18 @@ fn the_function_splitter_reads_every_visibility_and_qualifier() {
 /// another type — `ReservationLedger::release(id, now)` takes two,
 /// `Proposal::release(now)` one — because the count is part of the
 /// signature and a receiver's name is not.
-const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 4] = [
+///
+/// `Treasury::check_leverage` joined the table with R12-RISK-3022 (c):
+/// `Treasury::first_breach` called `LeverageBook::check` with no routing, a
+/// hard limit on every financed requirement that the cycle reached with no
+/// gate. `check` takes four arguments (strategy, region, notional, capital),
+/// which is what tells it from the kernel's other `check`s.
+const KERNEL_HARD_LIMIT_CALLS: [(&str, &str, &str, usize); 5] = [
     ("size_survival", "SurvivalGovernor", "size", 5),
     ("seed_survival_ceiling", "SurvivalGovernor", "seed", 4),
     ("sign_off_drafts", "Proposal", "approve", 2),
     ("advance_released", "Proposal", "release", 1),
+    ("check_leverage", "LeverageBook", "check", 4),
 ];
 
 /// Production text with every comment and the contents of every string and
@@ -1996,6 +2005,16 @@ fn the_dependency_scan_reads_single_quoted_package_renames() {
 
 /// Every model crate reachable from `root`, with the path that reaches it.
 fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Vec<String> {
+    crates_reached(manifests, root, &MODEL_CRATES)
+}
+
+/// Every crate of `targets` reachable from `root` through normal
+/// dependencies, with the path that reaches it.
+fn crates_reached(
+    manifests: &BTreeMap<String, BTreeSet<String>>,
+    root: &str,
+    targets: &[&str],
+) -> Vec<String> {
     let mut reached = Vec::new();
     let mut seen = BTreeSet::new();
     let mut stack = vec![vec![root.to_string()]];
@@ -2004,7 +2023,7 @@ fn model_reach(manifests: &BTreeMap<String, BTreeSet<String>>, root: &str) -> Ve
         if !seen.insert(at.clone()) {
             continue;
         }
-        if MODEL_CRATES.contains(&at.as_str()) {
+        if targets.contains(&at.as_str()) {
             reached.push(path.join(" -> "));
             continue;
         }
@@ -2050,6 +2069,21 @@ fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
              is no longer held deterministic by its closure: {reached:?}"
         );
     }
+    // The same closure for every crate that holds a hard limit outside the
+    // kernel, each shown to be a workspace crate first: a root the manifests
+    // do not hold reaches nothing, and would pass here for that reason.
+    for (krate, _, _) in HARD_LIMIT_CRATES {
+        assert!(
+            manifests.contains_key(krate),
+            "premise: {krate} is a workspace crate"
+        );
+        let reached = model_reach(&manifests, krate);
+        assert!(
+            reached.is_empty(),
+            "{krate} holds a hard limit and can reach a crate that routes to a model: \
+             {reached:?}"
+        );
+    }
 
     // The same walk on a scratch copy of the manifest data with one model
     // edge added two links below the cell: it must be found, or the clean
@@ -2065,5 +2099,1883 @@ fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
             .iter()
             .any(|path| path.ends_with("-> qip-risk -> qip-cost-router")),
         "a model edge added below the cell went unseen: {reached:?}"
+    );
+}
+
+// --- what a gated kernel decision reaches (R12-RISK-3022) ------------------
+
+/// A kernel production function: its file, the type whose `impl` (or trait)
+/// declares it — `None` for a free function — its name, and its
+/// [`code_only`] text from its declaration through the end of its body.
+struct KernelFn {
+    file: String,
+    owner: Option<String>,
+    name: String,
+    body: String,
+}
+
+/// The type an `impl` or `trait` header names: `impl<T> Book<T>` is `Book`,
+/// `impl Default for Treasury` is `Treasury`, `pub trait Gate: Debug` is
+/// `Gate`, and `impl crate::x::Plane` is `Plane`.
+fn header_owner(header: &str) -> Option<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let header = header.split('{').next()?.split(" where").next()?.trim();
+    let target = if let Some(rest) = header
+        .strip_prefix("pub ")
+        .unwrap_or(header)
+        .strip_prefix("trait ")
+    {
+        rest
+    } else {
+        let rest = header.strip_prefix("impl")?;
+        let rest = match rest.trim_start().strip_prefix('<') {
+            // Skip the impl's own generic list.
+            Some(generics) => {
+                let mut depth = 1usize;
+                let close = generics.char_indices().find(|(_, c)| {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })?;
+                &generics[close.0 + 1..]
+            }
+            None => rest,
+        };
+        rest.rsplit_once(" for ").map_or(rest, |(_, target)| target)
+    };
+    let path = target.trim().split('<').next()?;
+    let name: String = path
+        .rsplit("::")
+        .next()?
+        .chars()
+        .take_while(|c| ident(*c))
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// Every function in `code` with the type that declares it, each cut to its
+/// own extent — from the line that declares it through the brace that closes
+/// its body — rather than to the next declaration as [`function_items`]
+/// cuts it, so a struct, an `impl` header or a `const` written after a
+/// function is not read as its text. The owner is the `impl` or `trait`
+/// opened at the start of a line and closed by a `}` there.
+fn owned_function_bodies(code: &str) -> Vec<(Option<String>, String, &str)> {
+    let bytes = code.as_bytes();
+    let mut bodies = Vec::new();
+    let mut owner: Option<String> = None;
+    let mut offset = 0;
+    for line in code.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        if line.starts_with('}') {
+            owner = None;
+        }
+        let opens_impl = line.starts_with("impl")
+            || line.starts_with("trait ")
+            || line.starts_with("pub trait ")
+            || line.starts_with("unsafe impl");
+        if opens_impl {
+            owner = header_owner(line.strip_prefix("unsafe ").unwrap_or(line));
+        }
+        if let Some(name) = function_name(line) {
+            let owner = if line.starts_with(|c: char| !c.is_whitespace()) {
+                None
+            } else {
+                owner.clone()
+            };
+            bodies.push((owner, name, &code[start..item_end(bytes, start)]));
+        }
+    }
+    bodies
+}
+
+/// The kernel's production sources, each a file's path and its
+/// [`code_only`] text.
+fn kernel_sources() -> Vec<(String, String)> {
+    let mut files = Vec::new();
+    rust_files(&crates_root().join("runtime/qip-kernel/src"), &mut files);
+    assert!(files.len() > 10, "premise: the kernel's sources were found");
+    files
+        .iter()
+        .map(|path| {
+            let source = std::fs::read_to_string(path).expect("kernel source is readable");
+            (path.display().to_string(), code_only(&source))
+        })
+        .collect()
+}
+
+fn kernel_functions(sources: &[(String, String)]) -> Vec<KernelFn> {
+    sources
+        .iter()
+        .flat_map(|(file, code)| {
+            owned_function_bodies(code)
+                .into_iter()
+                .map(|(owner, name, body)| KernelFn {
+                    file: file.clone(),
+                    owner,
+                    name,
+                    body: body.to_string(),
+                })
+        })
+        .collect()
+}
+
+/// `code` with the whitespace on either side of every `.` removed, line
+/// breaks included, so a method chain reads the same however it is wrapped:
+/// `self\n    .cost_router\n    .determine(` is `self.cost_router.determine(`.
+///
+/// rustfmt breaks a chain before each `.` once it outgrows a line, and the
+/// scans matched the receiver against the text immediately before the `.`.
+/// `calls_in`'s `self.` arm stripped a trailing `self` from text that still
+/// ended in the newline and indent, so it never matched, and every wrapped
+/// own-method call in the kernel was a call the walk did not follow —
+/// twenty-seven in production on the day this was written, `Treasury`'s
+/// `self\n.check_leverage(` among them — and the model-surface scan's
+/// `cost_router.` arm read `self\n.cost_router\n.select(` as no route at
+/// all. Assumes
+/// [`code_only`] text: no `.` is left inside a comment or a literal for this
+/// to join.
+fn joined_chains(code: &str) -> String {
+    let mut joined = String::with_capacity(code.len());
+    let mut held = String::new();
+    let mut after_dot = false;
+    for c in code.chars() {
+        if c.is_whitespace() {
+            if !after_dot {
+                held.push(c);
+            }
+            continue;
+        }
+        if c == '.' {
+            after_dot = true;
+        } else {
+            joined.push_str(&held);
+            after_dot = false;
+        }
+        held.clear();
+        joined.push(c);
+    }
+    joined.push_str(&held);
+    joined
+}
+
+/// A call [`calls_in`] can follow, and where its definition is looked for.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Call {
+    /// `self.name(..)` or `Self::name(..)`: a function of the caller's own
+    /// type.
+    Own(String),
+    /// `Type::name(..)`: a function of the named type.
+    Of(String, String),
+    /// `name(..)`, `crate::module::name(..)`, `super::name(..)`: a free
+    /// function.
+    Free(String),
+}
+
+/// The calls `body` makes in a form the scan can follow to a kernel
+/// function, each with or without a turbofish: a method on `self`, a path
+/// through `Self` or a named type, a path through `crate`, `super` or
+/// `self`, or a bare call.
+///
+/// A method on any other receiver — `self.treasury.fund(..)`, `x.check(..)`
+/// — is not followed. Its type is not in the text, and following every
+/// kernel function of the same name would read `Vec::push` or
+/// `LeverageBook::check` as the kernel's own. That is the scan's stated
+/// limit: it follows by name as far as the text names the owner. The
+/// declaration itself (`fn name(`) is not a call.
+///
+/// The body is read through [`joined_chains`] first, so a call rustfmt
+/// wrapped across lines (`self\n    .helper(..)`) is the same call as its
+/// one-line form.
+fn calls_in(body: &str) -> BTreeSet<Call> {
+    let body = joined_chains(body);
+    let body = body.as_str();
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let preceded_by_ident = |text: &str| text.chars().next_back().is_some_and(ident);
+    let mut calls = BTreeSet::new();
+    let mut cursor = 0;
+    while let Some(offset) = body[cursor..].find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        let at = cursor + offset;
+        let end = body[at..]
+            .find(|c: char| !ident(c))
+            .map_or(body.len(), |len| at + len);
+        cursor = end;
+        if preceded_by_ident(&body[..at]) {
+            continue;
+        }
+        let after = body[end..].trim_start();
+        if !(after.starts_with('(') || after.starts_with("::<")) {
+            continue;
+        }
+        let name = body[at..end].to_string();
+        let before = body[..at].trim_end();
+        if let Some(path) = before.strip_suffix("::") {
+            let start = path
+                .rfind(|c: char| !(ident(c) || c == ':'))
+                .map_or(0, |at| at + 1);
+            let path = &path[start..];
+            let first = path.split("::").next().unwrap_or_default();
+            let last = path.rsplit("::").next().unwrap_or_default();
+            if last == "Self" {
+                calls.insert(Call::Own(name));
+            } else if matches!(first, "crate" | "super" | "self")
+                && !last.starts_with(|c: char| c.is_ascii_uppercase())
+            {
+                calls.insert(Call::Free(name));
+            } else if last.starts_with(|c: char| c.is_ascii_uppercase()) {
+                calls.insert(Call::Of(last.to_string(), name));
+            }
+        } else if let Some(receiver) = before.strip_suffix('.') {
+            if let Some(head) = receiver.strip_suffix("self")
+                && !preceded_by_ident(head)
+                && !head.ends_with('.')
+            {
+                calls.insert(Call::Own(name));
+            }
+        } else if before.strip_suffix("fn").is_none_or(preceded_by_ident) {
+            calls.insert(Call::Free(name));
+        }
+    }
+    calls
+}
+
+/// Every kernel function reachable from `roots` through [`calls_in`], each
+/// with the chain of names that reaches it, the root first. A call resolves
+/// to every kernel function of that name and owner, so a name defined twice
+/// on one type (in two `impl` blocks, or behind two `cfg`s) is followed into
+/// both.
+fn kernel_closure<'a>(
+    functions: &'a [KernelFn],
+    roots: &[&'a KernelFn],
+) -> Vec<(Vec<String>, &'a KernelFn)> {
+    let mut index: BTreeMap<(Option<&str>, &str), Vec<usize>> = BTreeMap::new();
+    for (at, function) in functions.iter().enumerate() {
+        index
+            .entry((function.owner.as_deref(), function.name.as_str()))
+            .or_default()
+            .push(at);
+    }
+    let position = |function: &KernelFn| {
+        functions
+            .iter()
+            .position(|f| std::ptr::eq(f, function))
+            .expect("a root is one of the kernel's functions")
+    };
+    let mut seen = BTreeSet::new();
+    let mut reached = Vec::new();
+    let mut queue: std::collections::VecDeque<(Vec<String>, usize)> = roots
+        .iter()
+        .map(|root| (vec![root.name.clone()], position(root)))
+        .collect();
+    while let Some((chain, at)) = queue.pop_front() {
+        if !seen.insert(at) {
+            continue;
+        }
+        let function = &functions[at];
+        for call in calls_in(&function.body) {
+            let (owner, name) = match &call {
+                Call::Own(name) => (function.owner.as_deref(), name.as_str()),
+                Call::Of(owner, name) => (Some(owner.as_str()), name.as_str()),
+                Call::Free(name) => (None, name.as_str()),
+            };
+            for &next in index.get(&(owner, name)).into_iter().flatten() {
+                let mut longer = chain.clone();
+                longer.push(match owner {
+                    Some(owner) => format!("{owner}::{name}"),
+                    None => name.to_string(),
+                });
+                queue.push_back((longer, next));
+            }
+        }
+        reached.push((chain, function));
+    }
+    reached
+}
+
+/// The witnesses a deterministic decision is taken under: the gate a
+/// hard-limit call demands and the routing whose `gate()` mints one.
+const DETERMINED_WITNESSES: [&str; 2] = ["DeterministicGate", "DeterministicRouting"];
+
+/// The types of the parameters `signature` declares, `self` left out: the
+/// text after each parameter's own `:`, split at the parameter list's
+/// outermost commas. A generic list before the parameters is skipped, so
+/// `fn f<F: Fn(u8)>(..)` is read from its parameters and not from `Fn(`.
+fn parameter_types(signature: &str) -> Vec<String> {
+    parameters(signature)
+        .into_iter()
+        .map(|(_, ty)| ty)
+        .collect()
+}
+
+/// The parameters `signature` declares, `self` left out, each as its
+/// pattern and its type — the text either side of the parameter's own `:`
+/// — read as [`parameter_types`] describes.
+fn parameters(signature: &str) -> Vec<(String, String)> {
+    let Some(after_fn) = token_offsets(signature, "fn")
+        .first()
+        .map(|at| &signature[at + 2..])
+    else {
+        return Vec::new();
+    };
+    let mut depth = 0usize;
+    let mut open = None;
+    let mut previous = ' ';
+    for (at, c) in after_fn.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' if previous != '-' => depth = depth.saturating_sub(1),
+            '(' if depth == 0 => {
+                open = Some(at);
+                break;
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    let Some(open) = open else {
+        return Vec::new();
+    };
+    let list = &after_fn[open + 1..];
+    let mut parameters = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut previous = ' ';
+    for c in list.chars() {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            '>' if previous == '-' => {}
+            ')' | ']' | '}' | '>' if depth > 0 => depth -= 1,
+            ')' if depth == 0 => break,
+            ',' if depth == 0 => {
+                parameters.push(std::mem::take(&mut current));
+                previous = c;
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+        previous = c;
+    }
+    parameters.push(current);
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            // The parameter's own `:`, not one inside a `::` path.
+            let bytes = parameter.as_bytes();
+            let colon = (0..bytes.len()).find(|&at| {
+                bytes[at] == b':'
+                    && bytes.get(at + 1) != Some(&b':')
+                    && (at == 0 || bytes[at - 1] != b':')
+            })?;
+            Some((
+                parameter[..colon].trim().to_string(),
+                parameter[colon + 1..].trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Whether `signature` takes a [`DETERMINED_WITNESSES`] value — by
+/// reference, by value, under a path or inside another type — whatever the
+/// parameter is called. A function that only returns one does not.
+fn takes_a_determined_witness(signature: &str) -> bool {
+    parameter_types(signature).iter().any(|ty| {
+        DETERMINED_WITNESSES
+            .iter()
+            .any(|witness| !token_offsets(ty, witness).is_empty())
+    })
+}
+
+/// The kernel production functions that take a deterministic gate or a
+/// deterministic routing as a parameter, by its type and under any name:
+/// the hard-limit decisions handed a witness by their caller.
+///
+/// Not every gated decision is a root. A function that mints its gate
+/// inline, asking the router and calling `.gate()` itself before handing
+/// it on, takes no witness parameter and is not walked from here:
+/// `Platform::submit_released` (the desk's order path into
+/// `OrderManager::submit`) and the breadth factory's `install_breadth`
+/// (into `admit_ladder`). The advice, model-surface and field scans rooted
+/// here therefore do not cover the order manager's pre-trade path. That is
+/// a known gap, recorded on R12-RISK-3022, not a property these scans
+/// hold.
+///
+/// The roots were once found by `gate: &DeterministicGate` alone, so
+/// `Platform::observe_book_under_routing`, which takes the
+/// `DeterministicRouting` by value and runs the risk monitor whose verdict
+/// engages the kill switch, was never walked, and nor was any decision
+/// whose gate parameter was given another name.
+fn gated_kernel_functions(functions: &[KernelFn]) -> Vec<&KernelFn> {
+    functions
+        .iter()
+        .filter(|function| takes_a_determined_witness(signature_of(&function.body)))
+        .collect()
+}
+
+/// The roots are found by the witness's type, under any parameter name: a
+/// routing taken by value, a gate under a path and another name, a routing
+/// behind a generic list whose bound holds a `(`, and the gate under its
+/// usual name are roots, and what the first reaches is walked; a function
+/// that returns a routing, or takes a type whose name merely begins with
+/// the witness's (`DeterministicGateRecord`), is not.
+///
+/// The failure this prevents: roots were found by `gate: &DeterministicGate`
+/// only, so the kernel's one caller of `RiskMonitor::observe`,
+/// `observe_book_under_routing(routing: DeterministicRouting, ..)`, was
+/// outside both kernel walks.
+///
+/// Mutations: root by `demands_the_gate` again — the routing, renamed-gate
+/// and generic roots are lost and the chain through `observe` is not
+/// reported; match the witness anywhere in the signature rather than in
+/// parameter types — the function returning a routing becomes a root;
+/// match the witness as a substring rather than a delimited token —
+/// `record` becomes a root.
+#[test]
+fn the_kernel_walk_roots_every_function_taking_a_gate_or_a_routing_by_type() {
+    let fixture = "impl Platform {\n    \
+                   fn observe(&mut self, routing: DeterministicRouting, now: Timestamp) {\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) {\n        \
+                   let served = self.model_provider.serve(&artifact);\n    }\n    \
+                   fn renamed(&mut self, witness: &qip_risk::gate::DeterministicGate) {}\n    \
+                   fn generic<F: Fn(u8) -> u8>(&self, f: F, r: &mut DeterministicRouting) {}\n    \
+                   fn usual(&mut self, gate: &DeterministicGate, now: Timestamp) {}\n    \
+                   fn determine(&self, subject: &str) -> Result<DeterministicRouting> {}\n    \
+                   fn record(&self, gate: &DeterministicGateRecord, now: Timestamp) {}\n}\n";
+    assert_eq!(
+        parameter_types("fn generic<F: Fn(u8) -> u8>(&self, f: F, r: &mut X<A, B>) {"),
+        ["F", "&mut X<A, B>"],
+        "premise: the parameter list is read past the generic list"
+    );
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    assert_eq!(
+        roots,
+        BTreeSet::from(["observe", "renamed", "generic", "usual"]),
+        "the roots are not every function taking a gate or a routing by type"
+    );
+    let reported: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reported,
+        BTreeSet::from([
+            "observe -> Platform::helper names [\"model_provider\", \"serve\"] (fixture.rs)"
+                .to_string()
+        ]),
+        "a decision under a routing reached a model unseen"
+    );
+}
+
+/// The calls the walk follows, and the ones it says it does not, on a
+/// fixture: an own method, a `Self::` path, a named type's function, a
+/// `crate::` path and a bare call are followed into the definition of that
+/// name and owner; a method on another receiver and a same-named function of
+/// another type are not.
+///
+/// Mutations: resolve every call by name alone (drop the owner from the
+/// index key) — `Other::own` is reached; drop the `crate::` path arm of
+/// `calls_in` — `free_leaf` is not reached. By name alone the kernel scans
+/// below fail too: a `Self::new` in some `Default` impl reaches
+/// `Platform::new`, which is why the owner is part of the key.
+#[test]
+fn the_kernel_walk_follows_calls_by_name_and_owner() {
+    let fixture = "impl Platform {\n    fn root(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.own();\n        Self::path();\n        Book::make();\n        \
+                   crate::module::free_leaf();\n        bare();\n        \
+                   self.field.leaf();\n    }\n    fn own(&self) {}\n    fn path() {}\n}\n\
+                   impl Book {\n    fn make() {}\n}\n\
+                   impl Other {\n    fn leaf(&self) {}\n    fn own(&self) {}\n}\n\
+                   fn free_leaf() {}\nfn bare() {}\n";
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    assert_eq!(roots.len(), 1, "premise: one gated root");
+    let reached: BTreeSet<(Option<String>, String)> = kernel_closure(&functions, &roots)
+        .into_iter()
+        .map(|(_, function)| (function.owner.clone(), function.name.clone()))
+        .collect();
+    let named = |owner: Option<&str>, name: &str| (owner.map(str::to_string), name.to_string());
+    let expected: BTreeSet<_> = [
+        named(Some("Platform"), "root"),
+        named(Some("Platform"), "own"),
+        named(Some("Platform"), "path"),
+        named(Some("Book"), "make"),
+        named(None, "free_leaf"),
+        named(None, "bare"),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(reached, expected);
+    assert!(
+        !reached.contains(&named(Some("Other"), "own"))
+            && !reached.contains(&named(Some("Other"), "leaf")),
+        "a same-named method of another type, or a method on another receiver, was followed"
+    );
+}
+
+/// A call rustfmt wrapped across lines is followed as its one-line form is:
+/// `self\n    .helper(..)` reaches `Platform::helper`, a wrapped chain
+/// `self\n    .adjust(..)\n    .unwrap_or_default()` reaches `adjust`, and a
+/// wrapped `self\n    .cost_router\n    .select(` is reported as the
+/// router's model arm. A wrapped method on a field
+/// (`self\n    .field\n    .leaf()`) is still not followed: joining the
+/// lines must not turn another receiver into `self`.
+///
+/// The failure this prevents: the `self.` arm of [`calls_in`] stripped a
+/// trailing `self` without trimming the line break before it, so none of
+/// the kernel's twenty-seven wrapped own-method calls was followed and a
+/// gated decision could reach a model through any of them unseen.
+///
+/// Mutations: make [`joined_chains`] return its input unchanged, or drop
+/// its call from `calls_in` — the wrapped call reads as no call at all
+/// (`left: {}`); drop its call from `model_surface_named` alone — the
+/// router arm goes unreported.
+#[test]
+fn the_kernel_walk_follows_a_call_rustfmt_wrapped_across_lines() {
+    let fixture = "impl Platform {\n    \
+                   fn decide(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let figures = self\n            .helper(now);\n        \
+                   let lot = self\n            .adjust(now)\n            .unwrap_or_default();\n        \
+                   self\n            .field\n            .leaf();\n    }\n    \
+                   fn helper(&self, now: Timestamp) {}\n    \
+                   fn adjust(&self, now: Timestamp) {}\n    \
+                   fn leaf(&self) {}\n    \
+                   fn judged(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let placed = self\n            .cost_router\n            .select(&context);\n    }\n}\n";
+    assert_eq!(
+        calls_in("let figures = self.helper(now);"),
+        BTreeSet::from([Call::Own("helper".to_string())]),
+        "premise: the one-line form is followed"
+    );
+    assert_eq!(
+        calls_in("let figures = self\n            .helper(now);"),
+        calls_in("let figures = self.helper(now);"),
+        "the wrapped form is not the same call as the one-line form"
+    );
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let decide = functions
+        .iter()
+        .find(|function| function.name == "decide")
+        .expect("premise: the fixture's root was split out");
+    let roots: Vec<&KernelFn> = vec![decide];
+    let reached: BTreeSet<String> = kernel_closure(&functions, &roots)
+        .into_iter()
+        .map(|(_, function)| function.name.clone())
+        .collect();
+    assert_eq!(
+        reached,
+        BTreeSet::from(["decide", "helper", "adjust"].map(str::to_string)),
+        "a wrapped own-method call was not followed, or a wrapped field method was"
+    );
+    let reported: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reported,
+        BTreeSet::from(["judged names [\"cost_router.select\"] (fixture.rs)".to_string()]),
+        "a wrapped `self.cost_router.select(` went unreported"
+    );
+}
+
+// --- the Risk Brain recommends (R12-RISK-3022) -----------------------------
+
+/// What the Risk Brain hands the desk, by every name a function would have to
+/// use to read it: the cycle's `RiskDiscovery` (`qip_kernel::cycle`), its
+/// parts, the passes that compute it, and the risk control agent
+/// (`qip_investment_agents::control::RiskControl`), whose finding reaches
+/// the kernel only as one of the organisation's.
+const RISK_BRAIN_ADVICE: [&str; 9] = [
+    "RiskDiscovery",
+    "risk_discovery",
+    "last_risk_discovery",
+    "discover_risk",
+    "EmergingRisk",
+    "ExposureFinding",
+    "with_emerging_since",
+    "market_exposure_findings",
+    "RiskControl",
+];
+
+/// Which of [`RISK_BRAIN_ADVICE`] `code` names, plus `ids::RISK` — the risk
+/// control's agent id, the one way to pick its finding out of a report.
+fn advice_named(code: &str) -> Vec<String> {
+    let mut named: Vec<String> = RISK_BRAIN_ADVICE
+        .iter()
+        .filter(|token| !token_offsets(code, token).is_empty())
+        .map(|token| token.to_string())
+        .collect();
+    if token_offsets(code, "RISK")
+        .into_iter()
+        .any(|at| code[..at].ends_with("ids::"))
+    {
+        named.push("ids::RISK".to_string());
+    }
+    named
+}
+
+/// The crates that hold a hard limit outside the kernel, the production file
+/// each limit lives in, and what that file must declare for the row to be
+/// about the limit it names. Every crate-dependency check reads this list:
+/// the advice reach below, the model reach, and the scratch-manifest proof
+/// that a model or advice dependency added to any of them is seen.
+///
+/// `qip-survival` (`SurvivalGovernor::size` and `seed`, the survival
+/// ceiling) and `qip-treasury` (`LeverageBook::check`, the leverage limit on
+/// every financed requirement) were absent from it, so a `qip-ai` or
+/// `qip-investment-agents` dependency added to either failed no test while
+/// the kernel scans held the kernel's calls into both gated.
+const HARD_LIMIT_CRATES: [(&str, &str, &[&str]); 5] = [
+    (
+        "qip-execution-engine",
+        "backend/crates/services/qip-execution-engine/src/oms.rs",
+        &["fn submit(", "fn replace(", "fn admit_ladder("],
+    ),
+    (
+        "qip-risk-engine",
+        "backend/crates/services/qip-risk-engine/src/pretrade.rs",
+        &["impl PreTradeChecker", "fn check("],
+    ),
+    (
+        "qip-risk-engine",
+        "backend/crates/services/qip-risk-engine/src/autonomy.rs",
+        &["fn trip_scope_under(", "fn trip_scope(", "fn trip_global("],
+    ),
+    (
+        "qip-survival",
+        "backend/crates/services/qip-survival/src/survival.rs",
+        &["impl SurvivalGovernor", "pub fn size(", "pub fn seed("],
+    ),
+    (
+        "qip-treasury",
+        "backend/crates/services/qip-treasury/src/treasury.rs",
+        &["impl LeverageBook", "pub fn check("],
+    ),
+];
+
+/// The crates that own the Risk Brain's advice: the kernel (`RiskDiscovery`)
+/// and the investment agents (`RiskControl`).
+const ADVICE_OWNERS: [&str; 2] = ["qip-kernel", "qip-investment-agents"];
+
+/// Every path by which a [`HARD_LIMIT_CRATES`] crate reaches a model crate
+/// or a crate owning the Risk Brain's advice, through normal dependencies.
+fn hard_limit_crate_reach(manifests: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    HARD_LIMIT_CRATES
+        .iter()
+        .flat_map(|(krate, _, _)| {
+            let mut reached = crates_reached(manifests, krate, &MODEL_CRATES);
+            reached.extend(crates_reached(manifests, krate, &ADVICE_OWNERS));
+            reached
+        })
+        .collect()
+}
+
+/// A scratch copy of `qip-survival`'s and `qip-treasury`'s real manifests,
+/// each given one `qip-ai` or one `qip-investment-agents` line, read back
+/// through the same parser the workspace scan uses: each of the four
+/// additions must be reported, as the direct edge from that crate.
+///
+/// The failure this prevents: neither crate was a root of any crate check,
+/// so the survival ceiling or the leverage limit could have linked the
+/// language-model crate or the risk control agent and failed nothing.
+///
+/// Mutations: drop the `qip-survival` row from [`HARD_LIMIT_CRATES`] — the
+/// membership assertion fires; drop the [`MODEL_CRATES`] arm of
+/// [`hard_limit_crate_reach`] — the `qip-ai` addition goes unseen; drop its
+/// [`ADVICE_OWNERS`] arm — the agents addition goes unseen, though it still
+/// reaches `qip-ai` two links down, because the direct edge is what is
+/// asserted. On the real tree, `qip-ai.workspace = true` written into
+/// `qip-survival`'s manifest fails the model check, and
+/// `qip-investment-agents.workspace = true` in `qip-treasury`'s fails the
+/// advice check and the model check both.
+#[test]
+fn a_model_or_advice_dependency_added_to_the_survival_or_treasury_crate_is_seen() {
+    let root = std::fs::read_to_string(crates_root().join("../Cargo.toml"))
+        .expect("the workspace manifest is readable");
+    let inherited = workspace_packages(&root);
+    let manifests = workspace_dependencies();
+    assert!(
+        hard_limit_crate_reach(&manifests).is_empty(),
+        "premise: no hard-limit crate reaches a model or advice crate today"
+    );
+    for (krate, manifest) in [
+        (
+            "qip-survival",
+            "backend/crates/services/qip-survival/Cargo.toml",
+        ),
+        (
+            "qip-treasury",
+            "backend/crates/services/qip-treasury/Cargo.toml",
+        ),
+    ] {
+        assert!(
+            HARD_LIMIT_CRATES.iter().any(|(name, _, _)| *name == krate),
+            "{krate} holds a hard limit and is not a row of HARD_LIMIT_CRATES"
+        );
+        let text = qip_acceptance::read(manifest);
+        for (line, added) in [
+            ("qip-ai.workspace = true", "qip-ai"),
+            (
+                "agents = { path = \"../../agents/qip-investment-agents\", package = \
+                 \"qip-investment-agents\" }",
+                "qip-investment-agents",
+            ),
+        ] {
+            let scratch_text =
+                text.replacen("[dependencies]\n", &format!("[dependencies]\n{line}\n"), 1);
+            assert_ne!(
+                scratch_text, text,
+                "premise: {manifest} has a [dependencies] table the scratch line joined"
+            );
+            let mut scratch = manifests.clone();
+            scratch.insert(
+                krate.to_string(),
+                normal_dependencies(&scratch_text, &inherited),
+            );
+            let reached = hard_limit_crate_reach(&scratch);
+            let edge = format!("{krate} -> {added}");
+            assert!(
+                reached.contains(&edge),
+                "`{line}` added to {manifest} went unseen: {reached:?}"
+            );
+        }
+    }
+}
+
+/// R12-RISK-3022 (b): "the Risk Brain only recommends", held for the crates
+/// that make the hard-limit decisions outside the kernel. The order manager
+/// (`submit`, `replace`, `admit_ladder`), `PreTradeChecker::check` and the
+/// kill switch's trips live in crates that link neither `qip-kernel`, which
+/// owns `RiskDiscovery`, nor `qip-investment-agents`, which owns
+/// `RiskControl`, so none of them can name either value: the compiler holds
+/// it, not a reviewer.
+///
+/// The failure this prevents: no test failed if a hard limit began
+/// enforcing the brain's advice, so a discovery or a control finding wired
+/// into a refusal would have been a second gate nobody had reviewed as one.
+///
+/// Mutation: the scratch copy below adds `qip-investment-agents` beneath
+/// `qip-risk`, and the walk must find it.
+#[test]
+fn the_crates_holding_the_hard_limits_cannot_name_the_risk_brains_advice() {
+    // Premise: each hard limit is where this says, and each piece of advice
+    // is owned where this says.
+    for (_, file, declarations) in HARD_LIMIT_CRATES {
+        let source = qip_acceptance::read(file);
+        for declaration in declarations {
+            assert!(
+                source.contains(declaration),
+                "premise: {file} declares `{declaration}`"
+            );
+        }
+    }
+    assert!(
+        qip_acceptance::read("backend/crates/runtime/qip-kernel/src/cycle.rs")
+            .contains("pub struct RiskDiscovery {")
+    );
+    assert!(
+        qip_acceptance::read("backend/crates/agents/qip-investment-agents/src/control.rs")
+            .contains("pub struct RiskControl {")
+    );
+
+    let manifests = workspace_dependencies();
+    for (krate, _, _) in HARD_LIMIT_CRATES {
+        let reached = crates_reached(&manifests, krate, &ADVICE_OWNERS);
+        assert!(
+            reached.is_empty(),
+            "{krate} holds a hard limit and can reach a crate that owns the Risk Brain's advice, \
+             so the limit could read a RiskDiscovery or a RiskControl finding: {reached:?}"
+        );
+    }
+
+    let mut scratch = manifests.clone();
+    scratch
+        .get_mut("qip-risk")
+        .expect("qip-risk is a workspace crate")
+        .insert("qip-investment-agents".to_string());
+    let reached = crates_reached(&scratch, "qip-execution-engine", &ADVICE_OWNERS);
+    assert!(
+        reached
+            .iter()
+            .any(|path| path.ends_with("-> qip-risk -> qip-investment-agents")),
+        "an advice edge added below the order manager went unseen: {reached:?}"
+    );
+}
+
+/// R12-RISK-3022 (b) inside the kernel: no function that makes a hard-limit
+/// decision under the deterministic gate — the survival ceiling and sizing,
+/// sign-off, release, the central plane's halt, and whatever demands the
+/// gate next — nor any kernel function it reaches by name, reads the cycle's
+/// `RiskDiscovery` or the risk control's finding.
+///
+/// The roots are found by signature, not listed, so a gated decision added
+/// later is covered without a row here; the premise pins the ones that exist.
+///
+/// Mutation: in `Platform::sign_off_drafts`, read
+/// `self.last_risk_discovery.as_ref()` — this fails naming the chain
+/// `sign_off_drafts` and `last_risk_discovery`.
+#[test]
+fn no_gated_kernel_decision_reads_the_risk_brains_advice() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    let root_names: BTreeSet<&str> = roots.iter().map(|root| root.name.as_str()).collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            root_names.contains(function),
+            "premise: `{function}` demands the gate and is a root: {root_names:?}"
+        );
+    }
+    assert!(
+        root_names.contains("ingest"),
+        "premise: the plane's gated halt is a root"
+    );
+    assert!(
+        root_names.contains("observe_book_under_routing"),
+        "premise: the risk monitor's pass, taken under a routing, is a root"
+    );
+    let closure = kernel_closure(&functions, &roots);
+    assert!(
+        closure.len() > roots.len(),
+        "premise: the walk followed the roots into what they call"
+    );
+    let readers: Vec<String> = closure
+        .iter()
+        .filter_map(|(chain, function)| {
+            let named = advice_named(&function.body);
+            (!named.is_empty())
+                .then(|| format!("{} reads {named:?} ({})", chain.join(" -> "), function.file))
+        })
+        .collect();
+    assert!(
+        readers.is_empty(),
+        "a gated hard-limit decision reads what the Risk Brain only recommends, so the advice \
+         has become a second gate nobody reviewed as one: {readers:?}"
+    );
+}
+
+/// Every kernel production function that names the Risk Brain's advice, and
+/// what it does with it. Each is advisory: it derives the discovery, carries
+/// it on a report, journals it, or starts the platform with none. No kernel
+/// function names the risk control's type or id: its finding reaches the
+/// kernel only inside the organisation's report, as one of the panel's.
+const ADVICE_READERS: [(Option<&str>, &str, &str); 7] = [
+    (
+        Some("Platform"),
+        "discover_risk",
+        "derives it after every stage has run",
+    ),
+    (
+        Some("Platform"),
+        "run_cycle",
+        "carries it on the cycle report",
+    ),
+    (
+        Some("Platform"),
+        "refuse_cycle_before",
+        "carries an unmeasured one on a refusal",
+    ),
+    (
+        Some("Platform"),
+        "journal_cycle",
+        "journals it with the cycle",
+    ),
+    (
+        Some("Platform"),
+        "with_model_provider",
+        "starts the platform with none",
+    ),
+    (
+        Some("RiskDiscovery"),
+        "with_emerging_since",
+        "derives what emerged",
+    ),
+    (
+        None,
+        "market_exposure_findings",
+        "derives the basis and gap findings",
+    ),
+];
+
+/// R12-RISK-3022 (b): every place the kernel consumes the Risk Brain's
+/// advice is a row of [`ADVICE_READERS`] — derive, report, journal — and
+/// nothing else names it. A new reader is a new row, so whoever adds one
+/// states what it does with the advice, and a reader added inside a gate
+/// fails both this and the closure test above.
+///
+/// Mutation: read `self.last_risk_discovery` in `size_survival` — it is not a
+/// row and this fails naming it.
+#[test]
+fn every_kernel_reader_of_the_risk_brains_advice_derives_reports_or_journals_it() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let found: BTreeSet<(Option<String>, String)> = functions
+        .iter()
+        .filter(|function| !advice_named(&function.body).is_empty())
+        .map(|function| (function.owner.clone(), function.name.clone()))
+        .collect();
+    let expected: BTreeSet<(Option<String>, String)> = ADVICE_READERS
+        .iter()
+        .map(|(owner, name, _)| (owner.map(str::to_string), name.to_string()))
+        .collect();
+    assert_eq!(
+        found, expected,
+        "the kernel functions naming the Risk Brain's advice are not the advisory readers this \
+         suite lists; a reader that is not deriving, reporting or journaling it may be enforcing it"
+    );
+    assert!(
+        functions
+            .iter()
+            .all(|function| !advice_named(&function.body)
+                .iter()
+                .any(|named| named == "RiskControl" || named == "ids::RISK")),
+        "a kernel function names the risk control's type or id"
+    );
+}
+
+// --- the advice laundered through a field (R12-RISK-3022) ------------------
+
+/// The index of the bracket closing the `(`, `[` or `{` at `open` in `text`.
+fn closing_bracket(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, byte) in text.bytes().enumerate().skip(open) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `text` split at its outermost commas, each part trimmed and empty parts
+/// dropped: outside every `()`, `[]` and `{}`, and outside every `<..>` when
+/// `types` (a field list, where `->` closes nothing) or only a turbofish's
+/// when not (an expression, where a `<` may be a comparison).
+fn outermost_parts(text: &str, types: bool) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut parts = Vec::new();
+    let (mut depth, mut angles, mut start) = (0usize, 0usize, 0);
+    for (at, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'<' if types || angles > 0 || (at >= 2 && &bytes[at - 2..at] == b"::") => {
+                angles += 1;
+            }
+            b'>' if angles > 0 && (at == 0 || bytes[at - 1] != b'-') => angles -= 1,
+            b',' if depth == 0 && angles == 0 => {
+                parts.push(text[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+/// `text` split at its first `:` that is not half of a `::`.
+fn split_at_colon(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let colon = (0..bytes.len()).find(|&at| {
+        bytes[at] == b':' && bytes.get(at + 1) != Some(&b':') && (at == 0 || bytes[at - 1] != b':')
+    })?;
+    Some((&text[..colon], &text[colon + 1..]))
+}
+
+/// Whether `text` ends with `word` as a whole identifier.
+fn ends_with_word(text: &str, word: &str) -> bool {
+    text.strip_suffix(word).is_some_and(|head| {
+        !head
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Each field `declaration` (`pub struct Platform {`) opens in `code`, a
+/// [`code_only`] text, as its name and its declared type, attributes and
+/// visibility dropped.
+fn struct_fields(code: &str, declaration: &str) -> Vec<(String, String)> {
+    let Some(at) = code.find(declaration) else {
+        return Vec::new();
+    };
+    let open = at + declaration.len() - 1;
+    let Some(close) = closing_bracket(code, open) else {
+        return Vec::new();
+    };
+    outermost_parts(&code[open + 1..close], true)
+        .into_iter()
+        .filter_map(|field| {
+            let mut field = field;
+            while field.starts_with("#[") {
+                field = field[closing_bracket(field, 1)? + 1..].trim_start();
+            }
+            if let Some(rest) = field.strip_prefix("pub") {
+                field = match rest.trim_start().strip_prefix('(') {
+                    Some(scope) => scope.split_once(')')?.1,
+                    None => rest,
+                }
+                .trim_start();
+            }
+            let (name, ty) = split_at_colon(field)?;
+            Some((name.trim().to_string(), ty.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Where the expression beginning at `start` in `text` ends: the first byte
+/// of `stops` outside every bracket opened after `start`, a bracket closing
+/// one opened before it, or — when `at_block` — the first `{` outside every
+/// bracket, which opens the block of an `if let`, a `while let` or a `for`.
+fn expression_end(text: &str, start: usize, stops: &[u8], at_block: bool) -> usize {
+    let mut depth = 0usize;
+    for (at, byte) in text.bytes().enumerate().skip(start) {
+        match byte {
+            b'{' if at_block && depth == 0 => return at,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => match depth.checked_sub(1) {
+                Some(less) => depth = less,
+                None => return at,
+            },
+            _ if depth == 0 && stops.contains(&byte) => return at,
+            _ => {}
+        }
+    }
+    text.len()
+}
+
+/// The names a pattern binds: each identifier that is not a keyword, a
+/// type or variant (capitalised), a path segment, a call, or a struct
+/// pattern's field name before its `:`.
+fn pattern_bindings(pattern: &str) -> Vec<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut names = Vec::new();
+    let mut cursor = 0;
+    while let Some(offset) = pattern[cursor..].find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        let at = cursor + offset;
+        let end = pattern[at..]
+            .find(|c: char| !ident(c))
+            .map_or(pattern.len(), |length| at + length);
+        cursor = end;
+        let name = &pattern[at..end];
+        let before = &pattern[..at];
+        let after = pattern[end..].trim_start();
+        if before.chars().next_back().is_some_and(ident)
+            || before.ends_with("::")
+            || before.ends_with('.')
+            || name.starts_with(|c: char| c.is_ascii_uppercase())
+            || matches!(name, "_" | "mut" | "ref" | "box")
+            || after.starts_with(['(', '{', '!'])
+            || after.starts_with("::")
+            || (after.starts_with(':') && !after.starts_with("::"))
+        {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names
+}
+
+/// Each binding `body` (a [`joined_chains`] text) makes, as the pattern and
+/// the text it binds from: every `let` — plain, `if let`, `while let`,
+/// let-else and a chained `&& let` — with its type annotation counted as
+/// source, and every `for` loop's pattern with its iterator.
+fn local_bindings(body: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for at in token_offsets(body, "let") {
+        let head = body[..at].trim_end();
+        let conditional =
+            ends_with_word(head, "if") || ends_with_word(head, "while") || head.ends_with("&&");
+        let start = at + "let".len();
+        let bytes = body.as_bytes();
+        let mut depth = 0usize;
+        let mut equals = None;
+        for index in start..bytes.len() {
+            match bytes[index] {
+                b'(' | b'[' | b'{' | b'<' => depth += 1,
+                b'>' if bytes[index - 1] != b'-' => depth = depth.saturating_sub(1),
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b';' if depth == 0 => break,
+                b'=' if depth == 0
+                    && !matches!(bytes.get(index + 1), Some(b'=' | b'>'))
+                    && !matches!(bytes[index - 1], b'=' | b'!' | b'<' | b'>') =>
+                {
+                    equals = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(equals) = equals else {
+            continue;
+        };
+        let end = expression_end(body, equals + 1, b";", conditional);
+        let declared = &body[start..equals];
+        let (pattern, ty) = split_at_colon(declared).unwrap_or((declared, ""));
+        found.push((
+            pattern.to_string(),
+            format!("{ty} {}", &body[equals + 1..end]),
+        ));
+    }
+    for at in token_offsets(body, "for") {
+        let rest = &body[at + "for".len()..];
+        let Some(&within) = token_offsets(rest, "in").first() else {
+            continue;
+        };
+        let pattern = &rest[..within];
+        if pattern.contains(['{', '}', ';', '=']) {
+            continue;
+        }
+        let start = at + "for".len() + within + "in".len();
+        let end = expression_end(body, start, b";", true);
+        found.push((pattern.to_string(), body[start..end].to_string()));
+    }
+    found
+}
+
+/// Every offset in `text` (a [`joined_chains`] text) where the field
+/// `field` of `self` is named — `self.field`, not `self.field(..)`, which
+/// is a method, nor `x.self.field`.
+fn self_field_mentions(text: &str, field: &str) -> Vec<usize> {
+    token_offsets(text, field)
+        .into_iter()
+        .filter(|&at| {
+            text[..at].strip_suffix("self.").is_some_and(|head| {
+                !head
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            }) && !text[at + field.len()..].trim_start().starts_with('(')
+        })
+        .collect()
+}
+
+/// Whether `text` names the Risk Brain's advice ([`advice_named`]), one of
+/// `locals` other than as a field of something, or `self.` one of `fields`.
+fn names_held_advice(text: &str, locals: &BTreeSet<String>, fields: &BTreeSet<String>) -> bool {
+    !advice_named(text).is_empty()
+        || locals.iter().any(|local| {
+            token_offsets(text, local)
+                .into_iter()
+                .any(|at| !text[..at].ends_with('.'))
+        })
+        || fields
+            .iter()
+            .any(|field| !self_field_mentions(text, field).is_empty())
+}
+
+/// The locals the function `body` (a [`joined_chains`] text) binds from the
+/// Risk Brain's advice: each parameter whose type names it, then each
+/// [`local_bindings`] pattern whose source names it, a local already bound
+/// from it, or `self.` one of `fields` — to a fixed point.
+fn advice_locals(body: &str, fields: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut locals: BTreeSet<String> = parameters(signature_of(body))
+        .into_iter()
+        .filter(|(_, ty)| !advice_named(ty).is_empty())
+        .flat_map(|(pattern, _)| pattern_bindings(&pattern))
+        .collect();
+    let bindings = local_bindings(body);
+    loop {
+        let before = locals.len();
+        for (pattern, source) in &bindings {
+            if names_held_advice(source, &locals, fields) {
+                locals.extend(pattern_bindings(pattern));
+            }
+        }
+        if locals.len() == before {
+            return locals;
+        }
+    }
+}
+
+/// Every field of `self` the function `body` (a [`joined_chains`] text)
+/// assigns, with the text assigned: `self.f = ..`, `self.f += ..` and the
+/// other compound forms, `self.f.g = ..` and `self.f[i] = ..` (as `f`), and
+/// each `f: ..` or shorthand `f` of a `Self { .. }` or `Platform { .. }`
+/// literal. A mutating method — `self.f.push(..)`, `self.f.insert(..)` — is
+/// not an assignment here; see the limits on
+/// [`no_gated_kernel_decision_reads_a_field_the_risk_brains_advice_was_copied_into`].
+fn field_assignments(body: &str) -> Vec<(String, String)> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    for at in token_offsets(body, "self") {
+        let Some(rest) = body[at + "self".len()..].strip_prefix('.') else {
+            continue;
+        };
+        let field: String = rest.chars().take_while(|c| ident(*c)).collect();
+        if field.is_empty() || body[..at].ends_with('.') {
+            continue;
+        }
+        let mut cursor = at + "self.".len() + field.len();
+        if body[cursor..].trim_start().starts_with('(') {
+            continue;
+        }
+        loop {
+            let tail = &body[cursor..];
+            if let Some(after) = tail.strip_prefix('.') {
+                let length = after.chars().take_while(|c| ident(*c)).count();
+                let next = after[length..].trim_start();
+                if length == 0 || next.starts_with('(') || next.starts_with("::") {
+                    break;
+                }
+                cursor += 1 + length;
+            } else if tail.starts_with('[') {
+                let Some(close) = closing_bracket(body, cursor) else {
+                    break;
+                };
+                cursor = close + 1;
+            } else {
+                break;
+            }
+        }
+        let after = body[cursor..].trim_start();
+        let operator = ["<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "|=", "&=", "^="]
+            .iter()
+            .find(|operator| after.starts_with(**operator))
+            .map(|operator| operator.len())
+            .or_else(|| {
+                (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"))
+                    .then_some(1)
+            });
+        let Some(length) = operator else {
+            continue;
+        };
+        let start = body.len() - after.len() + length;
+        let end = expression_end(body, start, b";,", false);
+        found.push((field, body[start..end].trim().to_string()));
+    }
+    for name in ["Self", "Platform"] {
+        for at in token_offsets(body, name) {
+            let head = body[..at].trim_end();
+            let trimmed = body[at + name.len()..].trim_start();
+            if !trimmed.starts_with('{')
+                || head.ends_with("->")
+                || head.ends_with("::")
+                || ends_with_word(head, "impl")
+                || ends_with_word(head, "for")
+                || ends_with_word(head, "struct")
+            {
+                continue;
+            }
+            let open = body.len() - trimmed.len();
+            let Some(close) = closing_bracket(body, open) else {
+                continue;
+            };
+            for part in outermost_parts(&body[open + 1..close], false) {
+                if part.starts_with("..") {
+                    continue;
+                }
+                match split_at_colon(part) {
+                    Some((field, source)) => {
+                        found.push((field.trim().to_string(), source.trim().to_string()));
+                    }
+                    None if part.chars().all(ident) => {
+                        found.push((part.to_string(), part.to_string()));
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The fields of `Platform` (`fields`, as [`struct_fields`] reads them) the
+/// Risk Brain's advice can be held in, each with how: its declared type
+/// names the advice, or a `Platform` method assigns or initialises it from
+/// text naming the advice, a local bound from it, or a field already held —
+/// to a fixed point, so a copy of a copy is held too.
+fn advice_fields(fields: &[(String, String)], functions: &[KernelFn]) -> BTreeMap<String, String> {
+    let declared: BTreeSet<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+    let mut held: BTreeMap<String, String> = fields
+        .iter()
+        .filter(|(_, ty)| !advice_named(ty).is_empty())
+        .map(|(name, ty)| (name.clone(), format!("declared `{ty}`")))
+        .collect();
+    let methods: Vec<(&str, String)> = functions
+        .iter()
+        .filter(|function| function.owner.as_deref() == Some("Platform"))
+        .map(|function| (function.name.as_str(), joined_chains(&function.body)))
+        .collect();
+    loop {
+        let before = held.len();
+        let names: BTreeSet<String> = held.keys().cloned().collect();
+        for (method, body) in &methods {
+            let locals = advice_locals(body, &names);
+            for (field, source) in field_assignments(body) {
+                if declared.contains(field.as_str())
+                    && !held.contains_key(&field)
+                    && names_held_advice(&source, &locals, &names)
+                {
+                    held.insert(field, format!("assigned in `{method}` from `{source}`"));
+                }
+            }
+        }
+        if held.len() == before {
+            return held;
+        }
+    }
+}
+
+/// Every chain from a gated kernel function to a `Platform` method in its
+/// closure that names `self.` a field [`advice_fields`] holds, as
+/// `root -> .. -> method reads self.field, <how> (file)`.
+fn gated_advice_field_reads(fields: &[(String, String)], functions: &[KernelFn]) -> Vec<String> {
+    let held = advice_fields(fields, functions);
+    let roots = gated_kernel_functions(functions);
+    kernel_closure(functions, &roots)
+        .into_iter()
+        .filter(|(_, function)| function.owner.as_deref() == Some("Platform"))
+        .flat_map(|(chain, function)| {
+            let body = joined_chains(&function.body);
+            held.iter()
+                .filter(|(field, _)| !self_field_mentions(&body, field).is_empty())
+                .map(|(field, how)| {
+                    format!(
+                        "{} reads self.{field}, {how} ({})",
+                        chain.join(" -> "),
+                        function.file
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The field scan on a fixture: `run_cycle` copies a part of the cycle's
+/// `RiskDiscovery` into a plain `Option<Decimal>` through an `if let`, a
+/// `for` loop copies a finding into a `Vec` slot, a second method copies
+/// the first copy on, and a constructor taking a `&RiskDiscovery` seeds a
+/// field in a `Self { .. }` literal; the gated `size_survival` and the
+/// helper it calls read the four copies. None of it names the advice inside
+/// the gate, so the existing closure scan passes it — asserted first — and
+/// this scan reports each read and nothing else: not the honest field, not
+/// a field only ever given `BTreeMap::new()`.
+///
+/// The failure this prevents: advice laundered through a field passed every
+/// scan. `run_cycle` may name the discovery (it is an advisory reader), and
+/// `size_survival` names only `self.concentration_hint`.
+///
+/// Mutations: drop the `self.f = ..` arm of [`field_assignments`] — the
+/// `run_cycle` copies are lost; make [`advice_locals`] bind nothing — the
+/// copy through `drivers` is lost; stop [`advice_fields`] after one pass —
+/// the copy of a copy (`echo`) is lost; drop the struct-literal arm — the
+/// seeded field is lost, and the real-tree assignment premise fires too;
+/// drop the declared-type arm — the two declared fields are lost; read
+/// another type's methods in [`gated_advice_field_reads`] — no read is
+/// reported.
+#[test]
+fn the_field_scan_reports_a_gated_read_of_a_field_the_advice_was_copied_into() {
+    let fixture = "pub struct Platform {\n    \
+                   #[allow(dead_code)]\n    \
+                   pub(crate) last_risk_discovery: Option<RiskDiscovery>,\n    \
+                   held_control: Option<Box<qip_investment_agents::control::RiskControl>>,\n    \
+                   concentration_hint: Option<Decimal>,\n    \
+                   per_driver: Vec<Decimal>,\n    \
+                   echo: Option<Decimal>,\n    \
+                   seeded: BTreeMap<String, Decimal>,\n    \
+                   blank: BTreeMap<String, Decimal>,\n    \
+                   honest: Decimal,\n}\n\
+                   impl Platform {\n    \
+                   fn new(config: Config) -> Self {\n        \
+                   Self {\n            last_risk_discovery: None,\n            held_control: None,\n            \
+                   concentration_hint: None,\n            per_driver: Vec::new(),\n            \
+                   echo: None,\n            seeded: BTreeMap::new(),\n            \
+                   blank: BTreeMap::new(),\n            honest: Decimal::ZERO,\n        }\n    }\n    \
+                   fn seeded_from(config: Config, prior: &RiskDiscovery) -> Self {\n        \
+                   let base = Self::new(config);\n        \
+                   Self {\n            seeded: prior.by_name.clone(),\n            ..base\n        }\n    }\n    \
+                   fn run_cycle(&mut self, now: Timestamp) {\n        \
+                   let discovery = self.discover_risk();\n        \
+                   if let Some(drivers) = discovery.causal_drivers.as_ref() {\n            \
+                   self.concentration_hint = Some(drivers.total);\n        }\n        \
+                   for finding in discovery.market_exposure.iter() {\n            \
+                   self.per_driver[0] = finding.gap;\n        }\n        \
+                   self.honest = self.capital.equity();\n    }\n    \
+                   fn mirror(&mut self) {\n        self.echo = self.concentration_hint;\n    }\n    \
+                   fn size_survival(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let ceiling = self\n            .concentration_hint\n            .unwrap_or_default();\n        \
+                   let equity = self.honest + self.blank.len();\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) -> Decimal {\n        \
+                   self.echo.unwrap_or_default() + self.per_driver[0] + self.seeded.len()\n    }\n}\n";
+    let code = code_only(fixture);
+    let sources = vec![("fixture.rs".to_string(), code.clone())];
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    let closure = kernel_closure(&functions, &roots);
+    assert_eq!(
+        closure
+            .iter()
+            .map(|(_, function)| function.name.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["size_survival", "helper"]),
+        "premise: the gated closure is the decision and its helper"
+    );
+    assert!(
+        closure
+            .iter()
+            .all(|(_, function)| advice_named(&function.body).is_empty()),
+        "premise: the gated closure names no advice, so the advice scan passes the laundering"
+    );
+    let fields = struct_fields(&code, "pub struct Platform {");
+    assert_eq!(
+        fields.len(),
+        8,
+        "premise: every field was read past its attribute, visibility and generics: {fields:?}"
+    );
+    let held: BTreeSet<String> = advice_fields(&fields, &functions).into_keys().collect();
+    assert_eq!(
+        held,
+        BTreeSet::from(
+            [
+                "last_risk_discovery",
+                "held_control",
+                "concentration_hint",
+                "per_driver",
+                "echo",
+                "seeded",
+            ]
+            .map(str::to_string)
+        ),
+        "the fields the advice can be held in are not exactly the declared and the copied ones"
+    );
+    let reads: BTreeSet<String> = gated_advice_field_reads(&fields, &functions)
+        .into_iter()
+        .map(|read| read.split(',').next().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        reads,
+        BTreeSet::from(
+            [
+                "size_survival reads self.concentration_hint",
+                "size_survival -> Platform::helper reads self.echo",
+                "size_survival -> Platform::helper reads self.per_driver",
+                "size_survival -> Platform::helper reads self.seeded",
+            ]
+            .map(str::to_string)
+        ),
+        "the gated reads of a field holding the advice are not exactly the four copies"
+    );
+}
+
+/// R12-RISK-3022 (b), through a field: no field of `Platform` that can hold
+/// the Risk Brain's advice — declared with a type naming `RiskDiscovery`,
+/// `EmergingRisk`, `ExposureFinding` or `RiskControl`, or assigned or
+/// initialised by any `Platform` method from text naming the advice, a
+/// local bound from it, or another such field — is named `self.` inside a
+/// `Platform` method the gated kernel walk roots or reaches.
+///
+/// The failure this prevents: `run_cycle` may name the discovery, so a
+/// line there copying a part of it into a plain field, read by
+/// `size_survival`, made the advice a second gate while naming it nowhere
+/// the closure scan looks.
+///
+/// What a name scan still cannot see: the advice carried through a helper's
+/// return (`self.f = self.summary()` where `summary` reads the discovery)
+/// or a collection's mutator (`self.f.push(d)`, `self.f.insert(k, d)`), a
+/// `match` arm's or a closure's binding, a `std::mem::replace`, a write
+/// through `&mut self.f` handed to a function, a field read by a free
+/// function or another type's method given the `Platform`, and a field of
+/// a type other than `Platform`.
+///
+/// Mutation: write `self.concentration_hint = Some(dec!(0.1))` beside the
+/// discovery in `run_cycle`, with the field declared, and read it in
+/// `size_survival` — this fails naming the chain; both existing advice
+/// scans pass it.
+#[test]
+fn no_gated_kernel_decision_reads_a_field_the_risk_brains_advice_was_copied_into() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let platform = sources
+        .iter()
+        .find(|(file, _)| file.ends_with("qip-kernel/src/platform.rs"))
+        .map(|(_, code)| code.as_str())
+        .expect("premise: the kernel has a platform.rs");
+    let fields = struct_fields(platform, "pub struct Platform {");
+    assert!(
+        fields.len() > 50,
+        "premise: the Platform's fields were read: {}",
+        fields.len()
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|(name, ty)| name == "last_risk_discovery" && ty == "Option<RiskDiscovery>"),
+        "premise: the Platform holds the last discovery under its declared type"
+    );
+    let assigned: usize = functions
+        .iter()
+        .filter(|function| function.owner.as_deref() == Some("Platform"))
+        .map(|function| field_assignments(&joined_chains(&function.body)).len())
+        .sum();
+    assert!(
+        assigned > 100,
+        "premise: the Platform's own field assignments were read: {assigned}"
+    );
+    let held = advice_fields(&fields, &functions);
+    assert!(
+        held.contains_key("last_risk_discovery"),
+        "premise: the field holding the discovery is held: {held:?}"
+    );
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            roots.contains(function),
+            "premise: `{function}` is a root: {roots:?}"
+        );
+    }
+    let reads = gated_advice_field_reads(&fields, &functions);
+    assert!(
+        reads.is_empty(),
+        "a gated hard-limit decision reads a field the Risk Brain's advice was copied into, so \
+         the advice has become a second gate under another name: {reads:?}"
+    );
+}
+
+/// R12-RISK-3022 (b), behaviourally, through the platform. A book whose one
+/// position sits downstream of one claimed cause: the cycle's `RiskDiscovery`
+/// names that driver at 10% of equity, and emerging. With no limit on the
+/// axis, a further order in the same name is admitted — the discovery
+/// refused nothing by itself. With the deterministic cap on the same axis at
+/// 5%, the same order on the same book is refused, and the refusal names the
+/// cap.
+///
+/// Mutations: in `Platform::submit_released`, refuse while
+/// `last_risk_discovery` names an emerging risk — the first half fails with
+/// the refusal; build the capped desk without its cap — the second half
+/// fails with "the deterministic cap admitted the order".
+#[test]
+fn a_risk_discovery_naming_a_concentration_refuses_nothing_and_the_limit_on_it_does() {
+    use qip_execution_engine::order::Side;
+    use qip_kernel::{Platform, PlatformConfig};
+    use qip_risk::shared_cause::CAUSAL_DRIVER_AXIS;
+
+    let start = t(1_760_000_000);
+    let equity = Decimal::from_int(10_000_000);
+    let desk = |cap: Option<f64>| -> Platform {
+        let config = PlatformConfig::default().with_initial_equity(equity);
+        let (context, _clock) = qip_core::Context::deterministic(start, config.seed);
+        let mut universe = qip_financial::universe::Universe::new();
+        universe
+            .insert(
+                qip_financial::object::FinancialObject::builder(
+                    ObjectId::from_string("obj-AAA"),
+                    "AAA",
+                    qip_financial::asset_class::InstrumentType::CommonStock,
+                    qip_financial::costs::LiquidityProfile::listed(
+                        Decimal::from_int(5_000_000),
+                        3.0,
+                    ),
+                )
+                .venue("XNYS")
+                .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                .price(dec!("100"))
+                .provenance(qip_financial::quality::Provenance::synthetic(
+                    "risk-advice",
+                    start,
+                ))
+                .build(start)
+                .expect("a valid instrument"),
+            )
+            .expect("insertable");
+        let mut limits = LimitSet::new("risk-advice").with(Limit::new(
+            "order-notional",
+            LimitKind::MaxOrderNotional {
+                limit: Decimal::from_int(5_000_000),
+            },
+        ));
+        if let Some(cap) = cap {
+            limits = limits.with(Limit::new(
+                "causal-driver-concentration",
+                LimitKind::MaxAxisWeight {
+                    axis: CAUSAL_DRIVER_AXIS.to_string(),
+                    limit: cap,
+                },
+            ));
+        }
+        let mut platform = Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            universe,
+            limits,
+        )
+        .expect("the platform assembles");
+        // One position of 1,000,000 — 10% of equity — then a claimed cause
+        // the position sits downstream of.
+        let first = platform
+            .order_for(
+                ObjectId::from_string("obj-AAA"),
+                Side::Buy,
+                dec!("10000"),
+                dec!("100"),
+                "prop-risk-advice",
+                vec!["hyp-risk-advice".to_string()],
+                start,
+            )
+            .expect("an order");
+        platform
+            .submit_order(first, start)
+            .expect("the first order, before any cause is claimed, is admitted");
+        platform
+            .claim_causal(
+                qip_world_model::causal::CausalEdge::new(
+                    "funding-stress",
+                    "obj-AAA",
+                    qip_world_model::causal::Mechanism::DiscountRate,
+                    1.0,
+                    Duration::from_days(1),
+                    start.saturating_sub(Duration::from_days(1)),
+                )
+                .expect("a strength in [0, 1]")
+                .with_confidence(1.0)
+                .expect("a confidence in [0, 1]"),
+            )
+            .expect("an edge naming both ends");
+        platform
+    };
+    let second = |platform: &mut Platform| {
+        let order = platform
+            .order_for(
+                ObjectId::from_string("obj-AAA"),
+                Side::Buy,
+                dec!("1000"),
+                dec!("100"),
+                "prop-risk-advice",
+                vec!["hyp-risk-advice".to_string()],
+                start,
+            )
+            .expect("an order");
+        platform.submit_order(order, start)
+    };
+
+    let mut advised = desk(None);
+    let report = advised.run_cycle(start);
+    let driven = report
+        .risk_discovery
+        .causal_drivers
+        .as_ref()
+        .and_then(|drivers| drivers.get("funding-stress"))
+        .copied();
+    // Premise: the discovery names the concentration the cap below refuses,
+    // above that cap, and as emerging.
+    assert!(
+        driven.is_some_and(|gross| gross.to_f64() / equity.to_f64() > 0.05),
+        "premise: the discovery names the driver above 5% of equity: {:?}",
+        report.risk_discovery
+    );
+    assert!(
+        report
+            .risk_discovery
+            .emerging
+            .iter()
+            .any(|risk| risk.axis == CAUSAL_DRIVER_AXIS && risk.bucket == "funding-stress"),
+        "premise: the driver is reported as emerging: {:?}",
+        report.risk_discovery.emerging
+    );
+    let admitted = second(&mut advised);
+    assert!(
+        admitted.is_ok(),
+        "an order was refused on a book whose only finding is the Risk Brain's advice: {admitted:?}"
+    );
+
+    let mut capped = desk(Some(0.05));
+    let refused = second(&mut capped).expect_err("the deterministic cap admitted the order");
+    assert!(
+        refused.message().contains("causal-driver-concentration"),
+        "refused, but not by the cap on the axis the discovery named: {}",
+        refused.message()
+    );
+}
+
+// --- no model inside a gated decision (R12-RISK-3022) ----------------------
+
+/// Every name by which the kernel reaches a model for inference, found by
+/// reading what it imports and calls (`qip_ai::serving`, `qip_ai::language`):
+/// the serving types and the provider the platform holds, the language model
+/// it hands the organisation, the methods that serve or forecast from a
+/// model card, and the organisation itself, whose agents call the language
+/// model. `ModelPort` and `forecast_with` were looked for and are named
+/// nowhere in the tree; `qip-language-providers` is not a kernel dependency
+/// and is listed so that a new edge to it cannot arrive unseen.
+const MODEL_SURFACE: [&str; 20] = [
+    "qip_ai::serving",
+    "qip_ai::language",
+    "qip_language_providers",
+    "ModelProvider",
+    "ServedModel",
+    "ModelArtifact",
+    "NoProvider",
+    "LanguageModel",
+    "DeterministicModel",
+    "JudgedRouting",
+    "model_provider",
+    "language_model",
+    "serve",
+    "serve_model",
+    "stage_card_forecasts",
+    "standing_card_forecasts",
+    "complete",
+    "complete_structured",
+    "organisation",
+    "Organisation",
+];
+
+/// The cost router's arms that place a decision on a model rung, by the
+/// receiver the kernel holds the router under: `select` answers a
+/// determinism-not-required decision with a `JudgedRouting`, `escalate`
+/// climbs it, `route` is the router's general entry. A gated decision asks
+/// `determine` and nothing else.
+const MODEL_ROUTES: [&str; 3] = ["select", "escalate", "route"];
+
+/// Which of [`MODEL_SURFACE`] and `cost_router.`[`MODEL_ROUTES`] `code`
+/// names, the router's arms read through [`joined_chains`] so that
+/// `self\n    .cost_router\n    .select(` is the router's `select` too.
+fn model_surface_named(code: &str) -> Vec<String> {
+    let code = joined_chains(code);
+    let code = code.as_str();
+    let mut named: Vec<String> = MODEL_SURFACE
+        .iter()
+        .filter(|token| !token_offsets(code, token).is_empty())
+        .map(|token| token.to_string())
+        .collect();
+    for route in MODEL_ROUTES {
+        if token_offsets(code, route)
+            .into_iter()
+            .any(|at| code[..at].trim_end().ends_with("cost_router."))
+        {
+            named.push(format!("cost_router.{route}"));
+        }
+    }
+    named
+}
+
+/// Every chain from a gated kernel function to a kernel function that names
+/// a model-serving surface, as `root -> .. -> callee names [..] (file)`.
+fn gated_model_reach(functions: &[KernelFn]) -> Vec<String> {
+    let roots = gated_kernel_functions(functions);
+    kernel_closure(functions, &roots)
+        .into_iter()
+        .filter_map(|(chain, function)| {
+            let named = model_surface_named(&function.body);
+            (!named.is_empty())
+                .then(|| format!("{} names {named:?} ({})", chain.join(" -> "), function.file))
+        })
+        .collect()
+}
+
+/// The model-surface scan on a fixture: a gated decision that serves a
+/// model two calls down, through its own method and a free function, and a
+/// gated decision that asks the router to `select` a rung, are both
+/// reported with the chain; an ungated function that serves a model, and a
+/// gated one that only asks the router to `determine`, are not.
+///
+/// Mutations: drop `"model_provider"` and `"serve"` from [`MODEL_SURFACE`] —
+/// the first chain is not reported; drop the `cost_router.` arm of
+/// [`model_surface_named`] — the second is not.
+#[test]
+fn the_model_surface_scan_reports_a_gated_decision_that_reaches_a_model() {
+    let fixture = "impl Platform {\n    \
+                   fn decide(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) {\n        crate::sizing::score_it(now);\n    }\n    \
+                   fn judged(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let placed = self.cost_router.select(&context);\n    }\n    \
+                   fn routed(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let routing = self.cost_router.determine(subject, conditions);\n    }\n    \
+                   fn research(&self, artifact: &Artifact) {\n        \
+                   self.model_provider.serve(artifact);\n    }\n}\n\
+                   fn score_it(now: Timestamp) {\n    \
+                   let served = PLATFORM.model_provider.serve(&artifact);\n}\n";
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let reached: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reached,
+        BTreeSet::from([
+            "decide -> Platform::helper -> score_it names [\"model_provider\", \"serve\"] \
+             (fixture.rs)"
+                .to_string(),
+            "judged names [\"cost_router.select\"] (fixture.rs)".to_string(),
+        ]),
+        "the scan did not report exactly the gated decisions that reach a model"
+    );
+}
+
+/// R12-RISK-3022 (d): no kernel function that makes a hard-limit decision
+/// under the deterministic gate, nor any kernel function it reaches by name
+/// and owner, names a model-serving surface. `qip-kernel` links `qip-ai`, so
+/// the compiler cannot hold this for the kernel the way it holds it for the
+/// risk engine; this scan is what does.
+///
+/// The failure this prevents: a model call inside sizing, sign-off,
+/// release, the plane's halt or the leverage decision failed no test, so a
+/// gated decision could have become a judged one while still carrying the
+/// gate that says it was determined.
+///
+/// Mutation: in `Platform::survival_figures`, read
+/// `self.model_provider.name()` — this fails naming the chain
+/// `seed_survival_ceiling -> Platform::survival_figures`.
+#[test]
+fn no_gated_kernel_decision_reaches_a_model_serving_surface() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    // Premise: the names are the kernel's real inference surface, each
+    // named somewhere in its production source, so a clean result is the
+    // gated closure not reaching them rather than a list of names nobody
+    // uses.
+    let named_anywhere: BTreeSet<String> = functions
+        .iter()
+        .flat_map(|function| model_surface_named(&function.body))
+        .collect();
+    for surface in [
+        "model_provider",
+        "serve",
+        "serve_model",
+        "stage_card_forecasts",
+        "language_model",
+        "organisation",
+        "cost_router.select",
+    ] {
+        assert!(
+            named_anywhere.contains(surface),
+            "premise: the kernel names `{surface}` somewhere: {named_anywhere:?}"
+        );
+    }
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            roots.contains(function),
+            "premise: `{function}` is a root: {roots:?}"
+        );
+    }
+    assert!(
+        roots.contains("observe_book_under_routing"),
+        "premise: the risk monitor's pass, taken under a routing, is a root: {roots:?}"
+    );
+    let reached = gated_model_reach(&functions);
+    assert!(
+        reached.is_empty(),
+        "a gated hard-limit decision reaches a model-serving surface, so the gate it carries \
+         no longer says the decision was determined: {reached:?}"
     );
 }

@@ -157,7 +157,17 @@ impl TierVerdict {
 /// carrying a tier that answered rather than a rule that computed. Only a
 /// decision that was never allowed to be estimated in the first place gets the
 /// stronger claim this type makes.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// **Neither `Clone` nor `Deserialize`** (R12-RISK-3022). [`Self::gate`] mints
+/// the witness every hard-limit decision demands, so a routing read off a wire
+/// or a journal would be a gate obtained without [`Router::determine`], and the
+/// one-minter scan (`only_the_cost_router_mints_a_deterministic_gate`) cannot
+/// see a gate minted from a value it never saw constructed. Nothing in the
+/// workspace decoded or copied one; `qip-acceptance`'s
+/// `model_promotion_clearance.rs` refuses either, by derive or by hand. It is
+/// still `Serialize`: writing a routing down is a record, and a record cannot
+/// be read back into one.
+#[derive(Debug, PartialEq, Serialize)]
 pub struct DeterministicRouting {
     rationale: String,
     charge: TierCharge,
@@ -190,8 +200,9 @@ impl DeterministicRouting {
     /// router mints the gate here, from the routing's own rationale, and this
     /// is the only production call of its constructor — which
     /// `qip-acceptance`'s `only_the_cost_router_mints_a_deterministic_gate`
-    /// enforces. Minted on demand rather than stored, because the gate is
-    /// deliberately neither `Clone` nor `Deserialize` and this type is both.
+    /// enforces. Minted on demand rather than stored: neither the gate nor this
+    /// type is `Clone` or `Deserialize`, so each gate comes from a routing the
+    /// router returned, and from nothing a caller could copy or decode.
     pub fn gate(&self) -> qip_risk::gate::DeterministicGate {
         qip_risk::gate::DeterministicGate::minted_by_router_determination(self.rationale.clone())
     }
@@ -298,7 +309,10 @@ impl JudgedRouting {
 /// match on this type is the assertion that a determinism-required decision
 /// never reached a model, and it is checked by the compiler at every call site
 /// rather than by a test at one.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Neither `Clone` nor `Deserialize`, because its `Deterministic` arm holds a
+/// [`DeterministicRouting`], which is neither.
+#[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Routing {
     /// Answered in deterministic code.
