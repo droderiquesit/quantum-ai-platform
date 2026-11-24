@@ -2491,8 +2491,17 @@ fn takes_a_determined_witness(signature: &str) -> bool {
 
 /// The kernel production functions that take a deterministic gate or a
 /// deterministic routing as a parameter, by its type and under any name:
-/// every hard-limit decision the kernel makes under a witness that it was
-/// determined.
+/// the hard-limit decisions handed a witness by their caller.
+///
+/// Not every gated decision is a root. A function that mints its gate
+/// inline, asking the router and calling `.gate()` itself before handing
+/// it on, takes no witness parameter and is not walked from here:
+/// `Platform::submit_released` (the desk's order path into
+/// `OrderManager::submit`) and the breadth factory's `install_breadth`
+/// (into `admit_ladder`). The advice, model-surface and field scans rooted
+/// here therefore do not cover the order manager's pre-trade path. That is
+/// a known gap, recorded on R12-RISK-3022, not a property these scans
+/// hold.
 ///
 /// The roots were once found by `gate: &DeterministicGate` alone, so
 /// `Platform::observe_book_under_routing`, which takes the
