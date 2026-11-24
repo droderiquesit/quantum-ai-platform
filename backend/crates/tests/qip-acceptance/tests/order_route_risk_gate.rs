@@ -2380,13 +2380,159 @@ fn kernel_closure<'a>(
     reached
 }
 
-/// The kernel production functions that demand `gate: &DeterministicGate` by
-/// signature: every hard-limit decision the kernel makes under a gate.
+/// The witnesses a deterministic decision is taken under: the gate a
+/// hard-limit call demands and the routing whose `gate()` mints one.
+const DETERMINED_WITNESSES: [&str; 2] = ["DeterministicGate", "DeterministicRouting"];
+
+/// The types of the parameters `signature` declares, `self` left out: the
+/// text after each parameter's own `:`, split at the parameter list's
+/// outermost commas. A generic list before the parameters is skipped, so
+/// `fn f<F: Fn(u8)>(..)` is read from its parameters and not from `Fn(`.
+fn parameter_types(signature: &str) -> Vec<String> {
+    let Some(after_fn) = token_offsets(signature, "fn")
+        .first()
+        .map(|at| &signature[at + 2..])
+    else {
+        return Vec::new();
+    };
+    let mut depth = 0usize;
+    let mut open = None;
+    let mut previous = ' ';
+    for (at, c) in after_fn.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' if previous != '-' => depth = depth.saturating_sub(1),
+            '(' if depth == 0 => {
+                open = Some(at);
+                break;
+            }
+            _ => {}
+        }
+        previous = c;
+    }
+    let Some(open) = open else {
+        return Vec::new();
+    };
+    let list = &after_fn[open + 1..];
+    let mut parameters = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0usize;
+    let mut previous = ' ';
+    for c in list.chars() {
+        match c {
+            '(' | '[' | '{' | '<' => depth += 1,
+            '>' if previous == '-' => {}
+            ')' | ']' | '}' | '>' if depth > 0 => depth -= 1,
+            ')' if depth == 0 => break,
+            ',' if depth == 0 => {
+                parameters.push(std::mem::take(&mut current));
+                previous = c;
+                continue;
+            }
+            _ => {}
+        }
+        current.push(c);
+        previous = c;
+    }
+    parameters.push(current);
+    parameters
+        .iter()
+        .filter_map(|parameter| {
+            // The parameter's own `:`, not one inside a `::` path.
+            let bytes = parameter.as_bytes();
+            let colon = (0..bytes.len()).find(|&at| {
+                bytes[at] == b':'
+                    && bytes.get(at + 1) != Some(&b':')
+                    && (at == 0 || bytes[at - 1] != b':')
+            })?;
+            Some(parameter[colon + 1..].trim().to_string())
+        })
+        .collect()
+}
+
+/// Whether `signature` takes a [`DETERMINED_WITNESSES`] value — by
+/// reference, by value, under a path or inside another type — whatever the
+/// parameter is called. A function that only returns one does not.
+fn takes_a_determined_witness(signature: &str) -> bool {
+    parameter_types(signature).iter().any(|ty| {
+        DETERMINED_WITNESSES
+            .iter()
+            .any(|witness| !token_offsets(ty, witness).is_empty())
+    })
+}
+
+/// The kernel production functions that take a deterministic gate or a
+/// deterministic routing as a parameter, by its type and under any name:
+/// every hard-limit decision the kernel makes under a witness that it was
+/// determined.
+///
+/// The roots were once found by `gate: &DeterministicGate` alone, so
+/// `Platform::observe_book_under_routing`, which takes the
+/// `DeterministicRouting` by value and runs the risk monitor whose verdict
+/// engages the kill switch, was never walked, and nor was any decision
+/// whose gate parameter was given another name.
 fn gated_kernel_functions(functions: &[KernelFn]) -> Vec<&KernelFn> {
     functions
         .iter()
-        .filter(|function| demands_the_gate(signature_of(&function.body)))
+        .filter(|function| takes_a_determined_witness(signature_of(&function.body)))
         .collect()
+}
+
+/// The roots are found by the witness's type, under any parameter name: a
+/// routing taken by value, a gate under a path and another name, a routing
+/// behind a generic list whose bound holds a `(`, and the gate under its
+/// usual name are roots, and what the first reaches is walked; a function
+/// that returns a routing, or takes a type whose name merely begins with
+/// the witness's (`DeterministicGateRecord`), is not.
+///
+/// The failure this prevents: roots were found by `gate: &DeterministicGate`
+/// only, so the kernel's one caller of `RiskMonitor::observe`,
+/// `observe_book_under_routing(routing: DeterministicRouting, ..)`, was
+/// outside both kernel walks.
+///
+/// Mutations: root by `demands_the_gate` again — the routing, renamed-gate
+/// and generic roots are lost and the chain through `observe` is not
+/// reported; match the witness anywhere in the signature rather than in
+/// parameter types — the function returning a routing becomes a root;
+/// match the witness as a substring rather than a delimited token —
+/// `record` becomes a root.
+#[test]
+fn the_kernel_walk_roots_every_function_taking_a_gate_or_a_routing_by_type() {
+    let fixture = "impl Platform {\n    \
+                   fn observe(&mut self, routing: DeterministicRouting, now: Timestamp) {\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) {\n        \
+                   let served = self.model_provider.serve(&artifact);\n    }\n    \
+                   fn renamed(&mut self, witness: &qip_risk::gate::DeterministicGate) {}\n    \
+                   fn generic<F: Fn(u8) -> u8>(&self, f: F, r: &mut DeterministicRouting) {}\n    \
+                   fn usual(&mut self, gate: &DeterministicGate, now: Timestamp) {}\n    \
+                   fn determine(&self, subject: &str) -> Result<DeterministicRouting> {}\n    \
+                   fn record(&self, gate: &DeterministicGateRecord, now: Timestamp) {}\n}\n";
+    assert_eq!(
+        parameter_types("fn generic<F: Fn(u8) -> u8>(&self, f: F, r: &mut X<A, B>) {"),
+        ["F", "&mut X<A, B>"],
+        "premise: the parameter list is read past the generic list"
+    );
+    let sources = vec![("fixture.rs".to_string(), code_only(fixture))];
+    let functions = kernel_functions(&sources);
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    assert_eq!(
+        roots,
+        BTreeSet::from(["observe", "renamed", "generic", "usual"]),
+        "the roots are not every function taking a gate or a routing by type"
+    );
+    let reported: BTreeSet<String> = gated_model_reach(&functions).into_iter().collect();
+    assert_eq!(
+        reported,
+        BTreeSet::from([
+            "observe -> Platform::helper names [\"model_provider\", \"serve\"] (fixture.rs)"
+                .to_string()
+        ]),
+        "a decision under a routing reached a model unseen"
+    );
 }
 
 /// The calls the walk follows, and the ones it says it does not, on a
@@ -2640,6 +2786,10 @@ fn no_gated_kernel_decision_reads_the_risk_brains_advice() {
     assert!(
         root_names.contains("ingest"),
         "premise: the plane's gated halt is a root"
+    );
+    assert!(
+        root_names.contains("observe_book_under_routing"),
+        "premise: the risk monitor's pass, taken under a routing, is a root"
     );
     let closure = kernel_closure(&functions, &roots);
     assert!(
@@ -3060,6 +3210,10 @@ fn no_gated_kernel_decision_reaches_a_model_serving_surface() {
             "premise: `{function}` is a root: {roots:?}"
         );
     }
+    assert!(
+        roots.contains("observe_book_under_routing"),
+        "premise: the risk monitor's pass, taken under a routing, is a root: {roots:?}"
+    );
     let reached = gated_model_reach(&functions);
     assert!(
         reached.is_empty(),
