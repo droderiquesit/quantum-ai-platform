@@ -170,7 +170,7 @@ fn a_material_release_at_the_fast_brains_cadence_yields_reaction_records_at_thre
         universe,
         LimitSet::conservative_default(),
     )?;
-    let mut sensing = SensePath::new(&mut platform)?;
+    let mut sensing = SensePath::new(&platform)?;
 
     let ticker = environment(&feed)
         .companies()
