@@ -2069,6 +2069,21 @@ fn the_edge_cells_pre_trade_check_links_no_crate_that_can_route_to_a_model() {
              is no longer held deterministic by its closure: {reached:?}"
         );
     }
+    // The same closure for every crate that holds a hard limit outside the
+    // kernel, each shown to be a workspace crate first: a root the manifests
+    // do not hold reaches nothing, and would pass here for that reason.
+    for (krate, _, _) in HARD_LIMIT_CRATES {
+        assert!(
+            manifests.contains_key(krate),
+            "premise: {krate} is a workspace crate"
+        );
+        let reached = model_reach(&manifests, krate);
+        assert!(
+            reached.is_empty(),
+            "{krate} holds a hard limit and can reach a crate that routes to a model: \
+             {reached:?}"
+        );
+    }
 
     // The same walk on a scratch copy of the manifest data with one model
     // edge added two links below the cell: it must be found, or the clean
@@ -2681,6 +2696,134 @@ fn advice_named(code: &str) -> Vec<String> {
     named
 }
 
+/// The crates that hold a hard limit outside the kernel, the production file
+/// each limit lives in, and what that file must declare for the row to be
+/// about the limit it names. Every crate-dependency check reads this list:
+/// the advice reach below, the model reach, and the scratch-manifest proof
+/// that a model or advice dependency added to any of them is seen.
+///
+/// `qip-survival` (`SurvivalGovernor::size` and `seed`, the survival
+/// ceiling) and `qip-treasury` (`LeverageBook::check`, the leverage limit on
+/// every financed requirement) were absent from it, so a `qip-ai` or
+/// `qip-investment-agents` dependency added to either failed no test while
+/// the kernel scans held the kernel's calls into both gated.
+const HARD_LIMIT_CRATES: [(&str, &str, &[&str]); 5] = [
+    (
+        "qip-execution-engine",
+        "backend/crates/services/qip-execution-engine/src/oms.rs",
+        &["fn submit(", "fn replace(", "fn admit_ladder("],
+    ),
+    (
+        "qip-risk-engine",
+        "backend/crates/services/qip-risk-engine/src/pretrade.rs",
+        &["impl PreTradeChecker", "fn check("],
+    ),
+    (
+        "qip-risk-engine",
+        "backend/crates/services/qip-risk-engine/src/autonomy.rs",
+        &["fn trip_scope_under(", "fn trip_scope(", "fn trip_global("],
+    ),
+    (
+        "qip-survival",
+        "backend/crates/services/qip-survival/src/survival.rs",
+        &["impl SurvivalGovernor", "pub fn size(", "pub fn seed("],
+    ),
+    (
+        "qip-treasury",
+        "backend/crates/services/qip-treasury/src/treasury.rs",
+        &["impl LeverageBook", "pub fn check("],
+    ),
+];
+
+/// The crates that own the Risk Brain's advice: the kernel (`RiskDiscovery`)
+/// and the investment agents (`RiskControl`).
+const ADVICE_OWNERS: [&str; 2] = ["qip-kernel", "qip-investment-agents"];
+
+/// Every path by which a [`HARD_LIMIT_CRATES`] crate reaches a model crate
+/// or a crate owning the Risk Brain's advice, through normal dependencies.
+fn hard_limit_crate_reach(manifests: &BTreeMap<String, BTreeSet<String>>) -> Vec<String> {
+    HARD_LIMIT_CRATES
+        .iter()
+        .flat_map(|(krate, _, _)| {
+            let mut reached = crates_reached(manifests, krate, &MODEL_CRATES);
+            reached.extend(crates_reached(manifests, krate, &ADVICE_OWNERS));
+            reached
+        })
+        .collect()
+}
+
+/// A scratch copy of `qip-survival`'s and `qip-treasury`'s real manifests,
+/// each given one `qip-ai` or one `qip-investment-agents` line, read back
+/// through the same parser the workspace scan uses: each of the four
+/// additions must be reported, as the direct edge from that crate.
+///
+/// The failure this prevents: neither crate was a root of any crate check,
+/// so the survival ceiling or the leverage limit could have linked the
+/// language-model crate or the risk control agent and failed nothing.
+///
+/// Mutations: drop the `qip-survival` row from [`HARD_LIMIT_CRATES`] — the
+/// membership assertion fires; drop the [`MODEL_CRATES`] arm of
+/// [`hard_limit_crate_reach`] — the `qip-ai` addition goes unseen; drop its
+/// [`ADVICE_OWNERS`] arm — the agents addition goes unseen, though it still
+/// reaches `qip-ai` two links down, because the direct edge is what is
+/// asserted. On the real tree, `qip-ai.workspace = true` written into
+/// `qip-survival`'s manifest fails the model check, and
+/// `qip-investment-agents.workspace = true` in `qip-treasury`'s fails the
+/// advice check and the model check both.
+#[test]
+fn a_model_or_advice_dependency_added_to_the_survival_or_treasury_crate_is_seen() {
+    let root = std::fs::read_to_string(crates_root().join("../Cargo.toml"))
+        .expect("the workspace manifest is readable");
+    let inherited = workspace_packages(&root);
+    let manifests = workspace_dependencies();
+    assert!(
+        hard_limit_crate_reach(&manifests).is_empty(),
+        "premise: no hard-limit crate reaches a model or advice crate today"
+    );
+    for (krate, manifest) in [
+        (
+            "qip-survival",
+            "backend/crates/services/qip-survival/Cargo.toml",
+        ),
+        (
+            "qip-treasury",
+            "backend/crates/services/qip-treasury/Cargo.toml",
+        ),
+    ] {
+        assert!(
+            HARD_LIMIT_CRATES.iter().any(|(name, _, _)| *name == krate),
+            "{krate} holds a hard limit and is not a row of HARD_LIMIT_CRATES"
+        );
+        let text = qip_acceptance::read(manifest);
+        for (line, added) in [
+            ("qip-ai.workspace = true", "qip-ai"),
+            (
+                "agents = { path = \"../../agents/qip-investment-agents\", package = \
+                 \"qip-investment-agents\" }",
+                "qip-investment-agents",
+            ),
+        ] {
+            let scratch_text =
+                text.replacen("[dependencies]\n", &format!("[dependencies]\n{line}\n"), 1);
+            assert_ne!(
+                scratch_text, text,
+                "premise: {manifest} has a [dependencies] table the scratch line joined"
+            );
+            let mut scratch = manifests.clone();
+            scratch.insert(
+                krate.to_string(),
+                normal_dependencies(&scratch_text, &inherited),
+            );
+            let reached = hard_limit_crate_reach(&scratch);
+            let edge = format!("{krate} -> {added}");
+            assert!(
+                reached.contains(&edge),
+                "`{line}` added to {manifest} went unseen: {reached:?}"
+            );
+        }
+    }
+}
+
 /// R12-RISK-3022 (b): "the Risk Brain only recommends", held for the crates
 /// that make the hard-limit decisions outside the kernel. The order manager
 /// (`submit`, `replace`, `admit_ladder`), `PreTradeChecker::check` and the
@@ -2697,24 +2840,6 @@ fn advice_named(code: &str) -> Vec<String> {
 /// `qip-risk`, and the walk must find it.
 #[test]
 fn the_crates_holding_the_hard_limits_cannot_name_the_risk_brains_advice() {
-    const HARD_LIMIT_CRATES: [(&str, &str, &[&str]); 3] = [
-        (
-            "qip-execution-engine",
-            "backend/crates/services/qip-execution-engine/src/oms.rs",
-            &["fn submit(", "fn replace(", "fn admit_ladder("],
-        ),
-        (
-            "qip-risk-engine",
-            "backend/crates/services/qip-risk-engine/src/pretrade.rs",
-            &["impl PreTradeChecker", "fn check("],
-        ),
-        (
-            "qip-risk-engine",
-            "backend/crates/services/qip-risk-engine/src/autonomy.rs",
-            &["fn trip_scope_under(", "fn trip_scope(", "fn trip_global("],
-        ),
-    ];
-    const ADVICE_OWNERS: [&str; 2] = ["qip-kernel", "qip-investment-agents"];
     // Premise: each hard limit is where this says, and each piece of advice
     // is owned where this says.
     for (_, file, declarations) in HARD_LIMIT_CRATES {
