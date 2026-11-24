@@ -341,6 +341,15 @@ pub struct Hypothesis {
     /// and [`Hypothesis::validate`] would then reject the record as drifted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub origin_factors: BTreeMap<String, f64>,
+    /// Origins whose supporting evidence carries weight zero in the belief
+    /// update, with the self-model's reason (R12-WORLD-3036): the producing
+    /// component read unhealthy, stale, drifted or blind for this thesis.
+    /// The items stay in the evidence set, so the record shows what was
+    /// set aside; only their contribution is zero. Contrary evidence is never
+    /// withheld, for the reason `strengths` gives. Recorded for exactly the
+    /// origins with supporting evidence present, like `origin_factors`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub withheld_origins: BTreeMap<String, String>,
     /// Observations that would falsify the hypothesis. Required.
     pub falsifiers: Vec<String>,
     /// The competing explanation the author considered most credible, and why
@@ -408,6 +417,18 @@ impl Hypothesis {
         draft: HypothesisDraft,
         factors: &BTreeMap<String, f64>,
     ) -> Result<Self> {
+        Self::form_withholding(draft, factors, &BTreeMap::new())
+    }
+
+    /// [`Self::form_with_factors`], with the supporting evidence of every
+    /// origin in `withheld` at weight zero (R12-WORLD-3036). Withholding can
+    /// only lower the posterior: a supporting item contributes nothing, and a
+    /// contrary one is untouched.
+    pub fn form_withholding(
+        draft: HypothesisDraft,
+        factors: &BTreeMap<String, f64>,
+        withheld: &BTreeMap<String, String>,
+    ) -> Result<Self> {
         // Evidence is filtered to the as-of time before anything is computed,
         // so a hypothesis cannot be built on facts it could not have known.
         let evidence = draft.evidence.as_of(draft.as_of);
@@ -423,8 +444,20 @@ impl Hypothesis {
             })
             .collect();
         validate_factors(&origin_factors)?;
+        let withheld_origins: BTreeMap<String, String> = evidence
+            .iter()
+            .filter(|item| item.signed_weight() > 0.0)
+            .filter_map(|item| {
+                withheld
+                    .get(&item.origin)
+                    .map(|reason| (item.origin.clone(), reason.clone()))
+            })
+            .collect();
 
-        let belief = update(draft.prior, &strengths(&evidence, &origin_factors));
+        let belief = update(
+            draft.prior,
+            &strengths(&evidence, &origin_factors, &withheld_origins),
+        );
         let chain_weight = draft.chain.confidence().max(MINIMUM_CHAIN_WEIGHT);
         let hypothesis = Self {
             hypothesis_id: draft.hypothesis_id,
@@ -446,6 +479,7 @@ impl Hypothesis {
             confidence: attenuate(draft.prior, belief.posterior, chain_weight),
             belief,
             origin_factors,
+            withheld_origins,
             falsifiers: draft.falsifiers,
             leading_alternative: draft.leading_alternative,
             horizon: draft.horizon,
@@ -510,7 +544,10 @@ impl Hypothesis {
 
     /// Recompute confidence after the evidence set changed.
     pub fn revise(&mut self) {
-        self.belief = update(self.prior, &strengths(&self.evidence, &self.origin_factors));
+        self.belief = update(
+            self.prior,
+            &strengths(&self.evidence, &self.origin_factors, &self.withheld_origins),
+        );
         let chain = self.chain.confidence().max(MINIMUM_CHAIN_WEIGHT);
         self.confidence = attenuate(self.prior, self.belief.posterior, chain);
     }
@@ -906,13 +943,19 @@ fn validate_factors(factors: &BTreeMap<String, f64>) -> Result<()> {
 /// its critics' doubt. So the conservative reading: a factor can only ever
 /// lower a posterior, and the worst a discounted origin can do to a thesis
 /// it opposes is oppose it at full weight.
-fn strengths(evidence: &EvidenceSet, factors: &BTreeMap<String, f64>) -> Vec<EvidenceStrength> {
+fn strengths(
+    evidence: &EvidenceSet,
+    factors: &BTreeMap<String, f64>,
+    withheld: &BTreeMap<String, String>,
+) -> Vec<EvidenceStrength> {
     evidence
         .iter()
         .filter(|e| e.stance != Stance::Contextual)
         .map(|e| {
             let signed_weight = e.signed_weight();
-            let factor = if signed_weight > 0.0 {
+            let factor = if signed_weight > 0.0 && withheld.contains_key(&e.origin) {
+                0.0
+            } else if signed_weight > 0.0 {
                 factors.get(&e.origin).copied().unwrap_or(1.0)
             } else {
                 1.0

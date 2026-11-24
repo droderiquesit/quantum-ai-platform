@@ -546,3 +546,448 @@ fn the_reasoning_engine_forms_with_the_factors_it_was_handed_and_with_none_until
     );
     Ok(())
 }
+
+// --- R12-WORLD-3036: REASON reads health, drift, blind spots, the boundary ----
+
+/// A universe holding AAA (common stock, equity) and CCC (a cryptocurrency,
+/// digital asset), so a class can be served or graded while the other is not.
+fn two_class_universe() -> Universe {
+    let mut universe = universe();
+    universe
+        .insert(
+            FinancialObject::builder(
+                object("CCC"),
+                "CCC",
+                InstrumentType::Cryptocurrency,
+                fixture_liquidity(),
+            )
+            .venue("XNYS")
+            .price(dec!("100"))
+            .provenance(Provenance::synthetic("test", start()))
+            .build(start())
+            .expect("valid object"),
+        )
+        .expect("insertable");
+    universe
+}
+
+fn two_class_platform() -> Result<Platform> {
+    let config = PlatformConfig::default();
+    let (context, _clock) = Context::deterministic(start(), config.seed);
+    Platform::new(
+        config,
+        context,
+        Telemetry::silent(),
+        two_class_universe(),
+        limits(),
+    )
+}
+
+/// `bars`, ending `ago` before `start()`.
+fn bars_ending(symbol: &str, count: usize, ago: Duration) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == count * 2 / 3 { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start()
+                .saturating_sub(ago)
+                .saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+fn reason_detail(report: &qip_kernel::cycle::CycleReport) -> String {
+    report
+        .stage(Stage::Reason)
+        .expect("reason ran")
+        .detail
+        .clone()
+}
+
+/// The confidence REASON gave the one thesis the cycle formed.
+fn thesis_confidence(platform: &Platform, report: &qip_kernel::cycle::CycleReport) -> f64 {
+    platform
+        .predictions()
+        .last()
+        .and_then(|p| p.claim.as_ref())
+        .map(|claim| claim.confidence)
+        .unwrap_or_else(|| panic!("no thesis was written:\n{}", report.summarise()))
+}
+
+/// The failure this guards: the self-model read the platform as halted and
+/// REASON weighed every detector and analyst at its graded weight anyway, so
+/// a thesis formed while the kill switch was tripped carried the same
+/// confidence as one formed on a healthy platform.
+///
+/// Mutation: drop the `health.halted` arm in `SelfModel::shared_withholding`
+/// -- the halted cycle withholds nothing and the confidence matches the
+/// healthy one.
+#[test]
+fn a_tripped_kill_switch_withholds_every_producing_components_evidence_in_reason() -> Result<()> {
+    let mut healthy = platform()?;
+    healthy.observe(bars("AAA", 120));
+    let healthy_report = healthy.run_cycle(start());
+    let healthy_detail = reason_detail(&healthy_report);
+    assert!(
+        !healthy_detail.contains("self-model withheld"),
+        "premise: a healthy platform withholds nothing: {healthy_detail}"
+    );
+    let healthy_confidence = thesis_confidence(&healthy, &healthy_report);
+
+    let mut halted = platform()?;
+    halted.observe(bars("AAA", 120));
+    halted.autonomy_mut().kill_switch_mut().trip_global(
+        start(),
+        "operator",
+        "a halt REASON must weigh".to_string(),
+    );
+    let halted_report = halted.run_cycle(start());
+    let detail = reason_detail(&halted_report);
+    assert!(
+        detail.contains("self-model withheld the evidence of")
+            && detail.contains("(unhealthy: the kill switch was tripped)"),
+        "a halted platform weighed its components as healthy: {detail}"
+    );
+    let halted_confidence = thesis_confidence(&halted, &halted_report);
+    assert!(
+        halted_confidence < healthy_confidence,
+        "withholding did not lower the confidence: halted {halted_confidence} vs healthy \
+         {healthy_confidence}"
+    );
+    Ok(())
+}
+
+fn quiet_bars(symbol: &str, count: i64) -> Vec<SensedRecord> {
+    (0..count)
+        .map(|i| {
+            let at = start().saturating_sub(Duration::from_days(count - i));
+            bar(symbol, at, 100.0, 100.0 + (i % 2) as f64 * 0.01)
+        })
+        .collect()
+}
+
+/// The failure this guards: one input's bars stopped while the rest of the
+/// feed kept flowing, and REASON weighed the detector reading that frozen
+/// series as if it were reading the market.
+///
+/// Mutation: drop the `stale_inputs` arm in `SelfModel::shared_withholding`
+/// -- the AAA thesis withholds nothing.
+#[test]
+fn an_input_whose_bars_stopped_is_a_stale_area_and_reason_withholds_the_evidence_read_from_it()
+-> Result<()> {
+    use qip_contracts::degradation::Capability;
+    use qip_kernel::platform::FEED_HORIZON;
+    let mut platform = platform()?;
+    platform.observe(bars_ending(
+        "AAA",
+        120,
+        FEED_HORIZON + Duration::from_days(1),
+    ));
+    platform.observe(quiet_bars("BBB", 40));
+    let report = platform.run_cycle(start());
+    assert!(
+        platform
+            .self_model()
+            .stale_inputs()
+            .contains_key(object("AAA").as_str())
+            && !platform
+                .self_model()
+                .stale_inputs()
+                .contains_key(object("BBB").as_str()),
+        "premise: AAA and only AAA is a stale area: {:?}",
+        platform.self_model().stale_inputs()
+    );
+    assert!(
+        !platform
+            .self_model()
+            .health()
+            .expect("a reading")
+            .degraded
+            .contains_key(&Capability::Feed),
+        "premise: the feed as a whole is flowing"
+    );
+    let detail = reason_detail(&report);
+    assert!(
+        detail.contains(&format!(
+            "(stale: the input {} has had no bar since",
+            object("AAA").as_str()
+        )),
+        "a stale input's evidence was weighed: {detail}"
+    );
+
+    let mut fresh = platform_fresh()?;
+    let fresh_report = fresh.run_cycle(start());
+    assert!(fresh.self_model().stale_inputs().is_empty());
+    assert!(!reason_detail(&fresh_report).contains("self-model withheld"));
+    Ok(())
+}
+
+/// The failure this guards: the whole feed stopped and the self-model never
+/// said so (`central_degradation` observes no feed row), and REASON went on
+/// forming theses from the series it left behind. On a one-class universe —
+/// the committed one holds only common stock — a stopped feed serves no
+/// class, so the boundary refuses the thesis outright.
+///
+/// Mutation: read the feed as fresh whatever the age (`> FEED_HORIZON`
+/// replaced by `> Duration::from_days(10_000)` in the feed row) -- the health
+/// reading has no feed row.
+#[test]
+fn a_feed_older_than_its_horizon_reads_stale_in_health_and_reason_forms_no_thesis_on_it()
+-> Result<()> {
+    use qip_contracts::degradation::{Capability, Freshness};
+    use qip_kernel::platform::FEED_HORIZON;
+    let late = start().saturating_add(FEED_HORIZON + Duration::from_days(1));
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(late);
+    let health = platform
+        .self_model()
+        .health()
+        .expect("a reading after the cycle");
+    assert_eq!(
+        health.degraded.get(&Capability::Feed),
+        Some(&Freshness::Stale),
+        "the feed row did not read stale {:?} after the last bar: {health:?}",
+        late.since(start())
+    );
+    let detail = reason_detail(&report);
+    assert!(
+        detail.contains(&format!(
+            "no thesis was formed on {}: its asset class equity lies outside the capability \
+             boundary the feed serves",
+            object("AAA").as_str()
+        )),
+        "{detail}"
+    );
+    Ok(())
+}
+
+fn platform_fresh() -> Result<Platform> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    Ok(platform)
+}
+
+/// A series whose second half is far more volatile than its first, with the
+/// same late jump the detector fires on.
+fn shifted_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let scale = if i < count / 2 { 0.002 } else { 0.03 };
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * scale;
+            let jump = if i == count - 3 { 0.09 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}
+
+/// The failure this guards: a component's input distribution moved under it
+/// — the drift the record of graded outcomes cannot see until the misses
+/// arrive — and REASON weighed it by a record earned on a different market.
+///
+/// Mutation: `observe_input_drift` keeps nothing (the filter returns false)
+/// -- the drifted cycle withholds nothing.
+#[test]
+fn an_input_shifted_past_the_psi_threshold_reads_drifted_and_its_evidence_is_withheld() -> Result<()>
+{
+    use qip_learning_engine::self_model::INPUT_DRIFT_PSI;
+    let mut steady = platform()?;
+    steady.observe(bars("AAA", 260));
+    let steady_report = steady.run_cycle(start());
+    assert!(
+        steady.self_model().drifted_inputs().is_empty(),
+        "premise: a stationary series reads as no drift: {:?}",
+        steady.self_model().drifted_inputs()
+    );
+    assert!(!reason_detail(&steady_report).contains("drifted"));
+
+    let mut platform = platform()?;
+    platform.observe(shifted_bars("AAA", 260));
+    let report = platform.run_cycle(start());
+    let index = platform
+        .self_model()
+        .drifted_inputs()
+        .get(object("AAA").as_str())
+        .copied()
+        .unwrap_or_else(|| {
+            panic!(
+                "the shifted series did not read drifted: {:?}",
+                platform.self_model().drifted_inputs()
+            )
+        });
+    assert!(index >= INPUT_DRIFT_PSI, "drifted at {index}");
+    let detail = reason_detail(&report);
+    assert!(
+        detail.contains(&format!(
+            "(drifted: the input {} shifted by a PSI of {index:.3})",
+            object("AAA").as_str()
+        )),
+        "a drifted input's evidence was weighed: {detail}"
+    );
+    Ok(())
+}
+
+/// The failure this guards: the boundary was declared at assembly from the
+/// universe and read by nothing, so a class whose bars had stopped arriving
+/// still had theses formed in it from the series it left behind.
+///
+/// Mutation: drop the boundary refusal in `reason_about_the_queue` -- a
+/// thesis is formed on CCC.
+#[test]
+fn reason_refuses_a_thesis_in_an_asset_class_the_feed_no_longer_serves() -> Result<()> {
+    use qip_kernel::platform::FEED_HORIZON;
+    use qip_learning_engine::self_model::BoundaryReading;
+    let mut platform = two_class_platform()?;
+    // AAA is served now and quiet; CCC's bars stopped FEED_HORIZON + 1 day ago
+    // and its old series still holds the jump a detector fires on.
+    let quiet: Vec<SensedRecord> = (0..40)
+        .map(|i| {
+            let at = start().saturating_sub(Duration::from_days(40 - i));
+            bar("AAA", at, 100.0, 100.0 + (i % 2) as f64 * 0.01)
+        })
+        .collect();
+    platform.observe(quiet);
+    platform.observe(bars_ending(
+        "CCC",
+        120,
+        FEED_HORIZON + Duration::from_days(1),
+    ));
+    let report = platform.run_cycle(start());
+    assert_eq!(
+        platform.self_model().boundary_of("equity"),
+        BoundaryReading::Inside,
+        "premise: the class the feed serves now is inside"
+    );
+    assert_eq!(
+        platform.self_model().boundary_of("digital_asset"),
+        BoundaryReading::Outside,
+        "the class whose bars stopped is still inside: {:?}",
+        platform.self_model().boundary()
+    );
+    let detail = reason_detail(&report);
+    assert!(
+        detail.contains(&format!(
+            "no thesis was formed on {}: its asset class digital_asset lies outside the \
+             capability boundary the feed serves",
+            object("CCC").as_str()
+        )),
+        "{detail}\n{}",
+        report.summarise()
+    );
+    assert!(
+        platform
+            .predictions()
+            .iter()
+            .all(|p| !p.hypothesis.ends_with(object("CCC").as_str())),
+        "a thesis was written on CCC"
+    );
+    Ok(())
+}
+
+/// The failure this guards: a component graded only on equities was weighed
+/// at its equity record on a thesis in another class, where nothing it
+/// produced has ever resolved.
+///
+/// Mutation: `is_blind_in` returns false -- the CCC thesis withholds nothing.
+#[test]
+fn a_component_graded_only_in_one_class_is_blind_in_another_and_reason_withholds_it() -> Result<()>
+{
+    let mut platform = two_class_platform()?;
+    platform.observe(bars("AAA", 120));
+    let first = platform.run_cycle(start());
+    let prediction = platform
+        .predictions()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("no claim:\n{}", first.summarise()));
+    let horizon = prediction.proposition.resolves_at;
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            hourly_bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+    let graded_at = horizon.saturating_add(Duration::from_mins(1));
+    platform.run_cycle(graded_at);
+    let claim = prediction.claim.expect("a claim");
+    let detector = ComponentKey::detector(&claim.class)?;
+    let classes = platform
+        .self_model()
+        .graded_classes(&detector)
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        classes.into_iter().collect::<Vec<_>>(),
+        vec!["equity".to_string()],
+        "premise: the detector is graded in equity and nothing else"
+    );
+
+    // CCC is served now, with the jump the same detector fires on; AAA's
+    // bars stopped past the feed horizon, so its old opportunities have
+    // lapsed and the queue holds CCC's.
+    let later =
+        graded_at.saturating_add(qip_kernel::platform::FEED_HORIZON + Duration::from_days(1));
+    let ccc: Vec<SensedRecord> = big_jump_bars("CCC", 120)
+        .into_iter()
+        .map(|record| match record {
+            SensedRecord::Bar(mut b) => {
+                b.open_time = b.open_time.saturating_add(later.since(start()));
+                SensedRecord::Bar(b)
+            }
+            other => other,
+        })
+        .collect();
+    platform.observe(ccc);
+    // The queue is worked one opportunity a cycle; run until REASON takes up
+    // the CCC one, a few minutes apart so the feed stays fresh.
+    let on_ccc = |platform: &Platform| {
+        platform
+            .predictions()
+            .iter()
+            .any(|p| p.hypothesis.ends_with(object("CCC").as_str()))
+    };
+    let mut detail = String::new();
+    for step in 0..6 {
+        let report = platform.run_cycle(later.saturating_add(Duration::from_mins(step)));
+        if on_ccc(&platform) {
+            detail = reason_detail(&report);
+            break;
+        }
+    }
+    assert!(on_ccc(&platform), "premise: REASON formed a thesis on CCC");
+    assert!(
+        detail.contains("self-model withheld the evidence of")
+            && detail.contains("(blind spot: ")
+            && detail.contains(" has graded outcomes only outside digital_asset)"),
+        "a component blind in the class was weighed: {detail}"
+    );
+    Ok(())
+}
+
+fn big_jump_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
+    let mut price = 100.0_f64;
+    (0..count)
+        .map(|i| {
+            let noise = ((i as f64 * 0.7548776662) % 1.0 - 0.5) * 0.008;
+            let jump = if i == count - 2 { 0.30 } else { 0.0 };
+            let open = price;
+            price *= 1.0 + noise + jump;
+            let at = start().saturating_sub(Duration::from_days((count - i) as i64));
+            bar(symbol, at, open, price)
+        })
+        .collect()
+}

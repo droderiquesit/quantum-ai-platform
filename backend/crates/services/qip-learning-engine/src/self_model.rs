@@ -76,6 +76,17 @@ const PSEUDO_COUNTS: f64 = 4.0;
 /// discount rather than a raised weight.
 pub const DRIFT_TOLERANCE: f64 = 0.05;
 
+/// The population stability index at or above which a component's input reads
+/// drifted (R12-WORLD-3036, data drift).
+///
+/// A provisional figure the owner's 2026-11-23 instruction let this row state:
+/// 0.25 is the conventional "significant shift" threshold and the one
+/// `qip_ai::evaluation` already calls drifting. A component whose input
+/// distribution has moved this far is reading a market its record was not
+/// earned on, so the evidence it produces from that input is withheld rather
+/// than weighted by a record about a different distribution.
+pub const INPUT_DRIFT_PSI: f64 = 0.25;
+
 /// The kind of component an estimate is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -449,6 +460,18 @@ pub struct SelfModel {
     /// boundary has been declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     boundary: Option<BTreeSet<String>>,
+    /// Per component, the asset classes it has a graded outcome in. A
+    /// component known here but not in a class is blind in that class.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    graded_classes: BTreeMap<ComponentKey, BTreeSet<String>>,
+    /// Inputs (instrument ids) whose distribution has shifted by at least
+    /// [`INPUT_DRIFT_PSI`], with the index measured, as of the newest reading.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    drifted_inputs: BTreeMap<String, f64>,
+    /// Inputs (instrument ids) whose newest bar is older than the kernel's
+    /// feed horizon, with the instant that bar closed: the stale areas.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    stale_inputs: BTreeMap<String, Timestamp>,
 }
 
 /// How the platform was running when it last looked at itself
@@ -510,6 +533,7 @@ impl SelfModel {
             match stalest {
                 Some(key) => {
                     self.components.remove(&key);
+                    self.graded_classes.remove(&key);
                 }
                 None => break,
             }
@@ -669,6 +693,129 @@ impl SelfModel {
             Some(classes) if classes.contains(class) => BoundaryReading::Inside,
             Some(_) => BoundaryReading::Outside,
         }
+    }
+
+    /// Record that `components` were graded on a thesis in `asset_class`.
+    ///
+    /// Only components the model already holds a record for are noted, so the
+    /// map stays bounded by [`MAX_COMPONENTS`] and an eviction clears both.
+    pub fn note_graded_class(&mut self, components: &[ComponentKey], asset_class: &str) {
+        if asset_class.trim().is_empty() {
+            return;
+        }
+        for key in components {
+            if self.components.contains_key(key) {
+                self.graded_classes
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(asset_class.to_string());
+            }
+        }
+    }
+
+    /// The asset classes `key` has a graded outcome in.
+    pub fn graded_classes(&self, key: &ComponentKey) -> Option<&BTreeSet<String>> {
+        self.graded_classes.get(key)
+    }
+
+    /// Replace the drifted-input reading with this cycle's shifts, keeping
+    /// only those at or above [`INPUT_DRIFT_PSI`]. A non-finite index is not a
+    /// measurement and is kept as drifted: the restrictive reading.
+    pub fn observe_input_drift(&mut self, shifts: impl IntoIterator<Item = (String, f64)>) {
+        self.drifted_inputs = shifts
+            .into_iter()
+            .filter(|(_, index)| !index.is_finite() || *index >= INPUT_DRIFT_PSI)
+            .collect();
+    }
+
+    /// Replace the stale-input reading: each input whose newest bar is past
+    /// the feed horizon, with the instant that bar closed.
+    pub fn observe_stale_inputs(&mut self, stale: impl IntoIterator<Item = (String, Timestamp)>) {
+        self.stale_inputs = stale.into_iter().collect();
+    }
+
+    /// Inputs read as stale at the newest reading.
+    pub fn stale_inputs(&self) -> &BTreeMap<String, Timestamp> {
+        &self.stale_inputs
+    }
+
+    /// Inputs read as drifted at the newest reading, with their index.
+    pub fn drifted_inputs(&self) -> &BTreeMap<String, f64> {
+        &self.drifted_inputs
+    }
+
+    /// The asset classes inside the declared boundary, if one is declared.
+    pub fn boundary(&self) -> Option<&BTreeSet<String>> {
+        self.boundary.as_ref()
+    }
+
+    /// Whether `origin` (a detector or analyst id) is blind in `asset_class`:
+    /// graded in at least one class and never in this one.
+    pub fn is_blind_in(&self, origin: &str, asset_class: &str) -> bool {
+        self.graded_classes.iter().any(|(key, classes)| {
+            matches!(key.kind, ComponentKind::Detector | ComponentKind::Analyst)
+                && key.id == origin
+                && !classes.is_empty()
+                && !classes.contains(asset_class)
+        })
+    }
+
+    /// The origins whose supporting evidence REASON must withhold on a thesis
+    /// about `subject` in `asset_class`, each with the reason (R12-WORLD-3036).
+    ///
+    /// Every rule only withholds: nothing here raises a factor, relaxes a
+    /// limit or touches sizing. Detectors and analysts alike produce their
+    /// evidence from the bars the feed delivered for the subject, so a halted
+    /// platform, a non-fresh ingestion or feed row and a drifted subject each
+    /// withhold every origin; a blind spot withholds the one origin that is
+    /// blind in the class.
+    pub fn withheld_origins<'a>(
+        &self,
+        origins: impl IntoIterator<Item = &'a str>,
+        subject: &str,
+        asset_class: Option<&str>,
+    ) -> BTreeMap<String, String> {
+        let shared = self.shared_withholding(subject);
+        let mut withheld = BTreeMap::new();
+        for origin in origins {
+            let reason = shared.clone().or_else(|| {
+                asset_class
+                    .filter(|class| self.is_blind_in(origin, class))
+                    .map(|class| {
+                        format!("blind spot: {origin} has graded outcomes only outside {class}")
+                    })
+            });
+            if let Some(reason) = reason {
+                withheld.insert(origin.to_string(), reason);
+            }
+        }
+        withheld
+    }
+
+    /// The reason every origin on `subject` is withheld, if there is one.
+    fn shared_withholding(&self, subject: &str) -> Option<String> {
+        if let Some(health) = &self.health {
+            if health.halted {
+                return Some("unhealthy: the kill switch was tripped".to_string());
+            }
+            for row in [TableRow::Ingestion, TableRow::Feed] {
+                if let Some(freshness) = health.degraded.get(&row) {
+                    return Some(format!(
+                        "stale: the {} row read {}",
+                        row.as_str(),
+                        freshness.as_str()
+                    ));
+                }
+            }
+        }
+        if let Some(closed) = self.stale_inputs.get(subject) {
+            return Some(format!(
+                "stale: the input {subject} has had no bar since {closed}"
+            ));
+        }
+        self.drifted_inputs
+            .get(subject)
+            .map(|index| format!("drifted: the input {subject} shifted by a PSI of {index:.3}"))
     }
 
     pub fn len(&self) -> usize {

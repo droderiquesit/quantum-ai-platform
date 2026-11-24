@@ -165,6 +165,19 @@ impl ReasoningEngine {
 
     /// Form and review one hypothesis.
     pub fn reason(&mut self, input: SynthesisInput) -> Result<ReasoningOutcome> {
+        self.reason_withholding(input, &BTreeMap::new())
+    }
+
+    /// Form and review one hypothesis with the supporting evidence of every
+    /// origin in `withheld` at weight zero (R12-WORLD-3036): the self-model
+    /// read that producing component as unhealthy, stale, drifted or blind
+    /// for this thesis. See [`Hypothesis::form_withholding`]; the reasons
+    /// travel on the hypothesis as `withheld_origins`.
+    pub fn reason_withholding(
+        &mut self,
+        input: SynthesisInput,
+        withheld: &BTreeMap<String, String>,
+    ) -> Result<ReasoningOutcome> {
         if input.now < input.as_of {
             return Err(Error::invalid(format!(
                 "reasoning at {} for an as-of time of {}, which is in its future",
@@ -230,7 +243,7 @@ impl ReasoningEngine {
         };
         // Each origin's evidence scaled by what the self-model has measured
         // of it; the factors applied travel on the hypothesis.
-        let hypothesis = Hypothesis::form_with_factors(draft, &self.origin_factors)?;
+        let hypothesis = Hypothesis::form_withholding(draft, &self.origin_factors, withheld)?;
         // The seam: evidence has just become a belief, at the engine's own
         // clock. Recorded here and nowhere else, after the form succeeded,
         // so a refused draft leaves the belief state exactly as old as it

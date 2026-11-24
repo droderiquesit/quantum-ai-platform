@@ -1688,6 +1688,17 @@ const PROPOSAL_HISTORY: usize = 256;
 /// worth pricing.
 pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
 
+/// How old the newest bar the kernel has read may be before the self-model's
+/// health reading puts the feed row as stale (R12-WORLD-3036).
+///
+/// A provisional figure stated under the owner's 2026-11-23 instruction: four
+/// days keeps day bars across a long weekend (Friday's bar closes on Saturday,
+/// a Tuesday cycle reads it about three and a half days old) fresh, and calls
+/// anything older a feed that has stopped. It only ever withholds evidence in
+/// REASON; it is deliberately not a row of `central_degradation`, so it moves
+/// no sizing multiplier.
+pub const FEED_HORIZON: Duration = Duration::from_days(4);
+
 /// A decision DECIDE sized on a conviction it was unsure of, as the deep
 /// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
 /// what is at stake, how unsure the platform is, and the deadline after
@@ -13398,7 +13409,17 @@ impl Platform {
         let mut problems = Vec::new();
         for evaluation in &evaluations {
             let charged = match Self::components_of(evaluation, &roster) {
-                Ok(components) => self.self_model.absorb(evaluation, &components),
+                Ok(components) => {
+                    let charged = self.self_model.absorb(evaluation, &components);
+                    // The class the thesis was graded in, so a component
+                    // graded only elsewhere reads blind here (R12-WORLD-3036).
+                    if matches!(charged, Ok(n) if n > 0)
+                        && let Some(class) = self.asset_class_of(&evaluation.subject)
+                    {
+                        self.self_model.note_graded_class(&components, &class);
+                    }
+                    charged
+                }
                 Err(error) => Err(error),
             };
             if let Err(error) = charged {
@@ -15430,6 +15451,42 @@ impl Platform {
         &self.reaction_episodes
     }
 
+    /// The asset class the universe gives `object`, if it holds the object.
+    fn asset_class_of(&self, object: &str) -> Option<String> {
+        self.market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object.to_string()))
+            .map(|record| record.asset_class.as_str().to_string())
+    }
+
+    /// Narrow the self-model's capability boundary to the asset classes the
+    /// feed actually serves now: the classes of the universe's instruments
+    /// whose newest bar closed within [`FEED_HORIZON`] of `now`
+    /// (R12-WORLD-3036). Served classes are a subset of the universe's, which
+    /// assembly declared, so this only narrows; a class whose bars stopped
+    /// arriving leaves the boundary, and REASON forms no thesis in it, even
+    /// while the series it left behind still raises anomalies.
+    fn observe_served_boundary(&mut self, now: Timestamp) {
+        let served: BTreeSet<String> = self
+            .bar_history
+            .iter()
+            .filter(|(_, bars)| {
+                bars.iter()
+                    .map(Bar::close_time)
+                    .max()
+                    .is_some_and(|close| now.since(close) <= FEED_HORIZON)
+            })
+            .filter_map(|(object, _)| self.asset_class_of(object))
+            .collect();
+        if let Err(error) = self.self_model.declare_boundary(served) {
+            self.capture_problems.push(format!(
+                "the self-model refused the served capability boundary: {}",
+                error.message()
+            ));
+        }
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -15439,7 +15496,7 @@ impl Platform {
     /// one.
     fn observe_own_health(&mut self, now: Timestamp) {
         use qip_contracts::degradation::{Capability, Freshness};
-        let degraded = match self.central_degradation(now) {
+        let degraded: BTreeMap<Capability, Freshness> = match self.central_degradation(now) {
             Ok(state) => Capability::all()
                 .into_iter()
                 .map(|row| (row, state.freshness(row)))
@@ -15454,6 +15511,38 @@ impl Platform {
                 return;
             }
         };
+        let mut degraded = degraded;
+        // Central `Capability::Feed`, observed from the kernel's own reading
+        // of the feed: the age of the newest bar it has read against this
+        // cycle's clock. Into the health reading only, never into
+        // `central_degradation`, so it withholds evidence and narrows no size.
+        let newest_bar = self
+            .bar_history
+            .values()
+            .filter_map(|bars| bars.iter().map(Bar::close_time).max())
+            .max();
+        let feed = match newest_bar {
+            None => Some(Freshness::Unavailable),
+            Some(close) if now.since(close) > FEED_HORIZON => Some(Freshness::Stale),
+            Some(_) => None,
+        };
+        if let Some(freshness) = feed {
+            degraded.insert(Capability::Feed, freshness);
+        }
+        // The stale areas: each input whose own newest bar is past the
+        // horizon, though the feed as a whole may still be flowing.
+        let stale: Vec<(String, Timestamp)> = self
+            .bar_history
+            .iter()
+            .filter_map(|(object, bars)| {
+                bars.iter()
+                    .map(Bar::close_time)
+                    .max()
+                    .filter(|close| now.since(*close) > FEED_HORIZON)
+                    .map(|close| (object.clone(), close))
+            })
+            .collect();
+        self.self_model.observe_stale_inputs(stale);
         let health = qip_learning_engine::self_model::OperationalHealth {
             observed_at: now,
             halted: self.autonomy.kill_switch().is_globally_tripped(),
@@ -16784,6 +16873,16 @@ impl Platform {
         self.governor
             .signals_mut()
             .observe_distribution(&statistics.distribution_reading());
+        // R12-WORLD-3036 data drift: the same shifts, handed to the
+        // self-model, which reads an input at or past `INPUT_DRIFT_PSI` as
+        // drifted and REASON withholds the evidence produced from it.
+        self.self_model
+            .observe_input_drift(statistics.shifted.iter().map(|shift| {
+                (
+                    shift.object_id.clone(),
+                    shift.drift.population_stability_index,
+                )
+            }));
         let statistics_detail = if statistics.has_findings() {
             format!("; {}", statistics.describe())
         } else {
@@ -18821,6 +18920,11 @@ impl Platform {
     /// rise on a quiet cycle learns the same fact a day earlier than one who
     /// waits for the next opportunity to be refused eighteen times.
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
+        // R12-WORLD-3036: REASON reads the self-model as of now, not as of the
+        // last cycle's LEARN, so a halt or a feed that stopped since then is
+        // what this cycle's evidence is weighed against.
+        self.observe_own_health(now);
+        self.observe_served_boundary(now);
         // Coverage is of this cycle's REASON stage only (R12-REASON-3026).
         self.scopes_reported.clear();
         self.publish_scopes_reported();
@@ -18948,6 +19052,35 @@ impl Platform {
         // not then be filed as never having been looked at.
         self.worked_opportunities
             .insert(opportunity.opportunity_id.as_str().to_string());
+
+        // R12-WORLD-3036: no thesis outside the capability boundary. A subject
+        // in an asset class the feed does not serve is refused before the
+        // panel is convened or anything is billed. A subject the universe
+        // gives no class has no class to judge and is left to the rules that
+        // govern unlisted series.
+        if let Some(subject) = opportunity.affected_objects.first()
+            && let Some(class) = self.asset_class_of(subject.as_str())
+            && self.self_model.boundary_of(&class)
+                == qip_learning_engine::self_model::BoundaryReading::Outside
+        {
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "outside_capability_boundary")]),
+            );
+            // Off the queue, so a refused head does not starve the served
+            // opportunities behind it until it lapses.
+            self.queue
+                .retain(|queued| queued.opportunity_id != opportunity.opportunity_id);
+            return StageOutcome::ran(
+                Stage::Reason,
+                0,
+                format!(
+                    "no thesis was formed on {}: its asset class {class} lies outside the \
+                     capability boundary the feed serves",
+                    subject.as_str()
+                ),
+            );
+        }
 
         // Where this decision belongs on the intelligence ladder, asked before
         // anything is spent reaching it. Convening the organisation is the most
@@ -19395,6 +19528,18 @@ impl Platform {
                         }
                     ),
                 );
+                if !reasoned.hypothesis.withheld_origins.is_empty() {
+                    let named: Vec<String> = reasoned
+                        .hypothesis
+                        .withheld_origins
+                        .iter()
+                        .map(|(origin, reason)| format!("{origin} ({reason})"))
+                        .collect();
+                    outcome.detail.push_str(&format!(
+                        "; self-model withheld the evidence of {}",
+                        named.join(", ")
+                    ));
+                }
                 if matches!(predicted, Ok(false)) {
                     self.telemetry.metrics.count(
                         names::OPPORTUNITIES_UNPRICED,
@@ -22404,41 +22549,55 @@ impl Platform {
             .with_diagnosticity(anomaly.confidence().clamp(0.05, 0.95)),
         ]);
 
-        let outcome = self.reasoning.reason(SynthesisInput {
-            hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
-                "hyp-{}-{}",
-                self.cycle,
-                subject.as_str()
-            )),
-            opportunity_id: Some(opportunity.opportunity_id.clone()),
-            as_of: now,
-            now,
-            class: anomaly.kind.as_str().to_string(),
-            claim,
-            statement: opportunity.headline.clone(),
-            subjects: opportunity.affected_objects.clone(),
-            chain,
-            findings: report.findings.clone(),
-            direct_evidence: direct,
-            // The base rate for a detector firing and the move persisting.
-            // Deliberately below a coin flip: most anomalies are noise, and a
-            // prior chosen to suit the conclusion is not a prior.
-            prior: 0.25,
-            // Anomaly detection reasoning is epistemic: uncertainty about whether
-            // the pattern is real or noise, which could be resolved by more
-            // observation, rather than inherent randomness (aleatoric).
-            uncertainty_type: qip_reasoning_engine::UncertaintyType::Epistemic,
-            falsifiers: vec![format!(
-                "{} reverts inside one standard deviation within the horizon",
-                anomaly.subject
-            )],
-            leading_alternative:
-                "the anomaly is a data artefact or a known event the market has already priced"
-                    .to_string(),
-            horizon: opportunity.horizon,
-            market_priced_in: None,
-            models: Vec::new(),
-        })?;
+        // R12-WORLD-3036: the self-model's reading of each producing
+        // component for this thesis — unhealthy, stale, drifted or blind —
+        // withholds that origin's supporting evidence. Read here, where the
+        // thesis is formed, and nowhere near sizing or a limit.
+        let asset_class = self.asset_class_of(subject.as_str());
+        let origins: BTreeSet<&str> = std::iter::once(anomaly.detector.as_str())
+            .chain(report.findings.iter().map(|f| f.agent_id.as_str()))
+            .collect();
+        let withheld =
+            self.self_model
+                .withheld_origins(origins, subject.as_str(), asset_class.as_deref());
+        let outcome = self.reasoning.reason_withholding(
+            SynthesisInput {
+                hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
+                    "hyp-{}-{}",
+                    self.cycle,
+                    subject.as_str()
+                )),
+                opportunity_id: Some(opportunity.opportunity_id.clone()),
+                as_of: now,
+                now,
+                class: anomaly.kind.as_str().to_string(),
+                claim,
+                statement: opportunity.headline.clone(),
+                subjects: opportunity.affected_objects.clone(),
+                chain,
+                findings: report.findings.clone(),
+                direct_evidence: direct,
+                // The base rate for a detector firing and the move persisting.
+                // Deliberately below a coin flip: most anomalies are noise, and a
+                // prior chosen to suit the conclusion is not a prior.
+                prior: 0.25,
+                // Anomaly detection reasoning is epistemic: uncertainty about whether
+                // the pattern is real or noise, which could be resolved by more
+                // observation, rather than inherent randomness (aleatoric).
+                uncertainty_type: qip_reasoning_engine::UncertaintyType::Epistemic,
+                falsifiers: vec![format!(
+                    "{} reverts inside one standard deviation within the horizon",
+                    anomaly.subject
+                )],
+                leading_alternative:
+                    "the anomaly is a data artefact or a known event the market has already priced"
+                        .to_string(),
+                horizon: opportunity.horizon,
+                market_priced_in: None,
+                models: Vec::new(),
+            },
+            &withheld,
+        )?;
         Ok(Some(outcome))
     }
 
