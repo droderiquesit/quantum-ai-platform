@@ -4593,6 +4593,92 @@ mod tests {
         assert_eq!(replayed, made);
     }
 
+    /// The failure this prevents: `a_question_asked_again_...` bounds the
+    /// reach of a reference by asserting it under
+    /// [`REASKED_KEYFRAME_PASSES`] over thirty passes, which no reference can
+    /// fail to be however the keyframe clause reads — so the clause could be
+    /// deleted, every reference on a tape that never moved would chain back
+    /// to the first pass for the whole run, and a reader whose log begins
+    /// mid-run would lose every pass since rather than fewer than a hundred.
+    /// Here the tape stays still for more than twice the keyframe distance.
+    ///
+    /// Mutation: drop the keyframe clause from `journal_form`'s
+    /// `unchanged_since` filter (keep only `*cycle < review.cycle`) — the
+    /// pass at the keyframe distance is journaled by reference to its stem's
+    /// first whole pass, a hundred passes back.
+    #[test]
+    fn a_question_unchanged_past_the_keyframe_distance_is_journaled_whole_again_and_no_reference_reaches_further()
+     {
+        let passes = unchanged_passes(2 * REASKED_KEYFRAME_PASSES + 5);
+        // Per stem: the last pass that journaled it whole, and every pass that
+        // did so because the keyframe distance had elapsed. The stems do not
+        // share a base — on this fixture the self-system question settles a
+        // pass after the instrument's — so neither does their keyframe.
+        let mut whole_at: BTreeMap<String, u64> = BTreeMap::new();
+        let mut keyframes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut longest = 0;
+        for (review, record, _, _) in &passes {
+            for entry in &record.arbitrations {
+                let proposition = match entry {
+                    JournaledArbitration::Reasked { reasked } => &reasked.proposition,
+                    JournaledArbitration::Recorded(a) => &a.proposition,
+                };
+                let stem = stem_of(proposition, review.cycle)
+                    .unwrap_or_else(|| panic!("premise: `{proposition}` is named by its pass"))
+                    .to_string();
+                match entry {
+                    // A reference names the last pass that journaled its stem
+                    // whole, and never one the keyframe distance back or
+                    // further: so the pass at that distance is whole.
+                    JournaledArbitration::Reasked { reasked } => {
+                        assert_eq!(
+                            whole_at.get(&stem),
+                            Some(&reasked.of_cycle),
+                            "cycle {}: `{proposition}` refers to cycle {}, which is not the \
+                             last pass that journaled it whole",
+                            review.cycle,
+                            reasked.of_cycle
+                        );
+                        let reach = review.cycle - reasked.of_cycle;
+                        assert!(
+                            reach < REASKED_KEYFRAME_PASSES,
+                            "cycle {}: `{proposition}` refers {reach} passes back, past the \
+                             keyframe distance",
+                            review.cycle
+                        );
+                        longest = longest.max(reach);
+                    }
+                    JournaledArbitration::Recorded(_) => {
+                        if whole_at
+                            .get(&stem)
+                            .is_some_and(|w| review.cycle - w == REASKED_KEYFRAME_PASSES)
+                        {
+                            keyframes
+                                .entry(stem.clone())
+                                .or_default()
+                                .push(review.cycle);
+                        }
+                        whole_at.insert(stem, review.cycle);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            longest,
+            REASKED_KEYFRAME_PASSES - 1,
+            "premise: a chain reached the keyframe distance"
+        );
+        assert!(
+            whole_at.len() >= 2
+                && whole_at
+                    .keys()
+                    .all(|stem| keyframes.get(stem).is_some_and(|at| at.len() == 2)),
+            "every question still for twice the keyframe distance is journaled whole twice \
+             more: {keyframes:?} of {:?}",
+            whole_at.keys().collect::<Vec<_>>()
+        );
+    }
+
     /// A daily bar of `obj-<symbol>` on XNYS opening at `open_time`.
     fn daily(
         symbol: &str,
