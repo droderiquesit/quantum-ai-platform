@@ -3415,10 +3415,6 @@ const CAUSAL_CONTEXT_LIMIT: usize = 5;
 /// the edges themselves, which cite the reaction that weakened them.
 const REACTION_CONTRADICTION_HISTORY: usize = 256;
 
-/// The class prefix `MarketEvent::from_macro` gives a macro release, which
-/// the reaction loop pairs with every instrument the feed carries.
-const MACRO_EVENT_CLASS_PREFIX: &str = "macro/";
-
 /// The most past surprises kept per macro series for the materiality rule.
 const MACRO_SURPRISE_HISTORY: usize = 64;
 
@@ -3427,12 +3423,18 @@ const MACRO_SURPRISE_HISTORY: usize = 64;
 /// defined on. A release on a series with less history is not material —
 /// the platform cannot say it surprised by its own standard, and refuses to
 /// guess (R12-WORLD-6015).
+///
+/// The figure is recorded in `docs/blueprint/owner-decisions-2026-11-23.md`,
+/// section "Figures decided on 2026-11-24", row R12-WORLD-6015.
 pub const MACRO_MATERIALITY_MIN_HISTORY: usize = 2;
 
 /// How many of its series' standard deviations a macro surprise must reach
 /// to be material (R12-WORLD-6015). One: the smallest rule that separates a
 /// release that surprised by the series' own standard from one that did not.
 /// Provisional, under the owner's 2026-11-23 instruction to decide.
+///
+/// The figure is recorded in `docs/blueprint/owner-decisions-2026-11-23.md`,
+/// section "Figures decided on 2026-11-24", row R12-WORLD-6015.
 pub const MACRO_MATERIALITY_SIGMAS: f64 = 1.0;
 
 /// The producer [`WorldReactionRecorded`] carries, and the discriminator its
@@ -15041,6 +15043,13 @@ impl Platform {
     /// early. An event that is not material, has no direction, or lands on
     /// nothing is skipped: a routine headline followed by noise is not
     /// evidence about how the market reacts to news.
+    ///
+    /// Two rules here are figures nobody had stated until
+    /// `docs/blueprint/owner-decisions-2026-11-23.md`, section "Figures
+    /// decided on 2026-11-24", row R12-WORLD-6015, recorded them: a material
+    /// event is paired with every instrument the feed carries, and the
+    /// shortest horizon is read at the finest resolution the feed carries —
+    /// ticks where the landing instrument has any, bars where it has none.
     fn react_to_world_events(&mut self, now: Timestamp) {
         use qip_world_model::granger::REACTION_HORIZONS_BARS;
         use qip_world_model::reaction::ReactionEpisode;
@@ -15104,21 +15113,25 @@ impl Platform {
                 continue;
             }
             // Where the event lands: its subject's own bars; the instrument a
-            // named company issues; or, for a macro release — a series with
-            // no bars of its own, paired with every instrument the feed
-            // carries — the first instrument in key order, which only gates
-            // and orders the episode.
+            // named company issues; or, for any other material event — a
+            // macro release, a series with no bars of its own, or a company
+            // that issues no instrument the feed carries — the first
+            // instrument in key order, which only gates and orders the
+            // episode. Every material event is paired with every instrument
+            // either way. Until 2026-11-24 the last arm was macro-only, so a
+            // material release by an unlisted company — Kestrel, one of the
+            // synthetic world's five, a supplier whose results move its
+            // listed customers — was skipped, and it is the first material
+            // company release `qip-fastbrain`'s committed feed publishes.
             let landing = if self.bar_history.contains_key(&event.subject) {
                 event.subject.clone()
             } else if let Some(object) = self.entity_instruments.get(&event.subject) {
                 object.clone()
-            } else if event.class.starts_with(MACRO_EVENT_CLASS_PREFIX) {
+            } else {
                 match self.bar_history.keys().next() {
                     Some(first) => first.clone(),
                     None => continue,
                 }
-            } else {
-                continue;
             };
             if !self.bar_history.contains_key(&landing) {
                 continue;

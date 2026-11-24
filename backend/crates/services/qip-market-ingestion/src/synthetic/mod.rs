@@ -275,7 +275,9 @@ pub const SYNTHETIC_MACRO_REGION: &str = "synthetic";
 /// The level [`SYNTHETIC_MACRO_SERIES`] starts at, in percent: the demo
 /// world's own contract carry rate (four per cent), so the synthetic rates
 /// index starts where the synthetic world already says money costs. Not a
-/// market figure and not a forecast of one.
+/// market figure and not a forecast of one. Recorded in
+/// `docs/blueprint/owner-decisions-2026-11-23.md`, section "Figures decided
+/// on 2026-11-24", row R12-WORLD-6015.
 pub const SYNTHETIC_MACRO_START_LEVEL: f64 = 4.0;
 
 /// The smallest earnings surprise the synthetic material stream publishes,
@@ -323,6 +325,9 @@ pub struct EnvironmentConfig {
     /// shipped binary — the loop ran on every cycle and matched nothing. The
     /// rate is a property of the synthetic world, not a claim about any real
     /// market; it is chosen so a day of simulated trading carries a handful.
+    /// The default of 0.5 per company per day, and per macro series, is
+    /// recorded in `docs/blueprint/owner-decisions-2026-11-23.md`, section
+    /// "Figures decided on 2026-11-24", row R12-WORLD-6015.
     pub material_news_per_day: f64,
     /// Whether to publish trade prints. Off for long backtests, where the
     /// volume is enormous and the bars carry the same information.

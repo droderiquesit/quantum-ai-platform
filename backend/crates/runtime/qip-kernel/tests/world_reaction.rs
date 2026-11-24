@@ -15,11 +15,15 @@
 //! each applied episode is journaled, so a restart rebuilds the graph from
 //! the log instead of applying anything twice.
 //!
-//! These tests drive the platform exactly as `qip-fastbrain` does — the
-//! six-instrument synthetic exchange on its default configuration
-//! (`EnvironmentConfig::default()`, which `Feed::synthetic` spreads), the
-//! committed universe catalogue, `PlatformConfig::default()` — and read only
-//! what `run_cycle` left behind.
+//! These tests drive the platform on the six-instrument synthetic exchange
+//! at its default configuration (`EnvironmentConfig::default()`: a 60 s
+//! step and minute bars), a cycle every 30 minutes of feed time, the
+//! committed universe catalogue and `PlatformConfig::default()`, and read
+//! only what `run_cycle` left behind. That is **not** `qip-fastbrain`'s
+//! cadence — its node steps the feed every 100 ms with second bars through
+//! `admit_world_records` and the bus bridge — and the claim that it was
+//! stood here until a reader checked. The node's own cadence is driven in
+//! `qip-fastbrain/tests/world_reaction.rs`.
 
 #![allow(clippy::panic_in_result_fn, clippy::expect_used)] // integration tests may expect: a panic is the failure report
 
@@ -151,7 +155,9 @@ fn instrument_of(environment: &SyntheticEnvironment, entity: &str) -> String {
 /// Mutations (each fired): skip the `entity_instruments` lookup in
 /// `react_to_world_events` (nothing lands); measure only the landing
 /// instrument (one response per episode); set the default
-/// `material_news_per_day` to zero (no event fires). Treating every story as
+/// `material_news_per_day` to zero (no event fires); read the first bar
+/// after the event for every horizon in `bar_move` (the 5- and 20-bar moves
+/// disagree with the published bars). Treating every story as
 /// material survives here, because this run stops at the first release's
 /// twentieth bar; the immaterial-release test below is the one that kills it.
 #[test]
@@ -161,6 +167,7 @@ fn a_material_event_on_the_default_feed_yields_multi_asset_reaction_records_at_t
         platform,
         environment,
         routine_stories,
+        bars,
         ..
     } = run(3, |p| {
         p.reaction_episodes()
@@ -244,6 +251,53 @@ fn a_material_event_on_the_default_feed_yields_multi_asset_reaction_records_at_t
             "an instrument was measured twice"
         );
     }
+
+    // Each bar horizon's measured move, against the published bars: the
+    // close of the `h`-th bar opening at or after the event, against the
+    // close of the bar before it. Recomputed here from what the feed
+    // published, not read back through the platform, so a loop that read the
+    // first bar for every horizon — and still labelled the episodes 5 and 20
+    // — fails here (it passed every assertion above).
+    let mut later_differs_from_first = false;
+    for episode in episodes.iter().filter(|e| e.lag_bars > 1) {
+        let h = episode.lag_bars;
+        for (instrument, moved, _) in &episode.affected_instruments {
+            let series: Vec<&(String, Timestamp, Timestamp, f64)> =
+                bars.iter().filter(|(i, ..)| i == instrument).collect();
+            let first = series
+                .iter()
+                .position(|(_, open, _, _)| *open >= at)
+                .expect("a bar opened after the release");
+            assert!(
+                first > 0,
+                "premise: {instrument} has no bar before the release"
+            );
+            let base = series[first - 1].3;
+            let horizon_bar = series[first + h - 1];
+            let expected = (horizon_bar.3 / base - 1.0) * 10_000.0;
+            assert!(
+                (moved - expected).abs() < 1e-9,
+                "{instrument} moved {moved} bps in {}, its {h}th bar says {expected}",
+                episode.episode_id
+            );
+            if instrument == &issuer {
+                assert_eq!(
+                    episode.reaction_time, horizon_bar.2,
+                    "{} is not dated at the close of its {h}th bar",
+                    episode.episode_id
+                );
+            }
+            let at_first_bar = (series[first].3 / base - 1.0) * 10_000.0;
+            if (expected - at_first_bar).abs() > 1e-9 {
+                later_differs_from_first = true;
+            }
+        }
+    }
+    assert!(
+        later_differs_from_first,
+        "premise: the 5- and 20-bar moves equal the first bar's on every instrument, so this \
+         test cannot tell the horizons apart"
+    );
 
     // No routine headline reached the causal graph as evidence.
     assert!(
@@ -403,25 +457,31 @@ fn an_immaterial_release_on_the_default_feed_yields_no_reaction_record() -> Resu
 /// The synthetic macro series, as the feed names it.
 const MACRO_SERIES: &str = qip_market_ingestion::synthetic::SYNTHETIC_MACRO_SERIES;
 
-/// The materiality rule the platform states for a macro release, restated
-/// here from its documented terms rather than called: a surprise is material
-/// when the series holds at least `MACRO_MATERIALITY_MIN_HISTORY` past
-/// surprises and it reaches `MACRO_MATERIALITY_SIGMAS` of their sample
-/// standard deviation. Returns, per release in order, whether it is.
+/// The materiality rule for a macro release, written from the decision
+/// record rather than imported from the code under test:
+/// `docs/blueprint/owner-decisions-2026-11-23.md`, section "Figures decided
+/// on 2026-11-24", row R12-WORLD-6015 — a release is material when its
+/// surprise is at least 1 sample standard deviation of that series' own past
+/// surprises, with at least 2 past surprises. The two figures are literals
+/// on purpose: an oracle that read `MACRO_MATERIALITY_SIGMAS` would loosen
+/// with the constant it is meant to check. Returns, per release in order,
+/// whether it is material.
 fn material_by_the_stated_rule(surprises: &[f64]) -> Vec<bool> {
-    use qip_kernel::platform::{MACRO_MATERIALITY_MIN_HISTORY, MACRO_MATERIALITY_SIGMAS};
+    // The decision record's figures.
+    const SIGMAS: f64 = 1.0;
+    const MIN_HISTORY: usize = 2;
     surprises
         .iter()
         .enumerate()
         .map(|(i, s)| {
             let history = &surprises[..i];
-            if history.len() < MACRO_MATERIALITY_MIN_HISTORY {
+            if history.len() < MIN_HISTORY {
                 return false;
             }
             let n = history.len() as f64;
             let mean = history.iter().sum::<f64>() / n;
             let sd = (history.iter().map(|h| (h - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt();
-            sd > 0.0 && s.abs() >= MACRO_MATERIALITY_SIGMAS * sd
+            sd > 0.0 && s.abs() >= SIGMAS * sd
         })
         .collect()
 }
@@ -433,7 +493,8 @@ fn material_by_the_stated_rule(surprises: &[f64]) -> Vec<bool> {
 /// none.
 ///
 /// Mutations (each fired): `with_material(material || true)` on the kernel's
-/// macro arm (an immaterial release reacts); drop the macro landing in
+/// macro arm (an immaterial release reacts); `MACRO_MATERIALITY_SIGMAS` set
+/// to 0 (a release below one deviation reacts); drop the macro landing in
 /// `react_to_world_events` (the material release at 2026-10-14T08:53 reacts
 /// at no horizon).
 #[test]
