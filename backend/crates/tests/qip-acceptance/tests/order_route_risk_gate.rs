@@ -2404,6 +2404,16 @@ const DETERMINED_WITNESSES: [&str; 2] = ["DeterministicGate", "DeterministicRout
 /// outermost commas. A generic list before the parameters is skipped, so
 /// `fn f<F: Fn(u8)>(..)` is read from its parameters and not from `Fn(`.
 fn parameter_types(signature: &str) -> Vec<String> {
+    parameters(signature)
+        .into_iter()
+        .map(|(_, ty)| ty)
+        .collect()
+}
+
+/// The parameters `signature` declares, `self` left out, each as its
+/// pattern and its type — the text either side of the parameter's own `:`
+/// — read as [`parameter_types`] describes.
+fn parameters(signature: &str) -> Vec<(String, String)> {
     let Some(after_fn) = token_offsets(signature, "fn")
         .first()
         .map(|at| &signature[at + 2..])
@@ -2460,7 +2470,10 @@ fn parameter_types(signature: &str) -> Vec<String> {
                     && bytes.get(at + 1) != Some(&b':')
                     && (at == 0 || bytes[at - 1] != b':')
             })?;
-            Some(parameter[colon + 1..].trim().to_string())
+            Some((
+                parameter[..colon].trim().to_string(),
+                parameter[colon + 1..].trim().to_string(),
+            ))
         })
         .collect()
 }
@@ -3012,6 +3025,617 @@ fn every_kernel_reader_of_the_risk_brains_advice_derives_reports_or_journals_it(
                 .iter()
                 .any(|named| named == "RiskControl" || named == "ids::RISK")),
         "a kernel function names the risk control's type or id"
+    );
+}
+
+// --- the advice laundered through a field (R12-RISK-3022) ------------------
+
+/// The index of the bracket closing the `(`, `[` or `{` at `open` in `text`.
+fn closing_bracket(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (at, byte) in text.bytes().enumerate().skip(open) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `text` split at its outermost commas, each part trimmed and empty parts
+/// dropped: outside every `()`, `[]` and `{}`, and outside every `<..>` when
+/// `types` (a field list, where `->` closes nothing) or only a turbofish's
+/// when not (an expression, where a `<` may be a comparison).
+fn outermost_parts(text: &str, types: bool) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut parts = Vec::new();
+    let (mut depth, mut angles, mut start) = (0usize, 0usize, 0);
+    for (at, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'<' if types || angles > 0 || (at >= 2 && &bytes[at - 2..at] == b"::") => {
+                angles += 1;
+            }
+            b'>' if angles > 0 && (at == 0 || bytes[at - 1] != b'-') => angles -= 1,
+            b',' if depth == 0 && angles == 0 => {
+                parts.push(text[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(text[start..].trim());
+    parts.retain(|part| !part.is_empty());
+    parts
+}
+
+/// `text` split at its first `:` that is not half of a `::`.
+fn split_at_colon(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let colon = (0..bytes.len()).find(|&at| {
+        bytes[at] == b':' && bytes.get(at + 1) != Some(&b':') && (at == 0 || bytes[at - 1] != b':')
+    })?;
+    Some((&text[..colon], &text[colon + 1..]))
+}
+
+/// Whether `text` ends with `word` as a whole identifier.
+fn ends_with_word(text: &str, word: &str) -> bool {
+    text.strip_suffix(word).is_some_and(|head| {
+        !head
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Each field `declaration` (`pub struct Platform {`) opens in `code`, a
+/// [`code_only`] text, as its name and its declared type, attributes and
+/// visibility dropped.
+fn struct_fields(code: &str, declaration: &str) -> Vec<(String, String)> {
+    let Some(at) = code.find(declaration) else {
+        return Vec::new();
+    };
+    let open = at + declaration.len() - 1;
+    let Some(close) = closing_bracket(code, open) else {
+        return Vec::new();
+    };
+    outermost_parts(&code[open + 1..close], true)
+        .into_iter()
+        .filter_map(|field| {
+            let mut field = field;
+            while field.starts_with("#[") {
+                field = field[closing_bracket(field, 1)? + 1..].trim_start();
+            }
+            if let Some(rest) = field.strip_prefix("pub") {
+                field = match rest.trim_start().strip_prefix('(') {
+                    Some(scope) => scope.split_once(')')?.1,
+                    None => rest,
+                }
+                .trim_start();
+            }
+            let (name, ty) = split_at_colon(field)?;
+            Some((name.trim().to_string(), ty.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Where the expression beginning at `start` in `text` ends: the first byte
+/// of `stops` outside every bracket opened after `start`, a bracket closing
+/// one opened before it, or — when `at_block` — the first `{` outside every
+/// bracket, which opens the block of an `if let`, a `while let` or a `for`.
+fn expression_end(text: &str, start: usize, stops: &[u8], at_block: bool) -> usize {
+    let mut depth = 0usize;
+    for (at, byte) in text.bytes().enumerate().skip(start) {
+        match byte {
+            b'{' if at_block && depth == 0 => return at,
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => match depth.checked_sub(1) {
+                Some(less) => depth = less,
+                None => return at,
+            },
+            _ if depth == 0 && stops.contains(&byte) => return at,
+            _ => {}
+        }
+    }
+    text.len()
+}
+
+/// The names a pattern binds: each identifier that is not a keyword, a
+/// type or variant (capitalised), a path segment, a call, or a struct
+/// pattern's field name before its `:`.
+fn pattern_bindings(pattern: &str) -> Vec<String> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut names = Vec::new();
+    let mut cursor = 0;
+    while let Some(offset) = pattern[cursor..].find(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        let at = cursor + offset;
+        let end = pattern[at..]
+            .find(|c: char| !ident(c))
+            .map_or(pattern.len(), |length| at + length);
+        cursor = end;
+        let name = &pattern[at..end];
+        let before = &pattern[..at];
+        let after = pattern[end..].trim_start();
+        if before.chars().next_back().is_some_and(ident)
+            || before.ends_with("::")
+            || before.ends_with('.')
+            || name.starts_with(|c: char| c.is_ascii_uppercase())
+            || matches!(name, "_" | "mut" | "ref" | "box")
+            || after.starts_with(['(', '{', '!'])
+            || after.starts_with("::")
+            || (after.starts_with(':') && !after.starts_with("::"))
+        {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names
+}
+
+/// Each binding `body` (a [`joined_chains`] text) makes, as the pattern and
+/// the text it binds from: every `let` — plain, `if let`, `while let`,
+/// let-else and a chained `&& let` — with its type annotation counted as
+/// source, and every `for` loop's pattern with its iterator.
+fn local_bindings(body: &str) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for at in token_offsets(body, "let") {
+        let head = body[..at].trim_end();
+        let conditional =
+            ends_with_word(head, "if") || ends_with_word(head, "while") || head.ends_with("&&");
+        let start = at + "let".len();
+        let bytes = body.as_bytes();
+        let mut depth = 0usize;
+        let mut equals = None;
+        for index in start..bytes.len() {
+            match bytes[index] {
+                b'(' | b'[' | b'{' | b'<' => depth += 1,
+                b'>' if bytes[index - 1] != b'-' => depth = depth.saturating_sub(1),
+                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                b';' if depth == 0 => break,
+                b'=' if depth == 0
+                    && !matches!(bytes.get(index + 1), Some(b'=' | b'>'))
+                    && !matches!(bytes[index - 1], b'=' | b'!' | b'<' | b'>') =>
+                {
+                    equals = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(equals) = equals else {
+            continue;
+        };
+        let end = expression_end(body, equals + 1, b";", conditional);
+        let declared = &body[start..equals];
+        let (pattern, ty) = split_at_colon(declared).unwrap_or((declared, ""));
+        found.push((
+            pattern.to_string(),
+            format!("{ty} {}", &body[equals + 1..end]),
+        ));
+    }
+    for at in token_offsets(body, "for") {
+        let rest = &body[at + "for".len()..];
+        let Some(&within) = token_offsets(rest, "in").first() else {
+            continue;
+        };
+        let pattern = &rest[..within];
+        if pattern.contains(['{', '}', ';', '=']) {
+            continue;
+        }
+        let start = at + "for".len() + within + "in".len();
+        let end = expression_end(body, start, b";", true);
+        found.push((pattern.to_string(), body[start..end].to_string()));
+    }
+    found
+}
+
+/// Every offset in `text` (a [`joined_chains`] text) where the field
+/// `field` of `self` is named — `self.field`, not `self.field(..)`, which
+/// is a method, nor `x.self.field`.
+fn self_field_mentions(text: &str, field: &str) -> Vec<usize> {
+    token_offsets(text, field)
+        .into_iter()
+        .filter(|&at| {
+            text[..at].strip_suffix("self.").is_some_and(|head| {
+                !head
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+            }) && !text[at + field.len()..].trim_start().starts_with('(')
+        })
+        .collect()
+}
+
+/// Whether `text` names the Risk Brain's advice ([`advice_named`]), one of
+/// `locals` other than as a field of something, or `self.` one of `fields`.
+fn names_held_advice(text: &str, locals: &BTreeSet<String>, fields: &BTreeSet<String>) -> bool {
+    !advice_named(text).is_empty()
+        || locals.iter().any(|local| {
+            token_offsets(text, local)
+                .into_iter()
+                .any(|at| !text[..at].ends_with('.'))
+        })
+        || fields
+            .iter()
+            .any(|field| !self_field_mentions(text, field).is_empty())
+}
+
+/// The locals the function `body` (a [`joined_chains`] text) binds from the
+/// Risk Brain's advice: each parameter whose type names it, then each
+/// [`local_bindings`] pattern whose source names it, a local already bound
+/// from it, or `self.` one of `fields` — to a fixed point.
+fn advice_locals(body: &str, fields: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut locals: BTreeSet<String> = parameters(signature_of(body))
+        .into_iter()
+        .filter(|(_, ty)| !advice_named(ty).is_empty())
+        .flat_map(|(pattern, _)| pattern_bindings(&pattern))
+        .collect();
+    let bindings = local_bindings(body);
+    loop {
+        let before = locals.len();
+        for (pattern, source) in &bindings {
+            if names_held_advice(source, &locals, fields) {
+                locals.extend(pattern_bindings(pattern));
+            }
+        }
+        if locals.len() == before {
+            return locals;
+        }
+    }
+}
+
+/// Every field of `self` the function `body` (a [`joined_chains`] text)
+/// assigns, with the text assigned: `self.f = ..`, `self.f += ..` and the
+/// other compound forms, `self.f.g = ..` and `self.f[i] = ..` (as `f`), and
+/// each `f: ..` or shorthand `f` of a `Self { .. }` or `Platform { .. }`
+/// literal. A mutating method — `self.f.push(..)`, `self.f.insert(..)` — is
+/// not an assignment here; see the limits on
+/// [`no_gated_kernel_decision_reads_a_field_the_risk_brains_advice_was_copied_into`].
+fn field_assignments(body: &str) -> Vec<(String, String)> {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut found = Vec::new();
+    for at in token_offsets(body, "self") {
+        let Some(rest) = body[at + "self".len()..].strip_prefix('.') else {
+            continue;
+        };
+        let field: String = rest.chars().take_while(|c| ident(*c)).collect();
+        if field.is_empty() || body[..at].ends_with('.') {
+            continue;
+        }
+        let mut cursor = at + "self.".len() + field.len();
+        if body[cursor..].trim_start().starts_with('(') {
+            continue;
+        }
+        loop {
+            let tail = &body[cursor..];
+            if let Some(after) = tail.strip_prefix('.') {
+                let length = after.chars().take_while(|c| ident(*c)).count();
+                let next = after[length..].trim_start();
+                if length == 0 || next.starts_with('(') || next.starts_with("::") {
+                    break;
+                }
+                cursor += 1 + length;
+            } else if tail.starts_with('[') {
+                let Some(close) = closing_bracket(body, cursor) else {
+                    break;
+                };
+                cursor = close + 1;
+            } else {
+                break;
+            }
+        }
+        let after = body[cursor..].trim_start();
+        let operator = ["<<=", ">>=", "+=", "-=", "*=", "/=", "%=", "|=", "&=", "^="]
+            .iter()
+            .find(|operator| after.starts_with(**operator))
+            .map(|operator| operator.len())
+            .or_else(|| {
+                (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"))
+                    .then_some(1)
+            });
+        let Some(length) = operator else {
+            continue;
+        };
+        let start = body.len() - after.len() + length;
+        let end = expression_end(body, start, b";,", false);
+        found.push((field, body[start..end].trim().to_string()));
+    }
+    for name in ["Self", "Platform"] {
+        for at in token_offsets(body, name) {
+            let head = body[..at].trim_end();
+            let trimmed = body[at + name.len()..].trim_start();
+            if !trimmed.starts_with('{')
+                || head.ends_with("->")
+                || head.ends_with("::")
+                || ends_with_word(head, "impl")
+                || ends_with_word(head, "for")
+                || ends_with_word(head, "struct")
+            {
+                continue;
+            }
+            let open = body.len() - trimmed.len();
+            let Some(close) = closing_bracket(body, open) else {
+                continue;
+            };
+            for part in outermost_parts(&body[open + 1..close], false) {
+                if part.starts_with("..") {
+                    continue;
+                }
+                match split_at_colon(part) {
+                    Some((field, source)) => {
+                        found.push((field.trim().to_string(), source.trim().to_string()));
+                    }
+                    None if part.chars().all(ident) => {
+                        found.push((part.to_string(), part.to_string()));
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    found
+}
+
+/// The fields of `Platform` (`fields`, as [`struct_fields`] reads them) the
+/// Risk Brain's advice can be held in, each with how: its declared type
+/// names the advice, or a `Platform` method assigns or initialises it from
+/// text naming the advice, a local bound from it, or a field already held —
+/// to a fixed point, so a copy of a copy is held too.
+fn advice_fields(fields: &[(String, String)], functions: &[KernelFn]) -> BTreeMap<String, String> {
+    let declared: BTreeSet<&str> = fields.iter().map(|(name, _)| name.as_str()).collect();
+    let mut held: BTreeMap<String, String> = fields
+        .iter()
+        .filter(|(_, ty)| !advice_named(ty).is_empty())
+        .map(|(name, ty)| (name.clone(), format!("declared `{ty}`")))
+        .collect();
+    let methods: Vec<(&str, String)> = functions
+        .iter()
+        .filter(|function| function.owner.as_deref() == Some("Platform"))
+        .map(|function| (function.name.as_str(), joined_chains(&function.body)))
+        .collect();
+    loop {
+        let before = held.len();
+        let names: BTreeSet<String> = held.keys().cloned().collect();
+        for (method, body) in &methods {
+            let locals = advice_locals(body, &names);
+            for (field, source) in field_assignments(body) {
+                if declared.contains(field.as_str())
+                    && !held.contains_key(&field)
+                    && names_held_advice(&source, &locals, &names)
+                {
+                    held.insert(field, format!("assigned in `{method}` from `{source}`"));
+                }
+            }
+        }
+        if held.len() == before {
+            return held;
+        }
+    }
+}
+
+/// Every chain from a gated kernel function to a `Platform` method in its
+/// closure that names `self.` a field [`advice_fields`] holds, as
+/// `root -> .. -> method reads self.field, <how> (file)`.
+fn gated_advice_field_reads(fields: &[(String, String)], functions: &[KernelFn]) -> Vec<String> {
+    let held = advice_fields(fields, functions);
+    let roots = gated_kernel_functions(functions);
+    kernel_closure(functions, &roots)
+        .into_iter()
+        .filter(|(_, function)| function.owner.as_deref() == Some("Platform"))
+        .flat_map(|(chain, function)| {
+            let body = joined_chains(&function.body);
+            held.iter()
+                .filter(|(field, _)| !self_field_mentions(&body, field).is_empty())
+                .map(|(field, how)| {
+                    format!(
+                        "{} reads self.{field}, {how} ({})",
+                        chain.join(" -> "),
+                        function.file
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The field scan on a fixture: `run_cycle` copies a part of the cycle's
+/// `RiskDiscovery` into a plain `Option<Decimal>` through an `if let`, a
+/// `for` loop copies a finding into a `Vec` slot, a second method copies
+/// the first copy on, and a constructor taking a `&RiskDiscovery` seeds a
+/// field in a `Self { .. }` literal; the gated `size_survival` and the
+/// helper it calls read the four copies. None of it names the advice inside
+/// the gate, so the existing closure scan passes it — asserted first — and
+/// this scan reports each read and nothing else: not the honest field, not
+/// a field only ever given `BTreeMap::new()`.
+///
+/// The failure this prevents: advice laundered through a field passed every
+/// scan. `run_cycle` may name the discovery (it is an advisory reader), and
+/// `size_survival` names only `self.concentration_hint`.
+///
+/// Mutations: drop the `self.f = ..` arm of [`field_assignments`] — the
+/// `run_cycle` copies are lost; make [`advice_locals`] bind nothing — the
+/// copy through `drivers` is lost; stop [`advice_fields`] after one pass —
+/// the copy of a copy (`echo`) is lost; drop the struct-literal arm — the
+/// seeded field is lost, and the real-tree assignment premise fires too;
+/// drop the declared-type arm — the two declared fields are lost; read
+/// another type's methods in [`gated_advice_field_reads`] — no read is
+/// reported.
+#[test]
+fn the_field_scan_reports_a_gated_read_of_a_field_the_advice_was_copied_into() {
+    let fixture = "pub struct Platform {\n    \
+                   #[allow(dead_code)]\n    \
+                   pub(crate) last_risk_discovery: Option<RiskDiscovery>,\n    \
+                   held_control: Option<Box<qip_investment_agents::control::RiskControl>>,\n    \
+                   concentration_hint: Option<Decimal>,\n    \
+                   per_driver: Vec<Decimal>,\n    \
+                   echo: Option<Decimal>,\n    \
+                   seeded: BTreeMap<String, Decimal>,\n    \
+                   blank: BTreeMap<String, Decimal>,\n    \
+                   honest: Decimal,\n}\n\
+                   impl Platform {\n    \
+                   fn new(config: Config) -> Self {\n        \
+                   Self {\n            last_risk_discovery: None,\n            held_control: None,\n            \
+                   concentration_hint: None,\n            per_driver: Vec::new(),\n            \
+                   echo: None,\n            seeded: BTreeMap::new(),\n            \
+                   blank: BTreeMap::new(),\n            honest: Decimal::ZERO,\n        }\n    }\n    \
+                   fn seeded_from(config: Config, prior: &RiskDiscovery) -> Self {\n        \
+                   let base = Self::new(config);\n        \
+                   Self {\n            seeded: prior.by_name.clone(),\n            ..base\n        }\n    }\n    \
+                   fn run_cycle(&mut self, now: Timestamp) {\n        \
+                   let discovery = self.discover_risk();\n        \
+                   if let Some(drivers) = discovery.causal_drivers.as_ref() {\n            \
+                   self.concentration_hint = Some(drivers.total);\n        }\n        \
+                   for finding in discovery.market_exposure.iter() {\n            \
+                   self.per_driver[0] = finding.gap;\n        }\n        \
+                   self.honest = self.capital.equity();\n    }\n    \
+                   fn mirror(&mut self) {\n        self.echo = self.concentration_hint;\n    }\n    \
+                   fn size_survival(&mut self, gate: &DeterministicGate, now: Timestamp) {\n        \
+                   let ceiling = self\n            .concentration_hint\n            .unwrap_or_default();\n        \
+                   let equity = self.honest + self.blank.len();\n        \
+                   self.helper(now);\n    }\n    \
+                   fn helper(&self, now: Timestamp) -> Decimal {\n        \
+                   self.echo.unwrap_or_default() + self.per_driver[0] + self.seeded.len()\n    }\n}\n";
+    let code = code_only(fixture);
+    let sources = vec![("fixture.rs".to_string(), code.clone())];
+    let functions = kernel_functions(&sources);
+    let roots = gated_kernel_functions(&functions);
+    let closure = kernel_closure(&functions, &roots);
+    assert_eq!(
+        closure
+            .iter()
+            .map(|(_, function)| function.name.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["size_survival", "helper"]),
+        "premise: the gated closure is the decision and its helper"
+    );
+    assert!(
+        closure
+            .iter()
+            .all(|(_, function)| advice_named(&function.body).is_empty()),
+        "premise: the gated closure names no advice, so the advice scan passes the laundering"
+    );
+    let fields = struct_fields(&code, "pub struct Platform {");
+    assert_eq!(
+        fields.len(),
+        8,
+        "premise: every field was read past its attribute, visibility and generics: {fields:?}"
+    );
+    let held: BTreeSet<String> = advice_fields(&fields, &functions).into_keys().collect();
+    assert_eq!(
+        held,
+        BTreeSet::from(
+            [
+                "last_risk_discovery",
+                "held_control",
+                "concentration_hint",
+                "per_driver",
+                "echo",
+                "seeded",
+            ]
+            .map(str::to_string)
+        ),
+        "the fields the advice can be held in are not exactly the declared and the copied ones"
+    );
+    let reads: BTreeSet<String> = gated_advice_field_reads(&fields, &functions)
+        .into_iter()
+        .map(|read| read.split(',').next().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(
+        reads,
+        BTreeSet::from(
+            [
+                "size_survival reads self.concentration_hint",
+                "size_survival -> Platform::helper reads self.echo",
+                "size_survival -> Platform::helper reads self.per_driver",
+                "size_survival -> Platform::helper reads self.seeded",
+            ]
+            .map(str::to_string)
+        ),
+        "the gated reads of a field holding the advice are not exactly the four copies"
+    );
+}
+
+/// R12-RISK-3022 (b), through a field: no field of `Platform` that can hold
+/// the Risk Brain's advice — declared with a type naming `RiskDiscovery`,
+/// `EmergingRisk`, `ExposureFinding` or `RiskControl`, or assigned or
+/// initialised by any `Platform` method from text naming the advice, a
+/// local bound from it, or another such field — is named `self.` inside a
+/// `Platform` method the gated kernel walk roots or reaches.
+///
+/// The failure this prevents: `run_cycle` may name the discovery, so a
+/// line there copying a part of it into a plain field, read by
+/// `size_survival`, made the advice a second gate while naming it nowhere
+/// the closure scan looks.
+///
+/// What a name scan still cannot see: the advice carried through a helper's
+/// return (`self.f = self.summary()` where `summary` reads the discovery)
+/// or a collection's mutator (`self.f.push(d)`, `self.f.insert(k, d)`), a
+/// `match` arm's or a closure's binding, a `std::mem::replace`, a write
+/// through `&mut self.f` handed to a function, a field read by a free
+/// function or another type's method given the `Platform`, and a field of
+/// a type other than `Platform`.
+///
+/// Mutation: write `self.concentration_hint = Some(dec!(0.1))` beside the
+/// discovery in `run_cycle`, with the field declared, and read it in
+/// `size_survival` — this fails naming the chain; both existing advice
+/// scans pass it.
+#[test]
+fn no_gated_kernel_decision_reads_a_field_the_risk_brains_advice_was_copied_into() {
+    let sources = kernel_sources();
+    let functions = kernel_functions(&sources);
+    let platform = sources
+        .iter()
+        .find(|(file, _)| file.ends_with("qip-kernel/src/platform.rs"))
+        .map(|(_, code)| code.as_str())
+        .expect("premise: the kernel has a platform.rs");
+    let fields = struct_fields(platform, "pub struct Platform {");
+    assert!(
+        fields.len() > 50,
+        "premise: the Platform's fields were read: {}",
+        fields.len()
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|(name, ty)| name == "last_risk_discovery" && ty == "Option<RiskDiscovery>"),
+        "premise: the Platform holds the last discovery under its declared type"
+    );
+    let assigned: usize = functions
+        .iter()
+        .filter(|function| function.owner.as_deref() == Some("Platform"))
+        .map(|function| field_assignments(&joined_chains(&function.body)).len())
+        .sum();
+    assert!(
+        assigned > 100,
+        "premise: the Platform's own field assignments were read: {assigned}"
+    );
+    let held = advice_fields(&fields, &functions);
+    assert!(
+        held.contains_key("last_risk_discovery"),
+        "premise: the field holding the discovery is held: {held:?}"
+    );
+    let roots: BTreeSet<&str> = gated_kernel_functions(&functions)
+        .into_iter()
+        .map(|root| root.name.as_str())
+        .collect();
+    for (function, _, _, _) in KERNEL_HARD_LIMIT_CALLS {
+        assert!(
+            roots.contains(function),
+            "premise: `{function}` is a root: {roots:?}"
+        );
+    }
+    let reads = gated_advice_field_reads(&fields, &functions);
+    assert!(
+        reads.is_empty(),
+        "a gated hard-limit decision reads a field the Risk Brain's advice was copied into, so \
+         the advice has become a second gate under another name: {reads:?}"
     );
 }
 
