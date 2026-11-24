@@ -33,7 +33,10 @@
 //! constructor's name in the production source of every crate but
 //! `qip-cost-router`. Tests may mint one, because a test of the monitor is not
 //! a path an order takes. The type carries no `Deserialize` and no `Clone`, so
-//! it cannot be read off a wire or duplicated past the routing that minted it.
+//! it cannot be read off a wire or duplicated past the routing that minted it;
+//! nor does `qip_cost_router::DeterministicRouting`, whose `gate` mints one,
+//! and `qip-acceptance`'s `model_promotion_clearance.rs` refuses either trait
+//! on either type, by derive or by hand.
 
 /// Proof that a hard-limit evaluation was routed as a deterministic decision.
 ///

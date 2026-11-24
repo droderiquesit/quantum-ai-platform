@@ -495,3 +495,116 @@ fn no_hand_written_impl_copies_converts_or_decodes_a_proof() {
         "premise: the scan read the workspace's trait impls, and it read {read}"
     );
 }
+
+/// The traits a `#[derive(..)]` line names, each by its last path segment:
+/// `#[derive(Clone, serde::Deserialize)]` names `Clone` and `Deserialize`.
+fn derived_traits(derive: &str) -> Vec<String> {
+    let inner = derive
+        .trim()
+        .strip_prefix("#[derive(")
+        .and_then(|rest| rest.strip_suffix(")]"))
+        .unwrap_or_else(|| panic!("not a derive line: {derive}"));
+    inner
+        .split(',')
+        .map(|name| name.trim().rsplit("::").next().unwrap_or(name).to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+/// R12-RISK-3022 (e), ADR 0430: the deterministic gate every hard-limit
+/// decision demands, and the routing whose `gate()` mints one, can be neither
+/// decoded nor copied — not by derive, and not by a hand-written impl in any
+/// production source — nor defaulted or converted into.
+///
+/// The failure this prevents: `qip_cost_router::DeterministicRouting`
+/// derived `Deserialize` and `Clone`. A routing read off a wire or a journal
+/// yielded `gate()` without `Router::determine` ever running, and the
+/// one-minter scan (`architecture.rs`'s
+/// `only_the_cost_router_mints_a_deterministic_gate`) could not see it,
+/// because the mint it counts is the one inside `gate()`. Nothing in the
+/// workspace decoded or copied one, so both derives were dropped rather than
+/// split into a record.
+///
+/// Mutations: put `Deserialize` back on `DeterministicRouting`'s derive —
+/// the derive assertion fires; add `impl Clone for DeterministicGate` to
+/// `gate.rs` — the hand-impl assertion fires.
+#[test]
+fn the_deterministic_routing_and_its_gate_cannot_be_decoded_or_copied() {
+    const WITNESSES: [(&str, &str, &str); 2] = [
+        (
+            "backend/crates/services/qip-cost-router/src/router.rs",
+            "DeterministicRouting",
+            "pub struct DeterministicRouting {",
+        ),
+        (
+            "backend/crates/libs/qip-risk/src/gate.rs",
+            "DeterministicGate",
+            "pub struct DeterministicGate {",
+        ),
+    ];
+    /// Each is a way to hold a witness the router did not hand out.
+    const FORBIDDEN: [&str; 4] = ["Clone", "Copy", "Default", "Deserialize"];
+    /// The traits a hand-written impl may implement for either: none of them
+    /// produces a value.
+    const HARMLESS: [&str; 5] = ["Debug", "Display", "PartialEq", "Eq", "Serialize"];
+
+    // Premise: the readers see the shapes they must refuse.
+    assert_eq!(
+        derived_traits("#[derive(Clone, Debug, serde::Deserialize)]"),
+        ["Clone", "Debug", "Deserialize"]
+    );
+    let fixture = "impl Clone for DeterministicGate {\n}\nimpl<'de> serde::Deserialize<'de> \
+                   for qip_cost_router::DeterministicRouting {\n}\n";
+    assert_eq!(trait_impls_for(fixture, "DeterministicGate").0, ["Clone"]);
+    assert_eq!(
+        trait_impls_for(fixture, "DeterministicRouting").0,
+        ["Deserialize"]
+    );
+
+    for (file, ty, declaration) in WITNESSES {
+        let production = qip_acceptance::production_text(&qip_acceptance::read(file));
+        let at = production
+            .find(declaration)
+            .unwrap_or_else(|| panic!("premise: {file} declares `{declaration}`"));
+        let derive = production[..at]
+            .lines()
+            .rev()
+            .take_while(|line| line.trim_start().starts_with("#["))
+            .find(|line| line.trim_start().starts_with("#[derive("))
+            .unwrap_or_else(|| panic!("premise: `{ty}` carries a derive directly above it"));
+        let derived = derived_traits(derive);
+        assert!(
+            derived.iter().any(|name| name == "Debug"),
+            "premise: the derive was read: {derived:?}"
+        );
+        let refused: Vec<&String> = derived
+            .iter()
+            .filter(|name| FORBIDDEN.contains(&name.as_str()))
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "`{ty}` derives {refused:?}: a {ty} that can be decoded, copied or defaulted is a \
+             deterministic gate the cost router never determined (ADR 0430)"
+        );
+    }
+
+    let sources = production_sources();
+    let mut read = 0;
+    for (_, ty, _) in WITNESSES {
+        for (path, text) in &sources {
+            let (traits, seen) = trait_impls_for(text, ty);
+            read += seen;
+            for implemented in traits {
+                assert!(
+                    HARMLESS.contains(&implemented.as_str()),
+                    "{path} implements `{implemented}` for `{ty}` by hand; a witness that can be \
+                     copied, defaulted, converted or decoded is held without the cost router"
+                );
+            }
+        }
+    }
+    assert!(
+        read > 100,
+        "premise: the scan read the workspace's trait impls, and it read {read}"
+    );
+}

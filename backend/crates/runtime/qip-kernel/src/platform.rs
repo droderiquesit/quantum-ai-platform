@@ -3754,7 +3754,12 @@ impl SourceAssessment {
 /// had produced findings, which is a second, independent claim about what a
 /// cycle cost — and the moment the router declines, the two disagree and the
 /// louder one is wrong.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// Neither `Clone` nor `Deserialize`: it holds a `qip_cost_router::Routing`,
+/// whose deterministic arm mints the gate every hard-limit decision demands,
+/// so a copied or decoded one would be a gate the router never handed out
+/// (R12-RISK-3022). Nothing copied or decoded one.
+#[derive(Debug, PartialEq, Serialize)]
 pub struct ReasonRouting {
     /// The cycle whose REASON stage this was.
     pub cycle: u64,
