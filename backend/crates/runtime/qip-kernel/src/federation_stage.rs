@@ -4592,4 +4592,246 @@ mod tests {
         let replayed = replay(&platform).unwrap_or_else(|e| panic!("the log replays: {e}"));
         assert_eq!(replayed, made);
     }
+
+    /// A daily bar of `obj-<symbol>` on XNYS opening at `open_time`.
+    fn daily(
+        symbol: &str,
+        open_time: Timestamp,
+        open: f64,
+        close: f64,
+    ) -> qip_market_ingestion::adapter::SensedRecord {
+        let price = |p: f64| Decimal::from_f64(p).unwrap_or_else(|| panic!("a price: {p}"));
+        qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(qip_market::bar::Bar {
+            object_id: qip_core::ObjectId::from_string(format!("obj-{symbol}")),
+            venue: "XNYS".to_string(),
+            interval: qip_market::bar::Interval::Day,
+            open_time,
+            open: price(open),
+            high: price(open.max(close) * 1.002),
+            low: price(open.min(close) * 0.998),
+            close: price(close),
+            volume: Decimal::from_int(1_000_000),
+            trade_count: 5_000,
+            vwap: Decimal::from_f64((open + close) / 2.0),
+            quality: qip_financial::quality::DataQuality::default(),
+        }))
+    }
+
+    /// Every federation record the platform's journal holds, decoded and
+    /// not rebuilt: the form the log keeps.
+    fn journaled_records(platform: &crate::Platform) -> Vec<JournaledReview> {
+        let ours = format!("{}:{IDEMPOTENCY_PREFIX}", Topic::WorldModelUpdated.name());
+        platform
+            .replay_journal(
+                &qip_events::EventFilter::new().topic(<FederationReview as EventBody>::TOPIC),
+            )
+            .unwrap_or_else(|e| panic!("the journal reads: {e}"))
+            .iter()
+            .filter(|envelope| envelope.idempotency_key().starts_with(&ours))
+            .map(|envelope| {
+                envelope
+                    .decode::<JournaledReview>()
+                    .unwrap_or_else(|e| panic!("a journaled review decodes: {e}"))
+                    .body
+            })
+            .collect()
+    }
+
+    /// The failure this prevents: every test of the compact form drove the
+    /// stage by hand and journaled what it chose, so the one production
+    /// caller — UNDERSTAND, which builds the form, appends it and only then
+    /// moves the stage's bases — could journal the review whole again, or
+    /// move the bases before the append returned, and nothing failed. The
+    /// second is the dangerous one: a pass whose append the log refused would
+    /// become the base the next pass refers to, and that pass's review would
+    /// be unreadable from the only log that holds it.
+    ///
+    /// Here the platform cycles every 100 ms on a tape that only moves once,
+    /// as the fast brain does between one-second bars, and the pass on which
+    /// it moves is the one whose append the log refuses.
+    ///
+    /// Mutations, in `Platform::understand_federation`: journal `review`
+    /// itself (the hunk reverted) and no record after the first holds a
+    /// reference; call `journaled(bases)` before `journal_record` and the
+    /// stage's bases move on the refused pass, the next pass refers to it,
+    /// and its review is refused on replay.
+    #[test]
+    fn the_cycle_journals_a_still_tapes_review_by_reference_and_moves_its_bases_only_once_the_append_landed()
+     {
+        const REFUSED: u64 = 5;
+        let start = day(400);
+        let config = crate::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start, config.seed);
+        let mut universe = qip_financial::universe::Universe::new();
+        for symbol in ["AAA", "BBB"] {
+            universe
+                .insert(
+                    qip_financial::object::FinancialObject::builder(
+                        qip_core::ObjectId::from_string(format!("obj-{symbol}")),
+                        symbol,
+                        qip_financial::asset_class::InstrumentType::CommonStock,
+                        qip_financial::costs::LiquidityProfile::listed(
+                            Decimal::from_int(5_000_000),
+                            3.0,
+                        ),
+                    )
+                    .venue("XNYS")
+                    .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .provenance(qip_financial::quality::Provenance::synthetic("test", start))
+                    .build(start)
+                    .unwrap_or_else(|e| panic!("a valid object: {e}")),
+                )
+                .unwrap_or_else(|e| panic!("insertable: {e}"));
+        }
+        let mut platform = crate::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            universe,
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        // A hundred and twenty daily bars each, the last closing two days
+        // before the first pass, so every pass reads the same tape.
+        let mut tape = Vec::new();
+        let mut aaa = 100.0_f64;
+        for symbol in ["AAA", "BBB"] {
+            let mut price = 100.0_f64;
+            for i in 0..120_i64 {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let open = price;
+                price *= 1.0 + noise;
+                tape.push(daily(
+                    symbol,
+                    start.saturating_sub(Duration::from_days(122 - i)),
+                    open,
+                    price,
+                ));
+            }
+            if symbol == "AAA" {
+                aaa = price;
+            }
+        }
+        platform.observe(tape);
+
+        // The log refuses every append on the refused pass: a read-only log
+        // fails inside `journal_record` exactly where a full spool would.
+        // Not `std::env::temp_dir()`, for the reason
+        // `dormancy_boot_log_path` gives.
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-federation-unjournalled-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("a scratch directory: {e}"));
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").unwrap_or_else(|e| panic!("an empty log file: {e}"));
+
+        let mut made: BTreeMap<u64, (usize, Vec<Arbitration>)> = BTreeMap::new();
+        let mut bases_after: BTreeMap<u64, JournalBases> = BTreeMap::new();
+        for pass in 1..=7_u64 {
+            let now = start.saturating_add(Duration::from_millis(100 * pass as i64));
+            if pass == REFUSED {
+                platform.observe(vec![daily(
+                    "AAA",
+                    start.saturating_sub(Duration::from_days(2)),
+                    aaa,
+                    aaa * 1.03,
+                )]);
+                platform.replace_event_log(
+                    qip_events::EventLog::inspect(&path)
+                        .unwrap_or_else(|e| panic!("a read-only log: {e}")),
+                );
+            }
+            let report = platform.run_cycle(now);
+            if pass == REFUSED {
+                let problems = report
+                    .stage(crate::cycle::Stage::Understand)
+                    .map(|outcome| outcome.problems.clone())
+                    .unwrap_or_default();
+                assert!(
+                    problems
+                        .iter()
+                        .any(|p| p.contains("federation's review was computed and not journalled")),
+                    "premise: the log refused the refused pass's review: {problems:?}"
+                );
+                platform.replace_event_log(qip_events::EventLog::in_memory());
+            }
+            let view = platform.desk_arbitration_view();
+            assert_eq!(
+                view.cycle, pass,
+                "premise: the pass is the platform's cycle"
+            );
+            made.insert(pass, (view.journal_base, view.arbitrations.clone()));
+            drop(view);
+            bases_after.insert(pass, platform.federation().journal_bases.clone());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let records = journaled_records(&platform);
+        assert_eq!(
+            records.iter().map(|r| r.cycle).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 6, 7],
+            "premise: every pass but the refused one reached the journal"
+        );
+        assert_eq!(
+            records[0].reasked(),
+            0,
+            "the first pass has nothing to refer to"
+        );
+        let each = replay_each(&platform).unwrap_or_else(|e| panic!("the journal reads: {e}"));
+        assert_eq!(each.len(), records.len());
+        for (record, read) in records.iter().zip(&each) {
+            let cycle = record.cycle;
+            let read = read
+                .as_ref()
+                .unwrap_or_else(|e| panic!("cycle {cycle} is refused on replay: {e}"));
+            let (journal_base, arbitrations) = &made[&cycle];
+            assert_eq!(
+                (read.cycle, read.journal_base, &read.arbitrations),
+                (cycle, *journal_base, arbitrations),
+                "cycle {cycle} replays as something the pass did not decide"
+            );
+            if cycle == 1 {
+                continue;
+            }
+            assert!(
+                record.reasked() > 0,
+                "cycle {cycle} journaled all {} arbitration(s) whole on a tape it had already \
+                 read",
+                record.arbitrations.len()
+            );
+            let compact = serde_json::to_vec(record).map_or(0, |bytes| bytes.len());
+            let whole = serde_json::to_vec(read).map_or(0, |bytes| bytes.len());
+            assert!(
+                compact > 0 && compact < whole,
+                "cycle {cycle} journaled {compact} bytes against {whole} whole"
+            );
+            for entry in &record.arbitrations {
+                if let JournaledArbitration::Reasked { reasked } = entry {
+                    assert_ne!(
+                        reasked.of_cycle, REFUSED,
+                        "cycle {cycle} refers to the pass whose review the log refused"
+                    );
+                }
+            }
+        }
+
+        // And the stage itself: the refused pass decided something no base
+        // held, so bases moved on its account would show; they did not move.
+        let before = &bases_after[&(REFUSED - 1)];
+        assert!(
+            made[&REFUSED].1.iter().any(|a| {
+                stem_of(&a.proposition, REFUSED)
+                    .and_then(|stem| before.0.get(stem))
+                    .is_some_and(|(_, base)| base.disagreement != a.disagreement)
+            }),
+            "premise: the tape moved on the refused pass"
+        );
+        assert_eq!(
+            &bases_after[&REFUSED], before,
+            "the stage moved its bases on a review the log refused"
+        );
+    }
 }
