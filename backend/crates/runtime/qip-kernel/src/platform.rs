@@ -14902,8 +14902,7 @@ impl Platform {
         let material = history.len() >= MACRO_MATERIALITY_MIN_HISTORY && {
             let n = history.len() as f64;
             let mean = history.iter().sum::<f64>() / n;
-            let variance =
-                history.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0);
+            let variance = history.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0);
             let deviation = variance.sqrt();
             deviation > 0.0 && surprise.abs() >= MACRO_MATERIALITY_SIGMAS * deviation
         };
@@ -15105,8 +15104,7 @@ impl Platform {
             }
             for horizon in REACTION_HORIZONS_BARS {
                 let key = (event.event_id.clone(), horizon);
-                if self.reactions_applied.contains(&key) || self.reactions_resumed.contains(&key)
-                {
+                if self.reactions_applied.contains(&key) || self.reactions_resumed.contains(&key) {
                     continue;
                 }
                 // The shortest horizon reads ticks where the landing

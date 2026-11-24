@@ -669,15 +669,15 @@ fn reaction_edges(platform: &Platform) -> Vec<(String, String, f64, usize)> {
 /// second time).
 #[test]
 fn a_restart_rebuilds_reaction_learning_from_the_log_and_applies_nothing_twice() -> Result<()> {
-    let directory = std::env::temp_dir().join(format!(
-        "qip-world-reaction-restart-{}",
-        std::process::id()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("qip-world-reaction-restart-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).expect("a scratch directory");
     let path = directory.join("events.log");
     let config = PlatformConfig::default().with_event_log_file(&path);
-    let first = run_with(config.clone(), 10, |p| !p.reaction_contradictions().is_empty())?;
+    let first = run_with(config.clone(), 10, |p| {
+        !p.reaction_contradictions().is_empty()
+    })?;
     let episodes: Vec<String> = first
         .platform
         .reaction_episodes()
@@ -690,8 +690,14 @@ fn a_restart_rebuilds_reaction_learning_from_the_log_and_applies_nothing_twice()
     // Premise: the first process learnt something, contradicted an edge,
     // and journaled each episode it applied exactly once.
     assert!(!episodes.is_empty(), "premise: no reaction was applied");
-    assert!(!contradictions.is_empty(), "premise: no edge was contradicted");
-    assert!(!edges.is_empty(), "premise: no edge was learnt from a reaction");
+    assert!(
+        !contradictions.is_empty(),
+        "premise: no edge was contradicted"
+    );
+    assert!(
+        !edges.is_empty(),
+        "premise: no edge was learnt from a reaction"
+    );
     assert_eq!(
         journaled, episodes,
         "the log does not hold exactly the episodes the process applied"
@@ -713,7 +719,10 @@ fn a_restart_rebuilds_reaction_learning_from_the_log_and_applies_nothing_twice()
         .iter()
         .map(|e| e.episode_id.clone())
         .collect();
-    assert_eq!(resumed, episodes, "the restart did not rebuild the episodes");
+    assert_eq!(
+        resumed, episodes,
+        "the restart did not rebuild the episodes"
+    );
     assert_eq!(
         second.reaction_contradictions(),
         contradictions.as_slice(),
@@ -732,7 +741,11 @@ fn a_restart_rebuilds_reaction_learning_from_the_log_and_applies_nothing_twice()
         second.observe(records);
         second.run_cycle(environment.cursor());
     }
-    assert_eq!(environment.cursor(), last, "premise: the replay stopped elsewhere");
+    assert_eq!(
+        environment.cursor(),
+        last,
+        "premise: the replay stopped elsewhere"
+    );
     let replayed: Vec<String> = second
         .reaction_episodes()
         .iter()

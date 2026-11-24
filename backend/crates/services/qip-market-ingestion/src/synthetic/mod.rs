@@ -686,8 +686,7 @@ impl SyntheticEnvironment {
             Stream::Main => &mut self.rng,
             Stream::Material => &mut self.macro_rng,
         };
-        let observation =
-            narrative::macro_observation(series_id, region, level, surprise, at, rng);
+        let observation = narrative::macro_observation(series_id, region, level, surprise, at, rng);
         if series_id == SYNTHETIC_MACRO_SERIES {
             self.macro_level = level;
         }
