@@ -58,7 +58,14 @@ pub fn mentions_for<R: Rng>(company: &SyntheticCompany, rng: &mut R) -> Vec<Enti
     };
     vec![EntityMention {
         text,
-        entity_id: None,
+        // The generator wrote the story about this company, so the entity is
+        // known rather than inferred: a synthetic fact, labelled as one by the
+        // item's `synthetic-news` provenance. Without it no story produced a
+        // `MarketEvent` (`MarketEvent::from_news` skips an unresolved
+        // mention), and the reaction loop (R12-WORLD-6015) had nothing to pair
+        // with the bars the same feed prints. The surface form above is still
+        // ambiguous, so the world model's resolver keeps its work.
+        entity_id: Some(company.entity_id.clone()),
         // An informal alias is genuinely less certain, and the confidence
         // recorded here should say so rather than flatter the extractor.
         confidence: if use_alias { 0.62 } else { 0.94 },

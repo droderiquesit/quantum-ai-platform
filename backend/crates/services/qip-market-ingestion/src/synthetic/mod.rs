@@ -20,6 +20,8 @@ use qip_market::quote::Tick;
 use serde::{Deserialize, Serialize};
 
 use crate::adapter::{DataAdapter, MarketDataAdapter, SensedRecord, SourceDescriptor};
+use qip_financial::identifiers::IdentifierKind;
+use qip_financial::intelligence::NewsItem;
 use book::BookParameters;
 use narrative::SyntheticCompany;
 use price::{FactorModel, PriceState, ProcessParameters, Regime};
@@ -223,6 +225,14 @@ pub enum ScriptedEventKind {
     },
 }
 
+/// Which generator a narrative draws from: the main stream or the material
+/// one (see [`MATERIAL_STREAM_SALT`]).
+#[derive(Clone, Copy, Debug)]
+enum Stream {
+    Main,
+    Material,
+}
+
 /// A scripted event and when it fires.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScriptedEvent {
@@ -240,6 +250,30 @@ impl ScriptedEvent {
 /// so the two streams never coincide for any seed.
 const CONTRACT_STREAM_SALT: u64 = 0x434F_4E54_5241_4354; // "CONTRACT"
 
+/// Folded into the seed for the material-news stream
+/// (`SyntheticEnvironment::event_rng`), for the same reason as
+/// [`CONTRACT_STREAM_SALT`]: drawing whether a material story fires must not
+/// move the routine stream, so a seeded path is unchanged up to the first
+/// material story and differs only by what that story does to the price.
+const MATERIAL_STREAM_SALT: u64 = 0x4D41_5445_5249_414C; // "MATERIAL"
+
+/// The smallest earnings surprise the synthetic material stream publishes,
+/// as a fraction of consensus.
+///
+/// Not a market figure: it is the least surprise that clears both of the
+/// platform's own materiality rules for the two records an earnings release
+/// produces. The fundamental is material at
+/// `qip_world_model::MATERIAL_FUNDAMENTAL_SURPRISE` (five per cent); the story
+/// is material under `Sentiment::is_material` when its effective polarity
+/// exceeds 0.3, and `narrative::earnings_story` scores `4 * surprise` at
+/// confidence 0.85, so the surprise must exceed 0.3 / (4 * 0.85) ≈ 0.088. A
+/// draw below this would be a "material" story the platform reads as routine.
+pub const MATERIAL_SURPRISE_FLOOR: f64 = 0.09;
+
+/// The largest such surprise: the top of `narrative::earnings_story`'s
+/// "sharply" band, so a draw never narrates a result the band calls modest.
+pub const MATERIAL_SURPRISE_CEILING: f64 = 0.20;
+
 /// Configuration for the synthetic environment.
 #[derive(Clone, Debug)]
 pub struct EnvironmentConfig {
@@ -252,6 +286,18 @@ pub struct EnvironmentConfig {
     pub bar_interval: Interval,
     /// Expected routine news stories per instrument per day.
     pub routine_news_per_day: f64,
+    /// Expected *material* synthetic stories per company per day: an earnings
+    /// release with a surprise between [`MATERIAL_SURPRISE_FLOOR`] and
+    /// [`MATERIAL_SURPRISE_CEILING`], its fundamental record, its story and
+    /// the price's partial response, drawn from a stream of its own.
+    ///
+    /// Why the default is not zero: routine stories are noise by design and
+    /// none is material, so a feed of only those gave the platform's
+    /// world-reaction loop (R12-WORLD-6015) nothing to measure on any
+    /// shipped binary — the loop ran on every cycle and matched nothing. The
+    /// rate is a property of the synthetic world, not a claim about any real
+    /// market; it is chosen so a day of simulated trading carries a handful.
+    pub material_news_per_day: f64,
     /// Whether to publish trade prints. Off for long backtests, where the
     /// volume is enormous and the bars carry the same information.
     pub emit_trades: bool,
@@ -266,6 +312,7 @@ impl Default for EnvironmentConfig {
             bar_every: 1,
             bar_interval: Interval::Minute,
             routine_news_per_day: 0.4,
+            material_news_per_day: 0.5,
             emit_trades: true,
             seed: 20_260_822,
         }
@@ -288,6 +335,9 @@ pub struct SyntheticEnvironment {
     /// draws nothing for its price — that is the spot's, carried — so this
     /// stream feeds only its microstructure.
     contract_rng: Xoshiro256,
+    /// The stream material stories draw from, kept apart from `rng` for the
+    /// reason [`MATERIAL_STREAM_SALT`] gives.
+    event_rng: Xoshiro256,
     cursor: Timestamp,
     step_index: u64,
     scripted: Vec<ScriptedEvent>,
@@ -323,6 +373,7 @@ impl SyntheticEnvironment {
             regime: Regime::Normal,
             rng: Xoshiro256::seeded(config.seed),
             contract_rng: Xoshiro256::seeded(config.seed ^ CONTRACT_STREAM_SALT),
+            event_rng: Xoshiro256::seeded(config.seed ^ MATERIAL_STREAM_SALT),
             cursor: start,
             step_index: 0,
             scripted: Vec::new(),
@@ -483,6 +534,7 @@ impl SyntheticEnvironment {
         let intensity = price::intraday_intensity(position);
         let fraction_of_day = self.config.step.as_days_f64();
 
+
         for index in 0..self.instruments.len() {
             records.extend(self.step_instrument(
                 index,
@@ -503,13 +555,120 @@ impl SyntheticEnvironment {
             }
             let which = self.rng.below(self.companies.len() as u64) as usize;
             let company = self.companies[which].clone();
-            records.push(SensedRecord::News(Box::new(narrative::routine_story(
-                &company,
-                self.cursor,
-                &mut self.rng,
-            ))));
+            let story = narrative::routine_story(&company, self.cursor, &mut self.rng);
+            records.push(SensedRecord::News(Box::new(self.name_instruments(story))));
         }
 
+        // Material stories, from their own stream, after the step's bars:
+        // the price response lands in the next bar, which opens at the
+        // story's instant — the bar a reaction is first measured on.
+        let expected_material =
+            self.config.material_news_per_day * fraction_of_day * self.companies.len() as f64;
+        let material_count = self.event_rng.poisson(expected_material.clamp(0.0, 20.0));
+        for _ in 0..material_count {
+            if self.companies.is_empty() {
+                break;
+            }
+            let which = self.event_rng.below(self.companies.len() as u64) as usize;
+            let entity_id = self.companies[which].entity_id.clone();
+            let magnitude = self
+                .event_rng
+                .uniform(MATERIAL_SURPRISE_FLOOR, MATERIAL_SURPRISE_CEILING);
+            let surprise = if self.event_rng.bernoulli(0.5) {
+                magnitude
+            } else {
+                -magnitude
+            };
+            let kind = ScriptedEventKind::EarningsSurprise {
+                entity_id: entity_id.clone(),
+                metric: "revenue".into(),
+                surprise,
+            };
+            records.extend(self.publish_earnings(
+                &entity_id,
+                "revenue",
+                surprise,
+                self.cursor,
+                Stream::Material,
+            ));
+            self.fired.push(ScriptedEvent::new(self.cursor, kind));
+        }
+
+        records
+    }
+
+    /// Name, on each mention of a company this world lists an instrument
+    /// for, that instrument's object id as the platform-minted
+    /// [`IdentifierKind::Internal`] identifier.
+    ///
+    /// The synthetic world is the one party that knows both halves: a story
+    /// names a company by entity id and the bars name the instrument by
+    /// object id, and nothing else on the default feed joins the two. A
+    /// reader pairing a story with the market's response needs the join, and
+    /// guessing it from a ticker inside an object id would be the reader
+    /// inventing the fact.
+    fn name_instruments(&self, mut item: NewsItem) -> NewsItem {
+        for mention in &mut item.entities {
+            let Some(entity) = mention.entity_id.as_deref() else {
+                continue;
+            };
+            if let Some(instrument) = self
+                .instruments
+                .iter()
+                .find(|i| i.contract.is_none() && i.entity_id.as_deref() == Some(entity))
+            {
+                mention
+                    .identifiers
+                    .set(IdentifierKind::Internal, instrument.object_id.as_str());
+            }
+        }
+        item
+    }
+
+    /// An earnings release: its fundamental, its story and the price's
+    /// partial, immediate response. Shared by the scripted shock and the
+    /// material stream so the two cannot come to publish different things;
+    /// `stream` says which generator the narrative draws from, so a scripted
+    /// release keeps drawing from `rng` exactly as it did.
+    fn publish_earnings(
+        &mut self,
+        entity_id: &str,
+        metric: &str,
+        surprise: f64,
+        at: Timestamp,
+        stream: Stream,
+    ) -> Vec<SensedRecord> {
+        let mut records = Vec::new();
+        let Some(company) = self
+            .companies
+            .iter()
+            .find(|c| c.entity_id == entity_id)
+            .cloned()
+        else {
+            return records;
+        };
+        let rng = match stream {
+            Stream::Main => &mut self.rng,
+            Stream::Material => &mut self.event_rng,
+        };
+        let fundamental = narrative::fundamental(&company, metric, surprise, at, rng);
+        let story = narrative::earnings_story(&company, surprise, at, rng);
+        records.push(SensedRecord::Fundamental(Box::new(fundamental)));
+        records.push(SensedRecord::News(Box::new(self.name_instruments(story))));
+        // The price responds, partially and immediately — the rest is left
+        // for the market to discover, which is what gives the platform
+        // something to trade.
+        let response = (surprise * 1.8).clamp(-0.25, 0.25);
+        if let Some(instrument) = self
+            .instruments
+            .iter_mut()
+            .find(|i| i.entity_id.as_deref() == Some(entity_id))
+        {
+            instrument.state.price = (instrument.state.price * response.exp()).max(1e-6);
+            instrument.state.last_return = response;
+            instrument.state.momentum += response;
+            instrument.state.volatility_shock = 1.0 + surprise.abs() * 4.0;
+        }
         records
     }
 
@@ -783,41 +942,13 @@ impl SyntheticEnvironment {
                 metric,
                 surprise,
             } => {
-                if let Some(company) = self
-                    .companies
-                    .iter()
-                    .find(|c| &c.entity_id == entity_id)
-                    .cloned()
-                {
-                    records.push(SensedRecord::Fundamental(Box::new(narrative::fundamental(
-                        &company,
-                        metric,
-                        *surprise,
-                        at,
-                        &mut self.rng,
-                    ))));
-                    records.push(SensedRecord::News(Box::new(narrative::earnings_story(
-                        &company,
-                        *surprise,
-                        at,
-                        &mut self.rng,
-                    ))));
-                    // The price responds, partially and immediately — the rest
-                    // is left for the market to discover, which is what gives
-                    // the platform something to trade.
-                    let response = (surprise * 1.8).clamp(-0.25, 0.25);
-                    if let Some(instrument) = self
-                        .instruments
-                        .iter_mut()
-                        .find(|i| i.entity_id.as_deref() == Some(entity_id.as_str()))
-                    {
-                        instrument.state.price =
-                            (instrument.state.price * response.exp()).max(1e-6);
-                        instrument.state.last_return = response;
-                        instrument.state.momentum += response;
-                        instrument.state.volatility_shock = 1.0 + surprise.abs() * 4.0;
-                    }
-                }
+                records.extend(self.publish_earnings(
+                    entity_id,
+                    metric,
+                    *surprise,
+                    at,
+                    Stream::Main,
+                ));
             }
             ScriptedEventKind::SupplyDisruption {
                 entity_id,
@@ -829,12 +960,8 @@ impl SyntheticEnvironment {
                     .find(|c| &c.entity_id == entity_id)
                     .cloned()
                 {
-                    records.push(SensedRecord::News(Box::new(narrative::supply_chain_story(
-                        &company,
-                        *severity,
-                        at,
-                        &mut self.rng,
-                    ))));
+                    let story = narrative::supply_chain_story(&company, *severity, at, &mut self.rng);
+                    records.push(SensedRecord::News(Box::new(self.name_instruments(story))));
                     if let Some(instrument) = self
                         .instruments
                         .iter_mut()

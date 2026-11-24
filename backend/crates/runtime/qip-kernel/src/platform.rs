@@ -1305,6 +1305,21 @@ pub struct Platform {
     /// The contradictions recent reactions found against held causal edges,
     /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
     reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
+    /// The reaction episodes recently measured and applied, newest last and
+    /// bounded by [`REACTION_CONTRADICTION_HISTORY`] (R12-WORLD-6015): one
+    /// per material event per horizon, each carrying every instrument whose
+    /// bar at that horizon had closed — the subject and the rest of the feed.
+    reaction_episodes: Vec<qip_world_model::reaction::ReactionEpisode>,
+    /// The instrument each world entity issues, as a news mention stated it
+    /// through a platform-minted [`IdentifierKind::Internal`] identifier
+    /// naming an instrument the universe holds (R12-WORLD-6015). A story or a
+    /// fundamental names a company; the bars name an instrument; without this
+    /// join a world event on the default feed paired with no bar. Bounded by
+    /// the universe: an identifier naming an instrument outside it is not
+    /// recorded.
+    ///
+    /// [`IdentifierKind::Internal`]: qip_financial::identifiers::IdentifierKind::Internal
+    entity_instruments: BTreeMap<String, String>,
     /// The synthetic future tree grown from the held world events and the
     /// bars they land on (R12-WORLD-9035), observed against each later bar.
     future_tree: Option<qip_twin::futures::FutureTree>,
@@ -7187,6 +7202,8 @@ impl Platform {
             procedures_followed: Vec::new(),
             reactions_applied: BTreeSet::new(),
             reaction_contradictions: Vec::new(),
+            reaction_episodes: Vec::new(),
+            entity_instruments: BTreeMap::new(),
             future_tree: None,
             future_drivers: BTreeSet::new(),
             future_observed_at: None,
@@ -14422,6 +14439,7 @@ impl Platform {
                     let context = &self.context;
                     match self.world.update(|world| world.absorb_news(&item, context)) {
                         Ok(_) => {
+                            self.note_entity_instruments(&item);
                             for event in MarketEvent::from_news(&item) {
                                 self.push_market_event(event);
                             }
@@ -14445,7 +14463,15 @@ impl Platform {
                             surprise,
                         );
                     }
-                    self.push_market_event(MarketEvent::from_fundamental(&update));
+                    // Material by the world model's own threshold, the one
+                    // `absorb_fundamental` journals a change at, so the
+                    // reaction loop and the journal agree on which surprises
+                    // happened (R12-WORLD-6015).
+                    self.push_market_event(MarketEvent::from_fundamental(&update).with_material(
+                        update.is_significant_surprise(
+                            qip_world_model::MATERIAL_FUNDAMENTAL_SURPRISE,
+                        ),
+                    ));
                     absorbed += 1;
                 }
                 SensedRecord::Macro(observation) => {
@@ -14771,30 +14797,56 @@ impl Platform {
         }
     }
 
-    /// Run one full pass through the loop.
-    ///
-    /// Never panics, never stops early. A stage that fails records its problem
-    /// and the cycle continues, because the learning stage is what would
-    /// eventually notice that a stage keeps failing.
-    ///
-    /// **One thing does stop it before it starts.** A cycle asked for as of an
-    /// instant earlier than one this platform has already reasoned at is
-    /// refused whole rather than run: see the `Platform::reasoned_through`
-    /// field for the leak that permits, and `Self::refuse_cycle_before` for
-    /// what the caller gets back. The refusal is not a stage failing — it is the
-    /// argument being wrong — so nothing is journalled, nothing is charged and
-    /// no state moves.
-    /// Pair each world event with the market's reaction at each of
+    /// Record, from a news item's mentions, which instrument each named
+    /// entity issues (see `entity_instruments`). A mention with no
+    /// entity, no internal identifier, or one naming an instrument outside
+    /// the universe adds nothing.
+    fn note_entity_instruments(&mut self, item: &qip_financial::intelligence::NewsItem) {
+        use qip_financial::identifiers::IdentifierKind;
+        for mention in &item.entities {
+            let (Some(entity), Some(object)) = (
+                mention.entity_id.as_deref(),
+                mention.identifiers.get(IdentifierKind::Internal),
+            ) else {
+                continue;
+            };
+            let listed = self
+                .market
+                .read()
+                .universe
+                .get(&ObjectId::from_string(object))
+                .is_some();
+            if listed {
+                self.entity_instruments
+                    .insert(entity.to_string(), object.to_string());
+            }
+        }
+    }
+
+    /// Pair each material world event with the market's reaction at each of
     /// [`qip_world_model::granger::REACTION_HORIZONS_BARS`] once enough bars
     /// have closed, and apply each reaction to the causal graph
     /// (R12-WORLD-6015): a reaction with no edge behind it establishes one,
     /// and one against a held edge lowers that edge's confidence and is kept
     /// in [`Self::reaction_contradictions`].
     ///
-    /// The move is the subject's close at the horizon against its last
-    /// close before the event, in basis points. An event whose subject has
-    /// no bar history, or whose weight is not a probability, is skipped with
-    /// a problem on the cycle; one whose horizon has not closed yet waits.
+    /// The event lands on its subject's bars, or — when the subject is a
+    /// company, as a story or a fundamental names one — on the bars of the
+    /// instrument it issues (`entity_instruments`). The response is
+    /// measured on **every** instrument with bars, not only that one: a
+    /// supplier's results move its customer, and an edge from the event's
+    /// class to the customer is the propagation the graph is for. Each
+    /// instrument's move is its close on its own horizon bar against its own
+    /// last close before the event, in basis points. "The event" is its
+    /// known-time, not its valid-time: a quarter's fundamental is true at the
+    /// period end and moves nothing until it is filed, so a move measured from
+    /// the period end would credit the filing with a quarter of drift. A
+    /// horizon waits until
+    /// the landing instrument's horizon bar has closed; an instrument whose
+    /// own horizon bar has not is left out of that episode rather than read
+    /// early. An event that is not material, has no direction, or lands on
+    /// nothing is skipped: a routine headline followed by noise is not
+    /// evidence about how the market reacts to news.
     fn react_to_world_events(&mut self, now: Timestamp) {
         use qip_world_model::granger::REACTION_HORIZONS_BARS;
         use qip_world_model::reaction::ReactionEpisode;
@@ -14807,25 +14859,33 @@ impl Platform {
             .retain(|(event_id, _)| held.contains(event_id));
         let mut problems = Vec::new();
         let mut episodes: Vec<(ReactionEpisode, f64)> = Vec::new();
-        for event in &self.market_events {
-            if event.direction == 0.0 || event.known_at() > now {
-                continue;
-            }
-            let Some(bars) = self.bar_history.get(&event.subject) else {
-                continue;
-            };
-            let Some(first_after) = bars
-                .iter()
-                .position(|bar| bar.open_time >= event.occurred_at())
-            else {
-                continue;
-            };
-            let Some(base) = first_after
+        // The last close before the event and the index of the first bar at
+        // or after it, per instrument; `None` where the instrument has no bar
+        // on one side of the event.
+        let anchor = |bars: &[Bar], at: Timestamp| -> Option<(f64, usize)> {
+            let first_after = bars.iter().position(|bar| bar.open_time >= at)?;
+            let base = first_after
                 .checked_sub(1)
                 .and_then(|i| bars.get(i))
                 .map(|bar| bar.close.to_f64())
-                .filter(|c| *c > 0.0)
-            else {
+                .filter(|c| *c > 0.0)?;
+            Some((base, first_after))
+        };
+        for event in &self.market_events {
+            if !event.material || event.direction == 0.0 || event.known_at() > now {
+                continue;
+            }
+            let landing = if self.bar_history.contains_key(&event.subject) {
+                event.subject.clone()
+            } else if let Some(object) = self.entity_instruments.get(&event.subject) {
+                object.clone()
+            } else {
+                continue;
+            };
+            let Some(bars) = self.bar_history.get(&landing) else {
+                continue;
+            };
+            let Some((_, first_after)) = anchor(bars, event.known_at()) else {
                 continue;
             };
             for horizon in REACTION_HORIZONS_BARS {
@@ -14835,27 +14895,54 @@ impl Platform {
                 {
                     continue;
                 }
-                let Some(bar) = bars.get(first_after + horizon - 1) else {
+                let Some(landing_bar) = bars.get(first_after + horizon - 1) else {
                     continue;
                 };
-                if bar.close_time() > now {
+                if landing_bar.close_time() > now {
                     continue;
                 }
-                // Statistics from here: a return in basis points.
-                let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
-                let sign = if moved_bps > 0.0 {
-                    1.0
-                } else if moved_bps < 0.0 {
-                    -1.0
-                } else {
-                    0.0
-                };
+                // The landing instrument first, then the rest of the feed in
+                // key order, so the episode reads the same on a replay.
+                let mut responses = Vec::new();
+                let order = std::iter::once(landing.as_str()).chain(
+                    self.bar_history
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|key| *key != landing),
+                );
+                for instrument in order {
+                    let Some(series) = self.bar_history.get(instrument) else {
+                        continue;
+                    };
+                    let Some((base, first)) = anchor(series, event.known_at()) else {
+                        continue;
+                    };
+                    let Some(bar) = series.get(first + horizon - 1) else {
+                        continue;
+                    };
+                    if bar.close_time() > now {
+                        continue;
+                    }
+                    // Statistics from here: a return in basis points.
+                    let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
+                    if !moved_bps.is_finite() {
+                        continue;
+                    }
+                    let sign = if moved_bps > 0.0 {
+                        1.0
+                    } else if moved_bps < 0.0 {
+                        -1.0
+                    } else {
+                        0.0
+                    };
+                    responses.push((instrument.to_string(), moved_bps, sign));
+                }
                 match ReactionEpisode::new(
                     format!("{}@{horizon}", event.event_id),
                     event.class.clone(),
-                    event.occurred_at(),
-                    bar.close_time(),
-                    vec![(event.subject.clone(), moved_bps, sign)],
+                    event.known_at(),
+                    landing_bar.close_time(),
+                    responses,
                     horizon,
                     event.weight,
                     format!("{} over {horizon} bar(s)", event.description),
@@ -14871,6 +14958,7 @@ impl Platform {
             }
         }
         let mut contradictions = Vec::new();
+        let mut recorded = Vec::new();
         for (episode, direction) in episodes {
             let applied = self.world.update(|world| {
                 world.apply_reaction(
@@ -14889,6 +14977,7 @@ impl Platform {
                             .insert((event_id.to_string(), horizon));
                     }
                     contradictions.extend(outcome.contradicted);
+                    recorded.push(episode);
                 }
                 Err(error) => problems.push(format!(
                     "the reaction {} was not applied to the causal graph: {}",
@@ -14903,6 +14992,12 @@ impl Platform {
             .len()
             .saturating_sub(REACTION_CONTRADICTION_HISTORY);
         self.reaction_contradictions.drain(..excess);
+        self.reaction_episodes.extend(recorded);
+        let excess = self
+            .reaction_episodes
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_episodes.drain(..excess);
         self.capture_problems.extend(problems);
     }
 
@@ -15103,6 +15198,12 @@ impl Platform {
         &self.reaction_contradictions
     }
 
+    /// The reaction episodes recent cycles measured and applied to the causal
+    /// graph, newest last (R12-WORLD-6015).
+    pub fn reaction_episodes(&self) -> &[qip_world_model::reaction::ReactionEpisode] {
+        &self.reaction_episodes
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -15140,6 +15241,19 @@ impl Platform {
         }
     }
 
+    /// Run one full pass through the loop.
+    ///
+    /// Never panics, never stops early. A stage that fails records its problem
+    /// and the cycle continues, because the learning stage is what would
+    /// eventually notice that a stage keeps failing.
+    ///
+    /// **One thing does stop it before it starts.** A cycle asked for as of an
+    /// instant earlier than one this platform has already reasoned at is
+    /// refused whole rather than run: see the `Platform::reasoned_through`
+    /// field for the leak that permits, and `Self::refuse_cycle_before` for
+    /// what the caller gets back. The refusal is not a stage failing — it is the
+    /// argument being wrong — so nothing is journalled, nothing is charged and
+    /// no state moves.
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
         if now < self.reasoned_through {
             return self.refuse_cycle_before(now);

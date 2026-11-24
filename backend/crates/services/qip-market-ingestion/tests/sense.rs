@@ -94,7 +94,22 @@ fn volatility_clusters_rather_than_being_constant() {
     // The defining feature of real returns: today's absolute move predicts
     // tomorrow's. A constant-volatility simulator would fail this, and a risk
     // model tested only against one would be useless.
-    let mut environment = environment(7);
+    //
+    // A property of the price *process*, so measured with no shock layered
+    // on it — the condition this test was written under, when nothing on
+    // the default configuration fired a shock. Since R12-WORLD-6015 the
+    // default world publishes material earnings releases, each moving the
+    // issuer by up to a quarter in one step; one such jump in a 3,000-step
+    // minute series is most of the series' variance and says nothing about
+    // whether the process clusters. Releases have their own tests below.
+    let mut environment = SyntheticEnvironment::demo(
+        start(),
+        EnvironmentConfig {
+            seed: 7,
+            material_news_per_day: 0.0,
+            ..EnvironmentConfig::default()
+        },
+    );
     let path = price_path(&mut environment, "NWSC", 3_000);
     let returns = qip_numerics::stats::log_returns(&path);
     let absolute: Vec<f64> = returns.iter().map(|r| r.abs()).collect();
@@ -1082,5 +1097,137 @@ fn ingestion_reports_what_it_published_by_topic() {
     assert_eq!(
         stats.rejected, 0,
         "the simulator should not emit invalid records"
+    );
+}
+
+/// The default world publishes material earnings releases (R12-WORLD-6015):
+/// each release's fundamental clears the world model's five-per-cent
+/// threshold and its story clears `Sentiment::is_material`; the story names
+/// the company by entity id and the issuer's instrument by the
+/// platform-minted internal identifier, which is the only join between a
+/// story and the bars the same feed prints; and drawing a release does not
+/// move the routine stream, so every record before the first release is the
+/// one a world with no releases prints.
+///
+/// Mutations (each fired): drop the `name_instruments` call on the earnings
+/// story; draw the release's narrative from `rng` instead of `event_rng`.
+#[test]
+fn the_default_world_publishes_material_releases_that_name_their_issuers_instrument() {
+    use qip_financial::identifiers::IdentifierKind;
+    let horizon = start().saturating_add(Duration::from_days(3));
+    let mut with = environment(11);
+    let records = with.run_until(horizon);
+    let releases: Vec<(String, Timestamp)> = with
+        .fired_events()
+        .iter()
+        .filter_map(|e| match &e.kind {
+            ScriptedEventKind::EarningsSurprise { entity_id, .. } => {
+                Some((entity_id.clone(), e.at))
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        releases.len() >= 2,
+        "three default days published {} material releases",
+        releases.len()
+    );
+    let fundamentals: Vec<_> = records
+        .iter()
+        .filter_map(|r| match r {
+            SensedRecord::Fundamental(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fundamentals.len(), releases.len(), "one fundamental per release");
+    for fundamental in &fundamentals {
+        assert!(
+            fundamental.is_significant_surprise(0.05),
+            "a release of {:?} is not material",
+            fundamental.surprise()
+        );
+    }
+    let stories: Vec<_> = records
+        .iter()
+        .filter_map(|r| match r {
+            SensedRecord::News(n) if n.item_id.starts_with("earnings-") => Some(n),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stories.len(), releases.len(), "one story per release");
+    for story in &stories {
+        assert!(
+            story.sentiment.is_material(),
+            "the story {} is not material",
+            story.item_id
+        );
+        let primary = story.primary_entities();
+        assert_eq!(primary.len(), 1, "{}", story.item_id);
+        let entity = primary[0]
+            .entity_id
+            .as_deref()
+            .expect("a synthetic story names its company");
+        let issued = with
+            .instruments()
+            .iter()
+            .find(|i| i.contract.is_none() && i.entity_id.as_deref() == Some(entity))
+            .map(|i| i.object_id.as_str().to_string());
+        assert_eq!(
+            primary[0].identifiers.get(IdentifierKind::Internal).map(str::to_string),
+            issued,
+            "the story {} does not name its issuer's instrument",
+            story.item_id
+        );
+    }
+    // The routine stream is untouched by the releases, over the whole run:
+    // every routine story, and every record about the one instrument no
+    // company issues (so no release ever moves it), is the record a world
+    // with no releases prints. Up to the first release that would hold even
+    // if both streams were one, because a draw of none consumes the same
+    // either way; after it, the narrative a release draws would shift every
+    // later draw.
+    let mut quiet = SyntheticEnvironment::demo(
+        start(),
+        EnvironmentConfig {
+            seed: 11,
+            material_news_per_day: 0.0,
+            ..EnvironmentConfig::default()
+        },
+    )
+    .run_until(horizon);
+    let mut loud = SyntheticEnvironment::demo(
+        start(),
+        EnvironmentConfig {
+            seed: 11,
+            ..EnvironmentConfig::default()
+        },
+    )
+    .run_until(horizon);
+    let unissued = with
+        .instruments()
+        .iter()
+        .find(|i| i.symbol == "UST10Y")
+        .map(|i| i.object_id.as_str().to_string())
+        .expect("the demo world lists the bond");
+    let render = |records: &mut Vec<SensedRecord>| -> Vec<String> {
+        records
+            .iter()
+            .filter(|r| match r {
+                SensedRecord::News(n) => n.item_id.starts_with("routine-"),
+                other => other.subject_id() == Some(unissued.as_str()),
+            })
+            .map(|r| format!("{r:?}"))
+            .collect::<Vec<_>>()
+    };
+    let quiet_rendered = render(&mut quiet);
+    assert!(
+        quiet_rendered.iter().any(|r| r.contains("routine-"))
+            && quiet_rendered.iter().any(|r| !r.contains("routine-")),
+        "premise: the run printed no routine story or no bond record"
+    );
+    assert_eq!(
+        render(&mut loud),
+        quiet_rendered,
+        "drawing material releases moved the routine stream"
     );
 }
