@@ -190,6 +190,29 @@ decision about what may inform decisions, not an engineering figure, so it
 is left to the owner. The recommendation is to keep the row PARTIAL until
 the deep brain learns on a licensed feed.
 
+## Figures decided on 2026-11-24 under the same instruction
+
+These rows each waited on a figure or a definition that no accepted record
+gives. The orchestrator decided them under the owner's instruction quoted
+above, as provisional figures stated at their constants. Each is either a
+synthetic-feed parameter or a rule that only lowers how much REASON weighs
+evidence. None is a risk limit, a sizing budget, a payment or a deployed
+resource. A later owner figure replaces any of them without an ADR.
+
+| Row | Figure | Where it is stated | Why this value |
+|---|---|---|---|
+| R12-WORLD-6015 | A macro release is material when its surprise is at least 1 sample standard deviation of that series' own past surprises, with at least 2 past surprises | `qip-kernel` `platform.rs`, `MACRO_MATERIALITY_SIGMAS` = 1.0 and `MACRO_MATERIALITY_MIN_HISTORY` = 2 | The smallest rule that separates a surprise from the series' ordinary variation. Two past surprises is the fewest from which a deviation can be measured |
+| R12-WORLD-6015 | A material event is paired with every instrument the feed carries | `Platform::react_to_world_events` | "Multi-asset" asks for more than the event's own subject. On a synthetic feed every instrument is a candidate, and none is singled out by a choice nobody made |
+| R12-WORLD-6015 | The synthetic feed publishes 0.5 material releases per company per day, and the same per macro series. Macro levels start at 4.0 | `qip-market-ingestion` `synthetic/mod.rs`, `EnvironmentConfig::default` `material_news_per_day` and `SYNTHETIC_MACRO_START_LEVEL` | Often enough that a default cycle meets a material event within a day of feed time, and rarely enough that most bars carry none. Synthetic data, labelled synthetic |
+| R12-WORLD-6015 | The shortest horizon is read at the finest resolution the feed carries | `react_to_world_events`, the shortest horizon read from ticks | The statement asks for the tick response. Where a feed carries only bars, the record says so |
+| R12-WORLD-3036 | The feed is stale after 7 days without a bar | `qip-kernel` `platform.rs`, `FEED_HORIZON` | Long enough that a weekend or a market holiday does not read as a stopped feed. Shorter horizons are a tuning the owner may set |
+| R12-WORLD-3036 | An input whose population stability index is 0.25 or more reads as drifted | `INPUT_DRIFT_PSI` | The conventional threshold for a significant shift in a distribution |
+| R12-WORLD-3036 | Evidence from a stale, unhealthy or drifted component carries weight 0 in REASON | the REASON weighing in `platform.rs` | The restrictive choice: no figure between 0 and 1 is stated anywhere, and evidence that cannot be trusted is withheld, not discounted by an amount nobody chose. It never raises a weight and never touches sizing |
+| R12-WORLD-3036 | A tripped kill switch is recorded on the self-model's health (`OperationalHealth::halted`) and withholds no evidence in REASON; decided 2026-11-28 | `SelfModel::shared_withholding` | The switch halts trading at ACT, which refuses the order and journals it under the `kill-switch` gate. Withholding as well left a halted cycle with no proposal for ACT to refuse, so the record named no halt (`qip-acceptance` `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades` failed on PR #298). A halt says nothing about whether the bars a component read are true; "unhealthy" in the row above means a non-fresh ingestion or feed row |
+| R12-WORLD-3036 | Evidence from a component in a blind-spot cell carries the weight an ungraded origin carries (1.0, `UNGRADED_WEIGHT`), capped at the component's graded weight (`SelfModel::factor`); decided 2026-11-28 | `SelfModel::blind_spot`, `Platform::synthesise` | Weight 0 starved every thesis outside the first sector graded, so the shipped review admitted none (`qip-fastbrain` `tests/tape.rs`). The cap never weighs a cell above what grading gives and never silences it by a figure nobody chose. Read on 2026-11-28 by two independent readers: the cap equals the weight the origin already carries, so on every configuration a blind spot changes no weight and is only a label on `blind_origins`. A discount between 0 and the graded weight is an owner figure and is not decided here |
+| R12-WORLD-3036 | A blind spot is a (component, sector) cell with no graded resolved thesis, for a component graded elsewhere | the self-model | The committed universe holds one asset class across five sectors. A (component, asset class) cell would never fire on committed configuration; a sector cell does |
+| R12-WORLD-3036 | The capability boundary is the asset classes the feed serves with fresh bars, and REASON refuses a thesis outside it | the self-model's boundary and REASON | A boundary drawn from the registry, or from the whole universe, bounds nothing |
+
 ## What this file does not do
 
 - **No register row is regraded by this file.** Acceptance removes the one

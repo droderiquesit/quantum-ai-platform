@@ -365,20 +365,39 @@ fn the_size_bound_seals_before_the_drain_out_and_every_tick_reads_back_once() {
 /// A quiet spool still seals: what the sink holds is sealed once the age
 /// bound passes, on a step that delivers nothing.
 ///
-/// Mutation: remove the `seal_due` check at the top of each cursor's turn
-/// in `Drain::step`. The quiet step seals nothing and the lake stays empty.
+/// The age is read on a `ManualClock` the test steps. It used to be read on
+/// the process's own monotonic clock with a 1.5 s bound and a 1.6 s sleep,
+/// and on a loaded CI runner the first step took longer than the bound and
+/// sealed by age before the premise was checked (PR #298: "premise: held
+/// under both bounds"). The test then said nothing about the property. Now
+/// it fails only if the property does.
+///
+/// Mutations: remove the `seal_due` check at the top of each cursor's turn
+/// in `Drain::step` (the quiet step seals nothing and the lake stays empty);
+/// drop the age arm from `LakeSink::seal_due` (likewise); make
+/// `LakeSink::with_age_clock` ignore its clock, so the bound is read on the
+/// process's own clock again (the test's clock no longer moves it, and
+/// nothing seals).
 #[test]
 fn the_age_bound_seals_what_a_quiet_spool_left_held() {
     let store: Arc<dyn BlobStore> = Arc::new(MemoryBlobStore::new());
     let log = spool("age");
+    let clock = Arc::new(ManualClock::new(at(0)));
+    let age_clock: Arc<dyn Clock> = clock.clone();
     let batching = LakeBatching::new(1 << 20, std::time::Duration::from_millis(1500)).unwrap();
-    let mut drain = drain(&log, sink(&store, Some(batching)));
+    let mut drain = drain(&log, sink(&store, Some(batching)).with_age_clock(age_clock));
     drain.step().unwrap();
     assert!(
         segments(store.as_ref()).is_empty(),
         "premise: held under both bounds"
     );
-    std::thread::sleep(std::time::Duration::from_millis(1600));
+    clock.advance(Duration::from_millis(1499));
+    assert_eq!(drain.step().unwrap().delivered, 0, "premise: quiet");
+    assert!(
+        segments(store.as_ref()).is_empty(),
+        "sealed before the age bound passed"
+    );
+    clock.advance(Duration::from_millis(1));
     let quiet = drain.step().unwrap();
     assert_eq!(quiet.delivered, 0, "premise: the spool is quiet");
     assert_eq!(segments(store.as_ref()).len(), 2, "sealed by age");

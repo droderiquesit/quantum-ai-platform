@@ -76,6 +76,38 @@ const PSEUDO_COUNTS: f64 = 4.0;
 /// discount rather than a raised weight.
 pub const DRIFT_TOLERANCE: f64 = 0.05;
 
+/// The population stability index at or above which a component's input reads
+/// drifted (R12-WORLD-3036, data drift).
+///
+/// Decided in `docs/blueprint/owner-decisions-2026-11-23.md`, section
+/// "Figures decided on 2026-11-24", row R12-WORLD-3036:
+/// 0.25 is the conventional "significant shift" threshold and the one
+/// `qip_ai::evaluation` already calls drifting. A component whose input
+/// distribution has moved this far is reading a market its record was not
+/// earned on, so the evidence it produces from that input is withheld rather
+/// than weighted by a record about a different distribution.
+pub const INPUT_DRIFT_PSI: f64 = 0.25;
+
+/// The weight REASON gives the supporting evidence of an origin the
+/// self-model has no graded weight for: full weight, because
+/// `qip_reasoning_engine`'s `strengths` leaves an origin
+/// [`SelfModel::origin_factors`] does not name at one. Named here so the
+/// blind-spot cap ([`SelfModel::blind_spot`]) is stated against the figure
+/// REASON actually uses rather than a second copy of it.
+pub const UNGRADED_WEIGHT: f64 = 1.0;
+
+/// A (component, sector) cell the component has never been graded in, for a
+/// component graded elsewhere (R12-WORLD-3036).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlindSpot {
+    /// The most REASON may weigh the component's supporting evidence by in
+    /// this cell: never above its graded weight, never above an ungraded
+    /// origin's.
+    pub weight: f64,
+    /// Why, for the hypothesis's record.
+    pub reason: String,
+}
+
 /// The kind of component an estimate is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -449,6 +481,24 @@ pub struct SelfModel {
     /// boundary has been declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     boundary: Option<BTreeSet<String>>,
+    /// Per component, the sectors it has a graded resolved thesis in. A
+    /// component graded here but never in a sector is blind in that sector.
+    ///
+    /// A sector, not an asset class: `docs/blueprint/owner-decisions-2026-11-23.md`,
+    /// section "Figures decided on 2026-11-24", row R12-WORLD-3036, defines a
+    /// blind spot as a (component, sector) cell. The committed universe is
+    /// common stock only, so an asset-class cell could never read blind on
+    /// committed configuration; its five sectors can.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    graded_sectors: BTreeMap<ComponentKey, BTreeSet<String>>,
+    /// Inputs (instrument ids) whose distribution has shifted by at least
+    /// [`INPUT_DRIFT_PSI`], with the index measured, as of the newest reading.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    drifted_inputs: BTreeMap<String, f64>,
+    /// Inputs (instrument ids) whose newest bar is older than the kernel's
+    /// feed horizon, with the instant that bar closed: the stale areas.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    stale_inputs: BTreeMap<String, Timestamp>,
 }
 
 /// How the platform was running when it last looked at itself
@@ -510,6 +560,7 @@ impl SelfModel {
             match stalest {
                 Some(key) => {
                     self.components.remove(&key);
+                    self.graded_sectors.remove(&key);
                 }
                 None => break,
             }
@@ -669,6 +720,159 @@ impl SelfModel {
             Some(classes) if classes.contains(class) => BoundaryReading::Inside,
             Some(_) => BoundaryReading::Outside,
         }
+    }
+
+    /// Record that `components` were graded on a resolved thesis in `sector`.
+    ///
+    /// Only components the model already holds a record for are noted, so the
+    /// map stays bounded by [`MAX_COMPONENTS`] and an eviction clears both.
+    pub fn note_graded_sector(&mut self, components: &[ComponentKey], sector: &str) {
+        if sector.trim().is_empty() {
+            return;
+        }
+        for key in components {
+            if self.components.contains_key(key) {
+                self.graded_sectors
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(sector.to_string());
+            }
+        }
+    }
+
+    /// The sectors `key` has a graded resolved thesis in.
+    pub fn graded_sectors(&self, key: &ComponentKey) -> Option<&BTreeSet<String>> {
+        self.graded_sectors.get(key)
+    }
+
+    /// Replace the drifted-input reading with this cycle's shifts, keeping
+    /// only those at or above [`INPUT_DRIFT_PSI`]. A non-finite index is not a
+    /// measurement and is kept as drifted: the restrictive reading.
+    pub fn observe_input_drift(&mut self, shifts: impl IntoIterator<Item = (String, f64)>) {
+        self.drifted_inputs = shifts
+            .into_iter()
+            .filter(|(_, index)| !index.is_finite() || *index >= INPUT_DRIFT_PSI)
+            .collect();
+    }
+
+    /// Replace the stale-input reading: each input whose newest bar is past
+    /// the feed horizon, with the instant that bar closed.
+    pub fn observe_stale_inputs(&mut self, stale: impl IntoIterator<Item = (String, Timestamp)>) {
+        self.stale_inputs = stale.into_iter().collect();
+    }
+
+    /// Inputs read as stale at the newest reading.
+    pub fn stale_inputs(&self) -> &BTreeMap<String, Timestamp> {
+        &self.stale_inputs
+    }
+
+    /// Inputs read as drifted at the newest reading, with their index.
+    pub fn drifted_inputs(&self) -> &BTreeMap<String, f64> {
+        &self.drifted_inputs
+    }
+
+    /// The asset classes inside the declared boundary, if one is declared.
+    pub fn boundary(&self) -> Option<&BTreeSet<String>> {
+        self.boundary.as_ref()
+    }
+
+    /// Whether `key` is blind in `sector`: graded in at least one sector and
+    /// never in this one. Read by key, not by evidence origin, because a
+    /// detector is graded under the claim class it raised and its evidence
+    /// travels under the detector's own name; the caller knows which key
+    /// produced which origin, this model does not.
+    pub fn is_blind_in(&self, key: &ComponentKey, sector: &str) -> bool {
+        matches!(key.kind, ComponentKind::Detector | ComponentKind::Analyst)
+            && self
+                .graded_sectors
+                .get(key)
+                .is_some_and(|sectors| !sectors.is_empty() && !sectors.contains(sector))
+    }
+
+    /// The blind spot `key` reads in `sector`, if it is blind there
+    /// (R12-WORLD-3036): the weight REASON may give its supporting evidence
+    /// in that cell, and the reason.
+    ///
+    /// The weight is decided in `docs/blueprint/owner-decisions-2026-11-23.md`,
+    /// section "Figures decided on 2026-11-24": the weight an ungraded origin
+    /// already carries ([`UNGRADED_WEIGHT`], what REASON gives an origin
+    /// [`Self::origin_factors`] does not name), capped at the component's
+    /// lowest graded weight elsewhere ([`Self::factor`], `None` below
+    /// [`MINIMUM_SAMPLE`]). So a cell nothing has resolved in never weighs
+    /// more than grading gives, and is not silenced either: weight 0 there
+    /// starved every thesis outside the first sector graded, which is a
+    /// refusal nobody decided.
+    pub fn blind_spot(&self, key: &ComponentKey, sector: &str) -> Option<BlindSpot> {
+        if !self.is_blind_in(key, sector) {
+            return None;
+        }
+        let weight = self
+            .factor(key)
+            .map_or(UNGRADED_WEIGHT, |graded| graded.min(UNGRADED_WEIGHT));
+        Some(BlindSpot {
+            weight,
+            reason: format!(
+                "blind spot: {key} has graded outcomes only outside the {sector} sector"
+            ),
+        })
+    }
+
+    /// The origins whose supporting evidence REASON must withhold (weight
+    /// zero) on a thesis about `subject`, each with the reason
+    /// (R12-WORLD-3036).
+    ///
+    /// Every rule only withholds: nothing here raises a factor, relaxes a
+    /// limit or touches sizing. Detectors and analysts alike produce their
+    /// evidence from the bars the feed delivered for the subject, so a
+    /// non-fresh ingestion or feed row, a stale subject and a drifted subject
+    /// each withhold every origin. A blind spot is not read here: it caps a
+    /// weight rather than zeroing it, see [`Self::blind_spot`].
+    ///
+    /// A tripped kill switch is deliberately **not** a reason. It is recorded
+    /// on [`OperationalHealth::halted`] and halts trading at ACT, which is the
+    /// seam that refuses an order on it and journals the refusal under the
+    /// `kill-switch` gate. Withholding here as well left a halted cycle with
+    /// no thesis above the review's bar, so ACT had nothing to refuse and the
+    /// record named no halt: the platform did nothing and its log blamed the
+    /// evidence instead of the operator's switch
+    /// (`qip-acceptance` `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades`).
+    /// A halt says nothing about whether the bars a component read are true;
+    /// a feed fault that does is read by the ingestion and feed rows above.
+    pub fn withheld_origins<'a>(
+        &self,
+        origins: impl IntoIterator<Item = &'a str>,
+        subject: &str,
+    ) -> BTreeMap<String, String> {
+        let Some(shared) = self.shared_withholding(subject) else {
+            return BTreeMap::new();
+        };
+        origins
+            .into_iter()
+            .map(|origin| (origin.to_string(), shared.clone()))
+            .collect()
+    }
+
+    /// The reason every origin on `subject` is withheld, if there is one.
+    fn shared_withholding(&self, subject: &str) -> Option<String> {
+        if let Some(health) = &self.health {
+            for row in [TableRow::Ingestion, TableRow::Feed] {
+                if let Some(freshness) = health.degraded.get(&row) {
+                    return Some(format!(
+                        "stale: the {} row read {}",
+                        row.as_str(),
+                        freshness.as_str()
+                    ));
+                }
+            }
+        }
+        if let Some(closed) = self.stale_inputs.get(subject) {
+            return Some(format!(
+                "stale: the input {subject} has had no bar since {closed}"
+            ));
+        }
+        self.drifted_inputs
+            .get(subject)
+            .map(|index| format!("drifted: the input {subject} shifted by a PSI of {index:.3}"))
     }
 
     pub fn len(&self) -> usize {

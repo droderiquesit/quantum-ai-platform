@@ -73,6 +73,20 @@ pub struct MarketEvent {
     pub weight: f64,
     /// Human-readable statement of what happened.
     pub description: String,
+    /// Whether the event is material by its own source's rule: a story whose
+    /// sentiment `Sentiment::is_material` admits, a fundamental whose
+    /// surprise clears the world model's threshold. The world-reaction loop
+    /// (R12-WORLD-6015) learns only from material events — a routine
+    /// headline followed by noise is not evidence about how markets react to
+    /// news, and an edge weakened by one would be weakened by nothing.
+    ///
+    /// `true` from [`Self::new`], because a caller building an event by hand
+    /// is stating something happened; the constructors that read a source
+    /// with a materiality rule set it from that rule. A record serialized
+    /// before the field existed reads as material, which is what it was
+    /// treated as then.
+    #[serde(default = "material_by_default")]
+    pub material: bool,
     occurred_at: Timestamp,
     known_at: Timestamp,
 }
@@ -98,9 +112,16 @@ impl MarketEvent {
             direction: 0.0,
             weight: 1.0,
             description: String::new(),
+            material: true,
             occurred_at,
             known_at: known_at.max(occurred_at),
         }
+    }
+
+    /// State whether the event is material (see [`Self::material`]).
+    pub fn with_material(mut self, material: bool) -> Self {
+        self.material = material;
+        self
     }
 
     pub fn with_direction(mut self, direction: f64) -> Self {
@@ -165,6 +186,7 @@ impl MarketEvent {
                     )
                     .with_direction(sentiment.effective())
                     .with_weight(item.evidential_weight())
+                    .with_material(sentiment.is_material())
                     .with_description(item.headline.clone()),
                 )
             })
@@ -219,6 +241,11 @@ impl MarketEvent {
             observation.series_id, observation.value, observation.unit
         ))
     }
+}
+
+/// The serde default for [`MarketEvent::material`].
+fn material_by_default() -> bool {
+    true
 }
 
 /// Events filtered by known-time, the only form a detection context carries.

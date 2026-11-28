@@ -72,6 +72,7 @@ use qip_contracts::sync::{
 };
 use qip_core::Clock;
 use qip_core::error::{Error, Result};
+use qip_core::time::Timestamp;
 use qip_edge::fencing::Fence;
 use qip_events::event_fabric::bindings;
 use qip_events::event_fabric::bindings::MARKET_EVENT_APPLIED;
@@ -928,7 +929,8 @@ struct HeldPartition {
 struct Held {
     first: u64,
     last: u64,
-    since: Instant,
+    /// When the first held line was taken, on [`LakeSink`]'s age clock.
+    since: Timestamp,
     bytes: usize,
     partitions: BTreeMap<PartitionKey, HeldPartition>,
 }
@@ -983,6 +985,15 @@ pub struct LakeSink {
     batching: Option<LakeBatching>,
     /// Lines taken and not yet sealed, under `batching`.
     held: Option<Held>,
+    /// The clock the age bound is read on: monotonic by default
+    /// ([`crate::scheduler::InstantClock`]), so a wall-clock step neither
+    /// seals early nor holds forever. It is a seam because the age bound
+    /// read `Instant::now()` directly: a test could only prove the bound by
+    /// sleeping past it, and on a loaded runner the step that took the lines
+    /// outlasted the bound itself and sealed before the test had looked
+    /// (`tests/lake_batching.rs::the_age_bound_seals_what_a_quiet_spool_left_held`
+    /// failed on PR #298 with "premise: held under both bounds").
+    age_clock: Arc<dyn Clock>,
     /// The last offset an interrupted seal covered, read back at restart.
     resume_through: Option<u64>,
 }
@@ -1040,6 +1051,9 @@ impl LakeSink {
             metrics: None,
             batching: None,
             held: None,
+            age_clock: Arc::new(crate::scheduler::InstantClock::anchored_at(
+                Timestamp::from_nanos(0),
+            )),
             resume_through: None,
         })
     }
@@ -1051,6 +1065,15 @@ impl LakeSink {
     #[must_use]
     pub fn with_batching(mut self, batching: LakeBatching) -> Self {
         self.batching = Some(batching);
+        self
+    }
+
+    /// Read the age bound on `clock` instead of the monotonic default. The
+    /// bound is then the time `clock` says passed since the first held line,
+    /// and nothing about how fast the process ran.
+    #[must_use]
+    pub fn with_age_clock(mut self, clock: Arc<dyn Clock>) -> Self {
+        self.age_clock = clock;
         self
     }
 
@@ -1315,10 +1338,11 @@ impl Sink for LakeSink {
         if by_partition.is_empty() {
             return Ok(());
         }
+        let taken_at = self.age_clock.now();
         let held = self.held.get_or_insert_with(|| Held {
             first: offset,
             last: offset,
-            since: Instant::now(),
+            since: taken_at,
             bytes: 0,
             partitions: BTreeMap::new(),
         });
@@ -1358,7 +1382,11 @@ impl Sink for LakeSink {
             // Re-draining after an interrupted seal: seal where it sealed,
             // whatever the bounds say now, so the segment ids match.
             Some(last) => held.last >= last,
-            None => held.bytes >= batching.max_bytes || held.since.elapsed() >= batching.max_age,
+            None => {
+                let max_age = i64::try_from(batching.max_age.as_nanos()).unwrap_or(i64::MAX);
+                held.bytes >= batching.max_bytes
+                    || self.age_clock.now().since(held.since).as_nanos() >= max_age
+            }
         }
     }
 

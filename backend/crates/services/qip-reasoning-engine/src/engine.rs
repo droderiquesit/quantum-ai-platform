@@ -165,6 +165,39 @@ impl ReasoningEngine {
 
     /// Form and review one hypothesis.
     pub fn reason(&mut self, input: SynthesisInput) -> Result<ReasoningOutcome> {
+        self.reason_withholding(input, &BTreeMap::new())
+    }
+
+    /// Form and review one hypothesis with the supporting evidence of every
+    /// origin in `withheld` at weight zero (R12-WORLD-3036): the self-model
+    /// read that producing component as unhealthy, stale, drifted or blind
+    /// for this thesis. See [`Hypothesis::form_withholding`]; the reasons
+    /// travel on the hypothesis as `withheld_origins`.
+    pub fn reason_withholding(
+        &mut self,
+        input: SynthesisInput,
+        withheld: &BTreeMap<String, String>,
+    ) -> Result<ReasoningOutcome> {
+        self.reason_weighing(input, &BTreeMap::new(), withheld, &BTreeMap::new())
+    }
+
+    /// [`Self::reason_withholding`], with two more readings of the self-model
+    /// for this thesis alone (R12-WORLD-3036).
+    ///
+    /// `caps` lowers an origin's factor to at most the figure given: the
+    /// kernel hands the detector's graded weight under the detector's name
+    /// (it is graded under its claim class, which the table handed at LEARN
+    /// is keyed by) and a blind spot's cap. A cap is applied as a minimum
+    /// with the factor already held, so it can never raise one. `blind` names
+    /// the origins read blind, with the reason, and travels on the hypothesis
+    /// as `blind_origins`.
+    pub fn reason_weighing(
+        &mut self,
+        input: SynthesisInput,
+        caps: &BTreeMap<String, f64>,
+        withheld: &BTreeMap<String, String>,
+        blind: &BTreeMap<String, String>,
+    ) -> Result<ReasoningOutcome> {
         if input.now < input.as_of {
             return Err(Error::invalid(format!(
                 "reasoning at {} for an as-of time of {}, which is in its future",
@@ -230,7 +263,29 @@ impl ReasoningEngine {
         };
         // Each origin's evidence scaled by what the self-model has measured
         // of it; the factors applied travel on the hypothesis.
-        let hypothesis = Hypothesis::form_with_factors(draft, &self.origin_factors)?;
+        let mut factors = self.origin_factors.clone();
+        for (origin, cap) in caps {
+            match factors.get_mut(origin) {
+                Some(held) => *held = held.min(*cap),
+                // An origin with no factor is at full weight already, so a
+                // cap at or above one records nothing it did not apply.
+                None if *cap < 1.0 => {
+                    factors.insert(origin.clone(), *cap);
+                }
+                None => {}
+            }
+        }
+        let mut hypothesis = Hypothesis::form_withholding(draft, &factors, withheld)?;
+        hypothesis.blind_origins = hypothesis
+            .evidence
+            .iter()
+            .filter(|item| item.signed_weight() > 0.0)
+            .filter_map(|item| {
+                blind
+                    .get(&item.origin)
+                    .map(|reason| (item.origin.clone(), reason.clone()))
+            })
+            .collect();
         // The seam: evidence has just become a belief, at the engine's own
         // clock. Recorded here and nowhere else, after the form succeeded,
         // so a refused draft leaves the belief state exactly as old as it
@@ -248,7 +303,6 @@ impl ReasoningEngine {
                 .review(&hypothesis, input.market_priced_in, input.now, &mut next_id);
         self.sequence += counter;
 
-        let mut hypothesis = hypothesis;
         hypothesis.apply_review(&review)?;
 
         Ok(ReasoningOutcome {

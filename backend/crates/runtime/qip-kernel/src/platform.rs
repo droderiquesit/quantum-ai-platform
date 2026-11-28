@@ -1305,6 +1305,39 @@ pub struct Platform {
     /// The contradictions recent reactions found against held causal edges,
     /// newest last and bounded by [`REACTION_CONTRADICTION_HISTORY`].
     reaction_contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
+    /// The reaction episodes recently measured and applied, newest last and
+    /// bounded by [`REACTION_CONTRADICTION_HISTORY`] (R12-WORLD-6015): one
+    /// per material event per horizon, each carrying every instrument whose
+    /// bar at that horizon had closed — the subject and the rest of the feed.
+    reaction_episodes: Vec<qip_world_model::reaction::ReactionEpisode>,
+    /// The instrument each world entity issues, as a news mention stated it
+    /// through a platform-minted [`IdentifierKind::Internal`] identifier
+    /// naming an instrument the universe holds (R12-WORLD-6015). A story or a
+    /// fundamental names a company; the bars name an instrument; without this
+    /// join a world event on the default feed paired with no bar. Bounded by
+    /// the universe: an identifier naming an instrument outside it is not
+    /// recorded.
+    ///
+    /// [`IdentifierKind::Internal`]: qip_financial::identifiers::IdentifierKind::Internal
+    entity_instruments: BTreeMap<String, String>,
+    /// Ticks as observed, per instrument, as `(instant, price)` and bounded
+    /// by [`SERIES_HISTORY`] like the bars beside them. The reaction loop
+    /// reads its shortest horizon from these (R12-WORLD-6015): the finest
+    /// resolution the feed carries, and a response readable before the bar
+    /// that holds it has closed.
+    tick_history: BTreeMap<String, Vec<(Timestamp, f64)>>,
+    /// Each macro series' past surprises, oldest first, bounded by
+    /// [`MACRO_SURPRISE_HISTORY`]: the history a release's surprise is judged
+    /// material against (`Self::macro_release_is_material`).
+    macro_surprises: BTreeMap<String, Vec<f64>>,
+    /// The `(event, horizon)` reactions a previous process applied and
+    /// journaled, read back at assembly by `Self::resume_world_reactions`.
+    /// Kept apart from `reactions_applied` because that set is pruned to the
+    /// events this process holds, and a feed that re-delivers an old event
+    /// after the first cycle would otherwise find its key pruned and apply the
+    /// reaction a second time. Never grows after assembly: it is bounded by
+    /// the records the log held when the process started.
+    reactions_resumed: BTreeSet<(String, usize)>,
     /// The synthetic future tree grown from the held world events and the
     /// bars they land on (R12-WORLD-9035), observed against each later bar.
     future_tree: Option<qip_twin::futures::FutureTree>,
@@ -1654,6 +1687,18 @@ const PROPOSAL_HISTORY: usize = 256;
 /// of than a coin, and the value of learning more before its horizon is
 /// worth pricing.
 pub const DECISION_UNCERTAINTY_FLOOR: f64 = 0.5;
+
+/// How old the newest bar the kernel has read may be before the self-model's
+/// health reading puts the feed row as stale (R12-WORLD-3036).
+///
+/// Decided in `docs/blueprint/owner-decisions-2026-11-23.md`, section
+/// "Figures decided on 2026-11-24", row R12-WORLD-3036: seven
+/// days, the self-model row's own horizon, outlasts any exchange holiday run a
+/// day-bar feed goes quiet over, so only a feed that has truly stopped reads
+/// stale. It only ever withholds evidence in
+/// REASON; it is deliberately not a row of `central_degradation`, so it moves
+/// no sizing multiplier.
+pub const FEED_HORIZON: Duration = Duration::from_days(7);
 
 /// A decision DECIDE sized on a conviction it was unsure of, as the deep
 /// brain's research sweep reads it (R12-AMBIENT-3104, blueprint §9.10):
@@ -3370,6 +3415,54 @@ const CAUSAL_CONTEXT_LIMIT: usize = 5;
 /// (R12-WORLD-6015). A cap, not a forecast: the record of what each did is on
 /// the edges themselves, which cite the reaction that weakened them.
 const REACTION_CONTRADICTION_HISTORY: usize = 256;
+
+/// The most past surprises kept per macro series for the materiality rule.
+const MACRO_SURPRISE_HISTORY: usize = 64;
+
+/// The fewest past surprises a macro series must hold before a release on
+/// it can be judged material: two is the least a standard deviation is
+/// defined on. A release on a series with less history is not material —
+/// the platform cannot say it surprised by its own standard, and refuses to
+/// guess (R12-WORLD-6015).
+///
+/// The figure is recorded in `docs/blueprint/owner-decisions-2026-11-23.md`,
+/// section "Figures decided on 2026-11-24", row R12-WORLD-6015.
+pub const MACRO_MATERIALITY_MIN_HISTORY: usize = 2;
+
+/// How many of its series' standard deviations a macro surprise must reach
+/// to be material (R12-WORLD-6015). One: the smallest rule that separates a
+/// release that surprised by the series' own standard from one that did not.
+/// Provisional, under the owner's 2026-11-23 instruction to decide.
+///
+/// The figure is recorded in `docs/blueprint/owner-decisions-2026-11-23.md`,
+/// section "Figures decided on 2026-11-24", row R12-WORLD-6015.
+pub const MACRO_MATERIALITY_SIGMAS: f64 = 1.0;
+
+/// The producer [`WorldReactionRecorded`] carries, and the discriminator its
+/// resume selects on beside the topic.
+const WORLD_REACTION_ORIGIN: &str = "kernel/world-reaction";
+
+/// One reaction episode the reaction loop applied to the causal graph, the
+/// event direction it was judged against, and every confidence change it
+/// caused (R12-WORLD-6015).
+///
+/// Written by `react_to_world_events` at the seam the episode is applied,
+/// and read back at assembly by `Platform::resume_world_reactions`, which
+/// re-applies each to the fresh graph in log order and marks it applied.
+/// Before this record the episodes lived only in memory: a restart lost
+/// every edge they had established or weakened, and a feed that re-delivered
+/// the events applied them a second time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorldReactionRecorded {
+    pub episode: qip_world_model::reaction::ReactionEpisode,
+    pub event_direction: f64,
+    pub contradictions: Vec<qip_world_model::granger::ReactionContradiction>,
+}
+
+impl EventBody for WorldReactionRecorded {
+    const TOPIC: Topic = Topic::WorldModelUpdated;
+    const SCHEMA_VERSION: u32 = 1;
+}
 
 /// The newest world events the future tree explores (R12-WORLD-9035). With
 /// the grid below each driver grows twelve branches, so 32 drivers and the
@@ -7187,6 +7280,11 @@ impl Platform {
             procedures_followed: Vec::new(),
             reactions_applied: BTreeSet::new(),
             reaction_contradictions: Vec::new(),
+            reaction_episodes: Vec::new(),
+            entity_instruments: BTreeMap::new(),
+            tick_history: BTreeMap::new(),
+            macro_surprises: BTreeMap::new(),
+            reactions_resumed: BTreeSet::new(),
             future_tree: None,
             future_drivers: BTreeSet::new(),
             future_observed_at: None,
@@ -7389,6 +7487,9 @@ impl Platform {
         // Each sized leg's thesis horizon and exit plan, so a resumed
         // position can state both (R12-ASSET-4067, R12-ASSET-4069).
         platform.resume_position_horizons()?;
+        // Each reaction episode a previous process applied to the causal
+        // graph, re-applied once in log order (R12-WORLD-6015).
+        platform.resume_world_reactions()?;
         // The desk's book is funded by the central treasury with the
         // platform's initial equity, and that funding is a financial fact the
         // ledger is the authority for (ADR 0123). Journaled once, so every
@@ -13311,7 +13412,17 @@ impl Platform {
         let mut problems = Vec::new();
         for evaluation in &evaluations {
             let charged = match Self::components_of(evaluation, &roster) {
-                Ok(components) => self.self_model.absorb(evaluation, &components),
+                Ok(components) => {
+                    let charged = self.self_model.absorb(evaluation, &components);
+                    // The sector the thesis was graded in, so a component
+                    // graded only elsewhere reads blind there (R12-WORLD-3036).
+                    if matches!(charged, Ok(n) if n > 0)
+                        && let Some(sector) = self.sector_of(&evaluation.subject)
+                    {
+                        self.self_model.note_graded_sector(&components, &sector);
+                    }
+                    charged
+                }
                 Err(error) => Err(error),
             };
             if let Err(error) = charged {
@@ -14319,6 +14430,16 @@ impl Platform {
                     // instant_true (when it happened) vs knowable_at (when we found out).
                     let known_at = tick.capture_time;
                     self.observe_publication_delay(&tick.venue, tick.at, known_at);
+                    // The reaction loop's shortest horizon (R12-WORLD-6015).
+                    // Statistics from here: a price as a float.
+                    let ticks = self
+                        .tick_history
+                        .entry(tick.object_id.as_str().to_string())
+                        .or_default();
+                    ticks.push((tick.at, tick.price.to_f64()));
+                    if ticks.len() > SERIES_HISTORY {
+                        ticks.drain(..ticks.len() - SERIES_HISTORY);
+                    }
                     self.world.update(|world| {
                         world.features_mut().record(
                             "close",
@@ -14422,6 +14543,7 @@ impl Platform {
                     let context = &self.context;
                     match self.world.update(|world| world.absorb_news(&item, context)) {
                         Ok(_) => {
+                            self.note_entity_instruments(&item);
                             for event in MarketEvent::from_news(&item) {
                                 self.push_market_event(event);
                             }
@@ -14445,7 +14567,15 @@ impl Platform {
                             surprise,
                         );
                     }
-                    self.push_market_event(MarketEvent::from_fundamental(&update));
+                    // Material by the world model's own threshold, the one
+                    // `absorb_fundamental` journals a change at, so the
+                    // reaction loop and the journal agree on which surprises
+                    // happened (R12-WORLD-6015).
+                    self.push_market_event(MarketEvent::from_fundamental(&update).with_material(
+                        update.is_significant_surprise(
+                            qip_world_model::MATERIAL_FUNDAMENTAL_SURPRISE,
+                        ),
+                    ));
                     absorbed += 1;
                 }
                 SensedRecord::Macro(observation) => {
@@ -14456,7 +14586,10 @@ impl Platform {
                     // used is the rate the log shows arriving.
                     self.absorb_interval_rate(&observation);
                     self.world.update(|world| world.absorb_macro(&observation));
-                    self.push_market_event(MarketEvent::from_macro(&observation));
+                    let material = self.macro_release_is_material(&observation);
+                    self.push_market_event(
+                        MarketEvent::from_macro(&observation).with_material(material),
+                    );
                     absorbed += 1;
                 }
                 SensedRecord::CorporateAction(action) => {
@@ -14771,30 +14904,153 @@ impl Platform {
         }
     }
 
-    /// Run one full pass through the loop.
-    ///
-    /// Never panics, never stops early. A stage that fails records its problem
-    /// and the cycle continues, because the learning stage is what would
-    /// eventually notice that a stage keeps failing.
-    ///
-    /// **One thing does stop it before it starts.** A cycle asked for as of an
-    /// instant earlier than one this platform has already reasoned at is
-    /// refused whole rather than run: see the `Platform::reasoned_through`
-    /// field for the leak that permits, and `Self::refuse_cycle_before` for
-    /// what the caller gets back. The refusal is not a stage failing — it is the
-    /// argument being wrong — so nothing is journalled, nothing is charged and
-    /// no state moves.
-    /// Pair each world event with the market's reaction at each of
+    /// Whether a macro release is material (R12-WORLD-6015): its surprise —
+    /// the print against consensus — reaches [`MACRO_MATERIALITY_SIGMAS`]
+    /// sample standard deviations of the series' own past surprises, of
+    /// which there must be at least [`MACRO_MATERIALITY_MIN_HISTORY`].
+    /// Records the surprise in that history either way; a revision, or a
+    /// release with no consensus, has no surprise and is neither material nor
+    /// recorded. A series whose past surprises do not vary has no standard
+    /// to surprise by and is not material.
+    fn macro_release_is_material(&mut self, observation: &MacroObservation) -> bool {
+        if observation.is_revision {
+            return false;
+        }
+        let Some(surprise) = observation.surprise().filter(|s| s.is_finite()) else {
+            return false;
+        };
+        let history = self
+            .macro_surprises
+            .entry(observation.series_id.clone())
+            .or_default();
+        let material = history.len() >= MACRO_MATERIALITY_MIN_HISTORY && {
+            let n = history.len() as f64;
+            let mean = history.iter().sum::<f64>() / n;
+            let variance = history.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / (n - 1.0);
+            let deviation = variance.sqrt();
+            deviation > 0.0 && surprise.abs() >= MACRO_MATERIALITY_SIGMAS * deviation
+        };
+        history.push(surprise);
+        if history.len() > MACRO_SURPRISE_HISTORY {
+            history.drain(..history.len() - MACRO_SURPRISE_HISTORY);
+        }
+        material
+    }
+
+    /// Rebuild the causal graph's reaction learning from the
+    /// [`WorldReactionRecorded`] records the log holds (R12-WORLD-6015):
+    /// each episode is re-applied once, in log order and at the instant it
+    /// was first applied, so the rebuilt graph is the one the previous
+    /// process left; each is marked resumed, so the reaction loop never
+    /// applies it again whatever the feed re-delivers; and the episodes and
+    /// the contradictions they journaled are restored, bounded as live ones
+    /// are. Returns how many records were read. A record that does not decode
+    /// stops assembly: skipping it would resume a graph the log says learnt
+    /// something it no longer holds.
+    fn resume_world_reactions(&mut self) -> Result<usize> {
+        let mut bodies = Vec::new();
+        for record in self.event_log.records() {
+            if record.event.lineage.producer != WORLD_REACTION_ORIGIN
+                || record.event.topic != WorldReactionRecorded::TOPIC
+            {
+                continue;
+            }
+            bodies.push(
+                StreamEnvelope::from_frame(&record.event)?
+                    .decode::<WorldReactionRecorded>()?
+                    .body,
+            );
+        }
+        let read = bodies.len();
+        for body in bodies {
+            let episode = body.episode;
+            self.world.update(|world| {
+                world.apply_reaction(
+                    &episode,
+                    body.event_direction,
+                    qip_world_model::causal::Mechanism::TemporalPrecedence,
+                    episode.recorded_at,
+                )
+            })?;
+            if let Some((event_id, horizon)) = episode.episode_id.rsplit_once('@')
+                && let Ok(horizon) = horizon.parse::<usize>()
+            {
+                self.reactions_resumed
+                    .insert((event_id.to_string(), horizon));
+            }
+            self.reaction_contradictions.extend(body.contradictions);
+            self.reaction_episodes.push(episode);
+        }
+        let excess = self
+            .reaction_contradictions
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_contradictions.drain(..excess);
+        let excess = self
+            .reaction_episodes
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_episodes.drain(..excess);
+        Ok(read)
+    }
+
+    /// Record, from a news item's mentions, which instrument each named
+    /// entity issues (see `entity_instruments`). A mention with no
+    /// entity, no internal identifier, or one naming an instrument outside
+    /// the universe adds nothing.
+    fn note_entity_instruments(&mut self, item: &qip_financial::intelligence::NewsItem) {
+        use qip_financial::identifiers::IdentifierKind;
+        for mention in &item.entities {
+            let (Some(entity), Some(object)) = (
+                mention.entity_id.as_deref(),
+                mention.identifiers.get(IdentifierKind::Internal),
+            ) else {
+                continue;
+            };
+            let listed = self
+                .market
+                .read()
+                .universe
+                .get(&ObjectId::from_string(object))
+                .is_some();
+            if listed {
+                self.entity_instruments
+                    .insert(entity.to_string(), object.to_string());
+            }
+        }
+    }
+
+    /// Pair each material world event with the market's reaction at each of
     /// [`qip_world_model::granger::REACTION_HORIZONS_BARS`] once enough bars
     /// have closed, and apply each reaction to the causal graph
     /// (R12-WORLD-6015): a reaction with no edge behind it establishes one,
     /// and one against a held edge lowers that edge's confidence and is kept
     /// in [`Self::reaction_contradictions`].
     ///
-    /// The move is the subject's close at the horizon against its last
-    /// close before the event, in basis points. An event whose subject has
-    /// no bar history, or whose weight is not a probability, is skipped with
-    /// a problem on the cycle; one whose horizon has not closed yet waits.
+    /// The event lands on its subject's bars, or — when the subject is a
+    /// company, as a story or a fundamental names one — on the bars of the
+    /// instrument it issues (`entity_instruments`). The response is
+    /// measured on **every** instrument with bars, not only that one: a
+    /// supplier's results move its customer, and an edge from the event's
+    /// class to the customer is the propagation the graph is for. Each
+    /// instrument's move is its close on its own horizon bar against its own
+    /// last close before the event, in basis points. "The event" is its
+    /// known-time, not its valid-time: a quarter's fundamental is true at the
+    /// period end and moves nothing until it is filed, so a move measured from
+    /// the period end would credit the filing with a quarter of drift. A
+    /// horizon waits until
+    /// the landing instrument's horizon bar has closed; an instrument whose
+    /// own horizon bar has not is left out of that episode rather than read
+    /// early. An event that is not material, has no direction, or lands on
+    /// nothing is skipped: a routine headline followed by noise is not
+    /// evidence about how the market reacts to news.
+    ///
+    /// Two rules here are figures nobody had stated until
+    /// `docs/blueprint/owner-decisions-2026-11-23.md`, section "Figures
+    /// decided on 2026-11-24", row R12-WORLD-6015, recorded them: a material
+    /// event is paired with every instrument the feed carries, and the
+    /// shortest horizon is read at the finest resolution the feed carries —
+    /// ticks where the landing instrument has any, bars where it has none.
     fn react_to_world_events(&mut self, now: Timestamp) {
         use qip_world_model::granger::REACTION_HORIZONS_BARS;
         use qip_world_model::reaction::ReactionEpisode;
@@ -14807,63 +15063,138 @@ impl Platform {
             .retain(|(event_id, _)| held.contains(event_id));
         let mut problems = Vec::new();
         let mut episodes: Vec<(ReactionEpisode, f64)> = Vec::new();
-        for event in &self.market_events {
-            if event.direction == 0.0 || event.known_at() > now {
-                continue;
-            }
-            let Some(bars) = self.bar_history.get(&event.subject) else {
-                continue;
-            };
-            let Some(first_after) = bars
-                .iter()
-                .position(|bar| bar.open_time >= event.occurred_at())
-            else {
-                continue;
-            };
-            let Some(base) = first_after
+        // An instrument's move at `horizon` bars after `at`: its close on the
+        // horizon bar against its last close before the event, in basis
+        // points, with the instant that bar closed. `None` where the
+        // instrument has no bar on one side of the event, or its horizon bar
+        // has not closed by `now`.
+        let bar_move = |bars: &[Bar], at: Timestamp, horizon: usize| -> Option<(Timestamp, f64)> {
+            let first_after = bars.iter().position(|bar| bar.open_time >= at)?;
+            let base = first_after
                 .checked_sub(1)
                 .and_then(|i| bars.get(i))
                 .map(|bar| bar.close.to_f64())
-                .filter(|c| *c > 0.0)
-            else {
+                .filter(|c| *c > 0.0)?;
+            let bar = bars.get(first_after + horizon.checked_sub(1)?)?;
+            if bar.close_time() > now {
+                return None;
+            }
+            // Statistics from here: a return in basis points.
+            let moved = (bar.close.to_f64() / base - 1.0) * 10_000.0;
+            moved.is_finite().then_some((bar.close_time(), moved))
+        };
+        // An instrument's move at the first tick after `at` against its last
+        // tick before it — the finest resolution the feed carries. A tick at
+        // the event's own instant is on neither side: the feed does not say
+        // whether it printed before or after the release.
+        let tick_move = |ticks: &[(Timestamp, f64)], at: Timestamp| -> Option<(Timestamp, f64)> {
+            let base = ticks
+                .iter()
+                .rev()
+                .find(|(t, _)| *t < at)
+                .map(|(_, p)| *p)
+                .filter(|p| *p > 0.0)?;
+            let (reacted_at, price) = ticks.iter().find(|(t, _)| *t > at)?;
+            // Statistics from here: a return in basis points.
+            let moved = (price / base - 1.0) * 10_000.0;
+            moved.is_finite().then_some((*reacted_at, moved))
+        };
+        let sign_of = |moved: f64| {
+            if moved > 0.0 {
+                1.0
+            } else if moved < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
+        let shortest = REACTION_HORIZONS_BARS.first().copied().unwrap_or(1);
+        for event in &self.market_events {
+            if !event.material || event.direction == 0.0 || event.known_at() > now {
                 continue;
+            }
+            // Where the event lands: its subject's own bars; the instrument a
+            // named company issues; or, for any other material event — a
+            // macro release, a series with no bars of its own, or a company
+            // that issues no instrument the feed carries — the first
+            // instrument in key order, which only gates and orders the
+            // episode. Every material event is paired with every instrument
+            // either way. Until 2026-11-24 the last arm was macro-only, so a
+            // material release by an unlisted company — Kestrel, one of the
+            // synthetic world's five, a supplier whose results move its
+            // listed customers — was skipped, and it is the first material
+            // company release `qip-fastbrain`'s committed feed publishes.
+            let landing = if self.bar_history.contains_key(&event.subject) {
+                event.subject.clone()
+            } else if let Some(object) = self.entity_instruments.get(&event.subject) {
+                object.clone()
+            } else {
+                match self.bar_history.keys().next() {
+                    Some(first) => first.clone(),
+                    None => continue,
+                }
             };
+            if !self.bar_history.contains_key(&landing) {
+                continue;
+            }
             for horizon in REACTION_HORIZONS_BARS {
-                if self
-                    .reactions_applied
-                    .contains(&(event.event_id.clone(), horizon))
-                {
+                let key = (event.event_id.clone(), horizon);
+                if self.reactions_applied.contains(&key) || self.reactions_resumed.contains(&key) {
                     continue;
                 }
-                let Some(bar) = bars.get(first_after + horizon - 1) else {
+                // The shortest horizon reads ticks where the landing
+                // instrument has any: the response before a bar has closed.
+                // A feed carrying only bars keeps bars.
+                let by_tick = horizon == shortest
+                    && self
+                        .tick_history
+                        .get(&landing)
+                        .is_some_and(|ticks| !ticks.is_empty());
+                let measure = |instrument: &str| -> Option<(Timestamp, f64)> {
+                    if by_tick {
+                        tick_move(self.tick_history.get(instrument)?, event.known_at())
+                    } else {
+                        bar_move(self.bar_history.get(instrument)?, event.known_at(), horizon)
+                    }
+                };
+                let Some((reacted_at, _)) = measure(&landing) else {
                     continue;
                 };
-                if bar.close_time() > now {
-                    continue;
+                // The landing instrument first, then the rest of the feed in
+                // key order, so the episode reads the same on a replay. An
+                // instrument not yet measurable at this horizon is left out
+                // rather than read early.
+                let mut responses = Vec::new();
+                let order = std::iter::once(landing.as_str()).chain(
+                    self.bar_history
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|key| *key != landing),
+                );
+                for instrument in order {
+                    if let Some((_, moved_bps)) = measure(instrument) {
+                        responses.push((instrument.to_string(), moved_bps, sign_of(moved_bps)));
+                    }
                 }
-                // Statistics from here: a return in basis points.
-                let moved_bps = (bar.close.to_f64() / base - 1.0) * 10_000.0;
-                let sign = if moved_bps > 0.0 {
-                    1.0
-                } else if moved_bps < 0.0 {
-                    -1.0
+                let span = if by_tick {
+                    "1 tick".to_string()
                 } else {
-                    0.0
+                    format!("{horizon} bar(s)")
                 };
                 match ReactionEpisode::new(
                     format!("{}@{horizon}", event.event_id),
                     event.class.clone(),
-                    event.occurred_at(),
-                    bar.close_time(),
-                    vec![(event.subject.clone(), moved_bps, sign)],
+                    event.known_at(),
+                    reacted_at,
+                    responses,
                     horizon,
                     event.weight,
-                    format!("{} over {horizon} bar(s)", event.description),
+                    format!("{} over {span}", event.description),
                     now,
                 ) {
                     Ok(episode) => episodes.push((episode, event.direction)),
                     Err(error) => problems.push(format!(
-                        "the reaction to {} over {horizon} bar(s) was not recorded: {}",
+                        "the reaction to {} over {span} was not recorded: {}",
                         event.event_id,
                         error.message()
                     )),
@@ -14871,6 +15202,7 @@ impl Platform {
             }
         }
         let mut contradictions = Vec::new();
+        let mut recorded = Vec::new();
         for (episode, direction) in episodes {
             let applied = self.world.update(|world| {
                 world.apply_reaction(
@@ -14888,7 +15220,25 @@ impl Platform {
                         self.reactions_applied
                             .insert((event_id.to_string(), horizon));
                     }
+                    // Journaled at the seam it is produced, with the
+                    // confidence changes it caused, so a restart rebuilds
+                    // the graph from the log rather than re-applying it to
+                    // whatever the feed re-delivers (`resume_world_reactions`).
+                    let record = WorldReactionRecorded {
+                        episode: episode.clone(),
+                        event_direction: direction,
+                        contradictions: outcome.contradicted.clone(),
+                    };
+                    if let Err(error) = self.journal_record(record, WORLD_REACTION_ORIGIN, now) {
+                        problems.push(format!(
+                            "the reaction {} was applied but not journaled: {}; a restart will \
+                             not rebuild it",
+                            episode.episode_id,
+                            error.message()
+                        ));
+                    }
                     contradictions.extend(outcome.contradicted);
+                    recorded.push(episode);
                 }
                 Err(error) => problems.push(format!(
                     "the reaction {} was not applied to the causal graph: {}",
@@ -14903,6 +15253,12 @@ impl Platform {
             .len()
             .saturating_sub(REACTION_CONTRADICTION_HISTORY);
         self.reaction_contradictions.drain(..excess);
+        self.reaction_episodes.extend(recorded);
+        let excess = self
+            .reaction_episodes
+            .len()
+            .saturating_sub(REACTION_CONTRADICTION_HISTORY);
+        self.reaction_episodes.drain(..excess);
         self.capture_problems.extend(problems);
     }
 
@@ -15103,6 +15459,58 @@ impl Platform {
         &self.reaction_contradictions
     }
 
+    /// The reaction episodes recent cycles measured and applied to the causal
+    /// graph, newest last (R12-WORLD-6015).
+    pub fn reaction_episodes(&self) -> &[qip_world_model::reaction::ReactionEpisode] {
+        &self.reaction_episodes
+    }
+
+    /// The sector the universe gives `object`, if it holds the object: the
+    /// column of the self-model's blind-spot cell (R12-WORLD-3036).
+    fn sector_of(&self, object: &str) -> Option<String> {
+        self.market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object.to_string()))
+            .map(|record| record.sector.as_str().to_string())
+    }
+
+    /// The asset class the universe gives `object`, if it holds the object.
+    fn asset_class_of(&self, object: &str) -> Option<String> {
+        self.market
+            .read()
+            .universe
+            .get(&ObjectId::from_string(object.to_string()))
+            .map(|record| record.asset_class.as_str().to_string())
+    }
+
+    /// Narrow the self-model's capability boundary to the asset classes the
+    /// feed actually serves now: the classes of the universe's instruments
+    /// whose newest bar closed within [`FEED_HORIZON`] of `now`
+    /// (R12-WORLD-3036). Served classes are a subset of the universe's, which
+    /// assembly declared, so this only narrows; a class whose bars stopped
+    /// arriving leaves the boundary, and REASON forms no thesis in it, even
+    /// while the series it left behind still raises anomalies.
+    fn observe_served_boundary(&mut self, now: Timestamp) {
+        let served: BTreeSet<String> = self
+            .bar_history
+            .iter()
+            .filter(|(_, bars)| {
+                bars.iter()
+                    .map(Bar::close_time)
+                    .max()
+                    .is_some_and(|close| now.since(close) <= FEED_HORIZON)
+            })
+            .filter_map(|(object, _)| self.asset_class_of(object))
+            .collect();
+        if let Err(error) = self.self_model.declare_boundary(served) {
+            self.capture_problems.push(format!(
+                "the self-model refused the served capability boundary: {}",
+                error.message()
+            ));
+        }
+    }
+
     /// Hand the self-model this cycle's operational health: whether the
     /// global kill switch is tripped, and every §6.2 row the centre reads as
     /// other than fresh (R12-WORLD-3036). Run after LEARN on every cycle,
@@ -15112,7 +15520,7 @@ impl Platform {
     /// one.
     fn observe_own_health(&mut self, now: Timestamp) {
         use qip_contracts::degradation::{Capability, Freshness};
-        let degraded = match self.central_degradation(now) {
+        let degraded: BTreeMap<Capability, Freshness> = match self.central_degradation(now) {
             Ok(state) => Capability::all()
                 .into_iter()
                 .map(|row| (row, state.freshness(row)))
@@ -15127,6 +15535,38 @@ impl Platform {
                 return;
             }
         };
+        let mut degraded = degraded;
+        // Central `Capability::Feed`, observed from the kernel's own reading
+        // of the feed: the age of the newest bar it has read against this
+        // cycle's clock. Into the health reading only, never into
+        // `central_degradation`, so it withholds evidence and narrows no size.
+        let newest_bar = self
+            .bar_history
+            .values()
+            .filter_map(|bars| bars.iter().map(Bar::close_time).max())
+            .max();
+        let feed = match newest_bar {
+            None => Some(Freshness::Unavailable),
+            Some(close) if now.since(close) > FEED_HORIZON => Some(Freshness::Stale),
+            Some(_) => None,
+        };
+        if let Some(freshness) = feed {
+            degraded.insert(Capability::Feed, freshness);
+        }
+        // The stale areas: each input whose own newest bar is past the
+        // horizon, though the feed as a whole may still be flowing.
+        let stale: Vec<(String, Timestamp)> = self
+            .bar_history
+            .iter()
+            .filter_map(|(object, bars)| {
+                bars.iter()
+                    .map(Bar::close_time)
+                    .max()
+                    .filter(|close| now.since(*close) > FEED_HORIZON)
+                    .map(|close| (object.clone(), close))
+            })
+            .collect();
+        self.self_model.observe_stale_inputs(stale);
         let health = qip_learning_engine::self_model::OperationalHealth {
             observed_at: now,
             halted: self.autonomy.kill_switch().is_globally_tripped(),
@@ -15140,6 +15580,19 @@ impl Platform {
         }
     }
 
+    /// Run one full pass through the loop.
+    ///
+    /// Never panics, never stops early. A stage that fails records its problem
+    /// and the cycle continues, because the learning stage is what would
+    /// eventually notice that a stage keeps failing.
+    ///
+    /// **One thing does stop it before it starts.** A cycle asked for as of an
+    /// instant earlier than one this platform has already reasoned at is
+    /// refused whole rather than run: see the `Platform::reasoned_through`
+    /// field for the leak that permits, and `Self::refuse_cycle_before` for
+    /// what the caller gets back. The refusal is not a stage failing — it is the
+    /// argument being wrong — so nothing is journalled, nothing is charged and
+    /// no state moves.
     pub fn run_cycle(&mut self, now: Timestamp) -> CycleReport {
         if now < self.reasoned_through {
             return self.refuse_cycle_before(now);
@@ -16444,6 +16897,16 @@ impl Platform {
         self.governor
             .signals_mut()
             .observe_distribution(&statistics.distribution_reading());
+        // R12-WORLD-3036 data drift: the same shifts, handed to the
+        // self-model, which reads an input at or past `INPUT_DRIFT_PSI` as
+        // drifted and REASON withholds the evidence produced from it.
+        self.self_model
+            .observe_input_drift(statistics.shifted.iter().map(|shift| {
+                (
+                    shift.object_id.clone(),
+                    shift.drift.population_stability_index,
+                )
+            }));
         let statistics_detail = if statistics.has_findings() {
             format!("; {}", statistics.describe())
         } else {
@@ -18481,6 +18944,11 @@ impl Platform {
     /// rise on a quiet cycle learns the same fact a day earlier than one who
     /// waits for the next opportunity to be refused eighteen times.
     fn stage_reason(&mut self, now: Timestamp, lineage: &Lineage) -> StageOutcome {
+        // R12-WORLD-3036: REASON reads the self-model as of now, not as of the
+        // last cycle's LEARN, so a halt or a feed that stopped since then is
+        // what this cycle's evidence is weighed against.
+        self.observe_own_health(now);
+        self.observe_served_boundary(now);
         // Coverage is of this cycle's REASON stage only (R12-REASON-3026).
         self.scopes_reported.clear();
         self.publish_scopes_reported();
@@ -19055,6 +19523,37 @@ impl Platform {
                         }
                     ),
                 );
+                if !reasoned.hypothesis.withheld_origins.is_empty() {
+                    let named: Vec<String> = reasoned
+                        .hypothesis
+                        .withheld_origins
+                        .iter()
+                        .map(|(origin, reason)| format!("{origin} ({reason})"))
+                        .collect();
+                    outcome.detail.push_str(&format!(
+                        "; self-model withheld the evidence of {}",
+                        named.join(", ")
+                    ));
+                }
+                if !reasoned.hypothesis.blind_origins.is_empty() {
+                    let named: Vec<String> = reasoned
+                        .hypothesis
+                        .blind_origins
+                        .iter()
+                        .map(|(origin, reason)| {
+                            match reasoned.hypothesis.origin_factors.get(origin) {
+                                Some(factor) => {
+                                    format!("{origin} ({reason}; weighed at {factor:.4})")
+                                }
+                                None => format!("{origin} ({reason}; ungraded, full weight)"),
+                            }
+                        })
+                        .collect();
+                    outcome.detail.push_str(&format!(
+                        "; self-model read a blind spot for {}",
+                        named.join(", ")
+                    ));
+                }
                 if matches!(predicted, Ok(false)) {
                     self.telemetry.metrics.count(
                         names::OPPORTUNITIES_UNPRICED,
@@ -22064,41 +22563,112 @@ impl Platform {
             .with_diagnosticity(anomaly.confidence().clamp(0.05, 0.95)),
         ]);
 
-        let outcome = self.reasoning.reason(SynthesisInput {
-            hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
-                "hyp-{}-{}",
-                self.cycle,
+        // R12-WORLD-3036: no thesis outside the capability boundary. A subject
+        // in an asset class the feed does not serve now is refused here, where
+        // the thesis would be formed, and taken off the queue so a refused
+        // head does not starve the served opportunities behind it. A subject
+        // the universe gives no class has no class to judge and is left to the
+        // rules that govern unlisted series.
+        if let Some(class) = self.asset_class_of(subject.as_str())
+            && self.self_model.boundary_of(&class)
+                == qip_learning_engine::self_model::BoundaryReading::Outside
+        {
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "outside_capability_boundary")]),
+            );
+            self.queue
+                .retain(|queued| queued.opportunity_id != opportunity.opportunity_id);
+            return Err(Error::denied(format!(
+                "no thesis was formed on {}: its asset class {class} lies outside the capability \
+                 boundary the feed serves; it re-enters once a bar in that class arrives",
                 subject.as_str()
-            )),
-            opportunity_id: Some(opportunity.opportunity_id.clone()),
-            as_of: now,
-            now,
-            class: anomaly.kind.as_str().to_string(),
-            claim,
-            statement: opportunity.headline.clone(),
-            subjects: opportunity.affected_objects.clone(),
-            chain,
-            findings: report.findings.clone(),
-            direct_evidence: direct,
-            // The base rate for a detector firing and the move persisting.
-            // Deliberately below a coin flip: most anomalies are noise, and a
-            // prior chosen to suit the conclusion is not a prior.
-            prior: 0.25,
-            // Anomaly detection reasoning is epistemic: uncertainty about whether
-            // the pattern is real or noise, which could be resolved by more
-            // observation, rather than inherent randomness (aleatoric).
-            uncertainty_type: qip_reasoning_engine::UncertaintyType::Epistemic,
-            falsifiers: vec![format!(
-                "{} reverts inside one standard deviation within the horizon",
-                anomaly.subject
-            )],
-            leading_alternative:
-                "the anomaly is a data artefact or a known event the market has already priced"
-                    .to_string(),
-            horizon: opportunity.horizon,
-            market_priced_in: None,
-            models: Vec::new(),
-        })?;
+            )));
+        }
+        // R12-WORLD-3036: the self-model's reading of each producing
+        // component for this thesis. Unhealthy, stale or drifted withholds
+        // that origin's supporting evidence (weight 0); a blind spot caps it
+        // at what grading gives. Read here, where the thesis is formed, and
+        // nowhere near sizing or a limit.
+        let sector = self.sector_of(subject.as_str());
+        let origins: BTreeSet<&str> = std::iter::once(anomaly.detector.as_str())
+            .chain(report.findings.iter().map(|f| f.agent_id.as_str()))
+            .collect();
+        let withheld = self.self_model.withheld_origins(origins, subject.as_str());
+        // Each origin beside the component LEARN grades it under. The
+        // detector is charged under the claim class it raised (`components_of`
+        // keys it by `evaluation.class`, the anomaly kind) while its evidence
+        // travels under the detector's own name, so the factor table handed
+        // at LEARN, keyed by component id, never named the detector's
+        // evidence: a detector graded wrong sixty times was weighed at full
+        // weight in every thesis it raised. Its graded weight is handed here
+        // under the name its evidence carries. A cap only ever lowers.
+        let mut producers: Vec<(String, ComponentKey)> = Vec::new();
+        if let Ok(key) = ComponentKey::detector(anomaly.kind.as_str()) {
+            producers.push((anomaly.detector.clone(), key));
+        }
+        for finding in &report.findings {
+            if let Ok(key) = ComponentKey::analyst(finding.agent_id.as_str()) {
+                producers.push((finding.agent_id.clone(), key));
+            }
+        }
+        let mut caps: BTreeMap<String, f64> = BTreeMap::new();
+        let mut blind: BTreeMap<String, String> = BTreeMap::new();
+        for (origin, key) in &producers {
+            let mut cap = self.self_model.factor(key);
+            if let Some(spot) = sector
+                .as_deref()
+                .and_then(|sector| self.self_model.blind_spot(key, sector))
+            {
+                cap = Some(cap.map_or(spot.weight, |held| held.min(spot.weight)));
+                blind.insert(origin.clone(), spot.reason);
+            }
+            if let Some(cap) = cap {
+                caps.entry(origin.clone())
+                    .and_modify(|held: &mut f64| *held = held.min(cap))
+                    .or_insert(cap);
+            }
+        }
+        let outcome = self.reasoning.reason_weighing(
+            SynthesisInput {
+                hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
+                    "hyp-{}-{}",
+                    self.cycle,
+                    subject.as_str()
+                )),
+                opportunity_id: Some(opportunity.opportunity_id.clone()),
+                as_of: now,
+                now,
+                class: anomaly.kind.as_str().to_string(),
+                claim,
+                statement: opportunity.headline.clone(),
+                subjects: opportunity.affected_objects.clone(),
+                chain,
+                findings: report.findings.clone(),
+                direct_evidence: direct,
+                // The base rate for a detector firing and the move persisting.
+                // Deliberately below a coin flip: most anomalies are noise, and a
+                // prior chosen to suit the conclusion is not a prior.
+                prior: 0.25,
+                // Anomaly detection reasoning is epistemic: uncertainty about whether
+                // the pattern is real or noise, which could be resolved by more
+                // observation, rather than inherent randomness (aleatoric).
+                uncertainty_type: qip_reasoning_engine::UncertaintyType::Epistemic,
+                falsifiers: vec![format!(
+                    "{} reverts inside one standard deviation within the horizon",
+                    anomaly.subject
+                )],
+                leading_alternative:
+                    "the anomaly is a data artefact or a known event the market has already priced"
+                        .to_string(),
+                horizon: opportunity.horizon,
+                market_priced_in: None,
+                models: Vec::new(),
+            },
+            &caps,
+            &withheld,
+            &blind,
+        )?;
         Ok(Some(outcome))
     }
 
@@ -40792,6 +41362,76 @@ mod self_model_tests {
         let contraction = reliability_contraction(&graded)
             .expect("a worse-than-chance detector contracted nothing");
         assert!(contraction.multiplier < Decimal::ONE, "{contraction:?}");
+    }
+
+    /// R12-WORLD-3036, the keying: a detector is graded under the claim
+    /// class it raised, while its evidence travels under the detector's own
+    /// name, so the factor table LEARN hands REASON (keyed by component id)
+    /// never named the detector's evidence, and a detector graded wrong a
+    /// dozen times was weighed at full weight in every thesis it raised.
+    /// The same tape is reasoned twice; the second platform's self-model has
+    /// graded the detector's class wrong thirteen times and holds the table
+    /// LEARN would have handed over.
+    ///
+    /// Mutation: drop the detector from `producers` in `synthesise` -- the
+    /// graded thesis forms at the ungraded confidence and the first
+    /// assertion after the premises fails.
+    #[test]
+    fn reason_weighs_a_detectors_evidence_by_the_grade_of_the_class_it_is_charged_under() {
+        use qip_learning_engine::self_model::{MINIMUM_SAMPLE, ScoredOutcome};
+
+        let mut probe = reasoning_platform();
+        probe.observe(tape());
+        probe.run_cycle(start());
+        let claim = probe.predictions()[0]
+            .claim
+            .clone()
+            .expect("premise: the tape formed a claim");
+        let ungraded = claim.confidence;
+
+        let mut graded = reasoning_platform();
+        let key = ComponentKey::detector(&claim.class).expect("a detector key");
+        for n in 0..=MINIMUM_SAMPLE + 2 {
+            graded.self_model.record(
+                key.clone(),
+                ScoredOutcome::new(format!("past-{n}"), 0.9, false, start())
+                    .expect("a probability"),
+            );
+        }
+        let factor = graded
+            .self_model
+            .factor(&key)
+            .expect("premise: thirteen outcomes clear the minimum sample");
+        assert!(factor < 0.35, "premise: thirteen misses leave {factor}");
+        // The table LEARN hands over, keyed by the class.
+        graded
+            .reasoning
+            .set_origin_factors(graded.self_model.origin_factors());
+        assert_eq!(
+            graded
+                .reasoning
+                .origin_factors()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![claim.class.clone()],
+            "premise: the handed table names the detector's class and nothing else"
+        );
+        graded.observe(tape());
+        graded.run_cycle(start());
+        let formed = graded
+            .predictions()
+            .first()
+            .and_then(|p| p.claim.clone())
+            .expect("premise: the graded platform formed the same claim");
+        assert_eq!(formed.class, claim.class, "premise: the same class");
+        assert!(
+            formed.confidence < ungraded,
+            "the detector graded at {factor} under {} was weighed at full weight: {} against the \
+             ungraded {ungraded}",
+            claim.class,
+            formed.confidence
+        );
     }
 
     #[test]
