@@ -164,6 +164,56 @@ lifting one:
 - **The hold only restricts.** It holds or rolls back a model. It never
   promotes or reinstates one.
 
+### 7. R12-MODEL-6074: the tolerance for a candidate miscalibrated under stress or regime shift
+
+ADR 0392, which is accepted, leaves this calibration tolerance to the owner.
+It is judged only once the owner gives one. The owner gave it on 2026-11-28
+through the delegation quoted at the top of this file, and this decision
+supplies it. It does not amend ADR 0392.
+
+- **Decision: the tolerance.** A regression candidate is miscalibrated in a
+  regime when its empirical coverage of the `CONFORMAL_ALPHA` interval on
+  that regime's holdout rows falls below the nominal `1 - CONFORMAL_ALPHA`
+  by more than `1.645 x sqrt(alpha x (1 - alpha) / n)`, where `n` is the
+  number of those rows. The figure 1.645 is the one-sided 95% binomial
+  sampling tolerance. Coverage is measured on rows later than the ones the
+  interval was calibrated on, because coverage on the calibration rows
+  always passes.
+- **Decision: the row floor.** It is 25 rows: the smallest `n` at which
+  that tolerance is below the nominal miss rate `alpha` (0.1) itself.
+  - **At entry**, a candidate with fewer than 25 rows in the regime it
+    claims is refused.
+  - **In a shadow round**, a stressed or shifted round with fewer than 25
+    rows is lost, not scored. A round cannot be won on rows too few to
+    measure.
+- **Decision: what counts as a regime shift.** A shift is any holdout
+  regime that differs from the regime the candidate's training window was
+  judged in, not only a regime labelled stressed. Shifted rows face the
+  same tolerance and the same floor as stressed ones.
+- **Why.** Each figure follows from the sampling arithmetic and from
+  `CONFORMAL_ALPHA`, which the platform already states. Each one only
+  refuses or loses a candidate. None of them lowers the skill bar or any
+  existing promotion test.
+
+### 8. R12-TICK-2074: a publication delay on the synthetic feed, and the probe's time scale
+
+- **Decision: the publication delay.** The synthetic feed stamps every
+  tick and bar with a publication delay of one fast-brain cadence:
+  `capture_time = at + DEFAULT_CYCLE_INTERVAL`, which is 100 ms,
+  `qip-fastbrain` `config.rs`. This is synthetic data, labelled synthetic.
+- **Why.** A delay of zero makes the delayed-feed condition vacuous on the
+  feed a deployed node reads. One cadence is the smallest delay that a
+  running node can observe: the value lands one cycle after it was true.
+- **Decision: the capacity probe's time scale.** The probe's step is the
+  lower edge of the latency band calibrated from `run_cycle`'s measured
+  samples, with a floor of 1 microsecond and at most 32 steps. Per-step
+  volatility is rescaled from the daily estimate by the square root of the
+  step's share of a trading day. A series with no bars is read as daily.
+- **Why.** Each arrival must cross a step, or a measured latency moves
+  nothing. The square-root rescaling keeps per-step volatility consistent
+  with the daily figure it comes from. This is simulation arithmetic, not
+  a risk limit or a sizing figure.
+
 ## Not decided here
 
 - **R12-RISK-3022: the central plane's gated halt through `qip-api`'s
