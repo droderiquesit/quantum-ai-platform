@@ -263,3 +263,42 @@ The gap leaves these to build:
 Read the full gap and requirement: the requirement names digital twins, agent simulations and counterfactual
 worlds beside scenario generation. Gates add: the whole `qip-kernel`, `qip-simulation-engine` and
 `qip-deepbrain` suites, and `qip-acceptance` `event_fabric_schema_lock`.
+
+## Task: the default cycle opens a paper position (decision 9, ADR number 0754). Branch: wave1128-default-cycle-acts
+
+This task has no register row of its own. It removes a blocker that many rows share, and it governs R12-DATA-2025.
+Owner decision 9 in `docs/blueprint/owner-decisions-2026-11-28.md` governs it.
+
+**The problem.** On committed configuration the default cycle never acts: `data/datasets/universe.json`,
+`PlatformConfig::default`, the shipped limits, and the synthetic feed the fast brain reads (`Feed::synthetic` ->
+`qip-market-ingestion` synthetic environment). A 900-cycle probe at 300-second steps counted 0 `OrderProposed`,
+0 `OrderFilled` and 0 `SourceAlphaScored`. REASON rejected every thesis at confidence 0.12 to 0.31, against the
+0.5 it requires.
+
+**What to build.**
+1. Reproduce the probe. Measure, cycle by cycle, which stage stops a thesis and at what values. Record the
+   measurement.
+2. Give the synthetic market feed a stated, labelled signal strength. That means a persistent per-instrument
+   return component, such as a drift or an autocorrelated term, in the synthetic environment's
+   `EnvironmentConfig::default`. Use the smallest value at which the default cycle, on the committed universe, with
+   the shipped limits, at the committed seed and the fast brain's committed cadence and step:
+   - forms at least one thesis above the EXISTING 0.5 bar; and
+   - has the paper desk open at least one position within the first 1,000 cycles.
+
+   Measure that value and record it under decision 9 with the measurement.
+3. Never lower the 0.5 bar. Never relax, reorder or skip any limit, refusal, gate or kill switch. Every position is
+   a paper position through the existing ACT path. If no feed strength alone makes the cycle act, find what else
+   blocks it and report it in those words. Build nothing that eases a control.
+4. Prove it with a test through the deployed path (`qip-fastbrain` `node::step` or `Platform::run_cycle` on
+   committed configuration). The test asserts its premise: the same run with the signal at zero opens nothing. It
+   asserts that a position was opened through ACT, and that the order carried every gate's record. Mutation-verify
+   it.
+5. The change will move tests that pinned the old feed. One example is `qip-fastbrain` `tests/tape.rs`, which
+   asserts zero fills on the committed tape; the tape is a different source, so check whether it moves at all. Fix
+   each moved test honestly: say why its expectation changed, and never weaken an assertion about a limit, a
+   refusal or the paper boundary.
+
+Gates: the whole `qip-market-ingestion`, `qip-kernel`, `qip-fastbrain` (`tests/tape.rs` included), `qip-deepbrain`,
+`qip-api`, `qip-cli` and `qip-web` suites, and the whole `qip-acceptance` crate (`vertical_slice_decide`,
+`paper_boundary`, `compliance_proof` and `security` included). State in the commit that the paper boundary is
+intact, naming its three layers.
