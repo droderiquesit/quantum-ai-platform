@@ -107,8 +107,8 @@ lifting one:
   so a file log would exhaust the same 2 GiB.
 - **Said out loud.** On memory storage, the fast brain's log no longer
   replays from genesis. It replays from the most recent checkpoint. That
-  log never survived a restart anyway, and the deep brain's durable record
-  is untouched.
+  log never survived a restart anyway. No durable record changes: the deep
+  brain's committed storage target is also `memory`.
 - **ADR required.** The change to `replay_journal` is recorded in a
   Proposed ADR before it lands.
 
