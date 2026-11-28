@@ -615,16 +615,24 @@ fn thesis_confidence(platform: &Platform, report: &qip_kernel::cycle::CycleRepor
         .unwrap_or_else(|| panic!("no thesis was written:\n{}", report.summarise()))
 }
 
-/// The failure this guards: the self-model read the platform as halted and
-/// REASON weighed every detector and analyst at its graded weight anyway, so
-/// a thesis formed while the kill switch was tripped carried the same
-/// confidence as one formed on a healthy platform.
+/// The failure this guards: a tripped kill switch was read by the self-model
+/// as a reason to withhold every producing component's evidence in REASON.
+/// The switch already halts trading at ACT, which refuses the order and
+/// journals the refusal under the `kill-switch` gate. Withholding as well
+/// lowered the thesis below the review's bar, so ACT met no proposal, the
+/// record named no halt, and `qip-acceptance`
+/// `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades`
+/// found no `kill-switch` refusal: the log blamed the evidence for a halt the
+/// operator called.
 ///
-/// Mutation: drop the `health.halted` arm in `SelfModel::shared_withholding`
-/// -- the halted cycle withholds nothing and the confidence matches the
-/// healthy one.
+/// So the halt is read and recorded on the self-model's health, and the
+/// evidence is weighed exactly as on a healthy platform.
+///
+/// Mutation: restore a `health.halted` arm in `SelfModel::shared_withholding`
+/// -- the halted cycle withholds every origin and its confidence falls below
+/// the healthy one.
 #[test]
-fn a_tripped_kill_switch_withholds_every_producing_components_evidence_in_reason() -> Result<()> {
+fn a_tripped_kill_switch_is_read_as_unhealthy_but_withholds_no_evidence_in_reason() -> Result<()> {
     let mut healthy = platform()?;
     healthy.observe(bars("AAA", 120));
     let healthy_report = healthy.run_cycle(start());
@@ -640,19 +648,26 @@ fn a_tripped_kill_switch_withholds_every_producing_components_evidence_in_reason
     halted.autonomy_mut().kill_switch_mut().trip_global(
         start(),
         "operator",
-        "a halt REASON must weigh".to_string(),
+        "a halt the self-model must record".to_string(),
     );
     let halted_report = halted.run_cycle(start());
+    let health = halted
+        .self_model()
+        .health()
+        .expect("the cycle observed the platform's health");
+    assert!(
+        health.halted && !health.is_healthy(),
+        "the self-model did not record the halt: {health:?}"
+    );
     let detail = reason_detail(&halted_report);
     assert!(
-        detail.contains("self-model withheld the evidence of")
-            && detail.contains("(unhealthy: the kill switch was tripped)"),
-        "a halted platform weighed its components as healthy: {detail}"
+        !detail.contains("self-model withheld") && !detail.contains("kill switch"),
+        "a halt withheld evidence REASON should have weighed: {detail}"
     );
     let halted_confidence = thesis_confidence(&halted, &halted_report);
     assert!(
-        halted_confidence < healthy_confidence,
-        "withholding did not lower the confidence: halted {halted_confidence} vs healthy \
+        approx_eq(halted_confidence, healthy_confidence, 1e-12),
+        "the halt changed the weight of the evidence: halted {halted_confidence} vs healthy \
          {healthy_confidence}"
     );
     Ok(())
