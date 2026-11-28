@@ -213,6 +213,27 @@ resource. A later owner figure replaces any of them without an ADR.
 | R12-WORLD-3036 | A blind spot is a (component, sector) cell with no graded resolved thesis, for a component graded elsewhere | the self-model | The committed universe holds one asset class across five sectors. A (component, asset class) cell would never fire on committed configuration; a sector cell does |
 | R12-WORLD-3036 | The capability boundary is the asset classes the feed serves with fresh bars, and REASON refuses a thesis outside it | the self-model's boundary and REASON | A boundary drawn from the registry, or from the whole universe, bounds nothing |
 
+## Figures decided on 2026-11-28 under the same instruction
+
+R12-WORLD-1181. Each is provisional, restrictive and recorded where the code
+reads it. None is a risk limit, a sizing budget, a payment or a deployed
+resource, and none raises a weight or relaxes a limit. A later owner figure
+replaces any of them without an ADR.
+
+| Row | Decision | Where it is stated | Why |
+|---|---|---|---|
+| R12-WORLD-1181 | A recorded `ViewContradiction` on an instrument's next close holds any thesis REASON forms on that instrument, that cycle, to a confidence of at most 0.5 (even odds) | `qip-kernel` `federation_stage.rs`, `CONTRADICTED_CONFIDENCE_CAP`; applied in `Platform`'s REASON beside the outside prior | With one member past the margin for the outcome and one past it against, the federation cannot say which way that question goes, so a thesis resting on it may not claim more than a coin. It only lowers a confidence. On the shipped tape it binds: the best thesis (MRDN, cycle 370) was reached at 0.7562 and held to 0.50, and was still approved |
+| R12-WORLD-1181 | Each contradiction journals an information request naming its two members, in the same review, checked on replay | `FederationReview::contradiction_requests`, `contradiction_request` | The restrictive reading of "request information": the record says which two claims disagree and asks which is right. The field is left out of a record when empty, so a pass with no contradiction journals no more than before |
+| R12-WORLD-1181 | `CONTRADICTION_MARGIN` stays 0.1 | `federation_stage.rs` | Measured on the committed demonstration tape (`qip-fastbrain` `tests/contradiction.rs`), which the fast brain reads only when `QIP_FASTBRAIN_TAPE_PATH` is set. No committed configuration sets it, so a deployed fast brain reads `Feed::synthetic` and this measurement does not describe that feed (corrected 2026-11-28 after review): 600 reviews, 5,324 arbitrations, 2,320 with opposed views, every one at an opposition depth of at least 0.2 (one in [0.200, 0.225), the rest from 0.25, 1,421 at 0.5) and 2,320 contradictions recorded. No opposed pair sits in [0, 0.2), so 0.1 sits inside an empty band and separates the opposed pairs from near-even noise. The test compares the recorded contradictions with the same most-for/most-against rule, so it passes for any margin in [0, 0.2); it pins the tape's empty band, not the margin |
+
+On the same tape every instrument arbitration is a contradiction (2,320 of
+2,320), so the cap applies to every thesis on that feed. In every case read
+while this was built the member on the far side was a scenario or
+counterfactual member (`markets.stress-world.global.macro`,
+`markets.alternate-future.global.macro`). Whether such a member's view should
+count toward a contradiction at all is an owner question this file does not
+decide.
+
 ## What this file does not do
 
 - **No register row is regraded by this file.** Acceptance removes the one

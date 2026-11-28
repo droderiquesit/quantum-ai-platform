@@ -610,6 +610,7 @@ mod tests {
 
     fn score(venue: &str, error_bps: Option<f64>, n: usize) -> FillScore {
         FillScore {
+            models: None,
             order_id: OrderId::from_string(format!("order-{venue}-{n}")),
             object_id: ObjectId::from_string(format!("obj-{n}")),
             venue: venue.to_string(),

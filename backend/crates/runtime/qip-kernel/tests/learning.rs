@@ -4628,3 +4628,209 @@ fn the_training_export_holds_the_declined_path_and_the_fill_one_cycle_priced() -
     );
     Ok(())
 }
+
+// --- counterfactual scores keyed by model (R12-MODEL-4025) ------------------
+
+/// Submit one order on `symbol` expressing `hypothesis`, returning its id and
+/// whether it was accepted.
+fn submit_expressing(
+    platform: &mut Platform,
+    symbol: &str,
+    quantity: Decimal,
+    proposal: &str,
+    hypothesis: &str,
+    at: Timestamp,
+) -> (OrderId, bool) {
+    let order = platform.order_from(
+        object(symbol),
+        Side::Buy,
+        quantity,
+        dec!("100"),
+        proposal,
+        vec![hypothesis.to_string()],
+        at,
+    );
+    let order_id = order.order_id.clone();
+    let accepted = platform.submit_order(order, at).is_ok();
+    (order_id, accepted)
+}
+
+#[test]
+fn a_fill_and_a_refusal_a_model_shaped_are_scored_with_that_model_and_read_back_keyed_by_it()
+-> Result<()> {
+    // The failure this guards (R12-MODEL-4025, ADR 0148 decision 4): a
+    // FillScore carried order, venue and instrument and no model, so no
+    // counterfactual score could be charged to the model whose output shaped
+    // the trade, and nothing a model hold could ever read existed. The chain
+    // is hypothesis lineage -> the order's release stamp -> the score, and
+    // each link is checked here through `run_cycle`'s LEARN stage on the
+    // committed default configuration. Only `model:` forecasters are copied;
+    // an order whose hypothesis has no lineage scores `None` (unknown), never
+    // an empty or guessed set.
+    use qip_kernel::attribution::HypothesisLineage;
+
+    let mut platform = platform()?;
+    for symbol in ["AAA", "BBB"] {
+        platform.observe(flat_bars_after(
+            symbol,
+            start().saturating_sub(Duration::from_days(91)),
+            90,
+            100.0,
+        ));
+    }
+    let lineage = |forecasters: &[&str]| HypothesisLineage {
+        forecasters: forecasters.iter().map(|f| f.to_string()).collect(),
+        evidence_sources: vec!["market.bar".to_string()],
+    };
+    platform.attribution_lineage_mut().note_lineage(
+        "hyp-modelled",
+        lineage(&["analyst:skeptic", "detector:momentum", "model:ridge@3"]),
+    );
+    platform.attribution_lineage_mut().note_lineage(
+        "hyp-plain",
+        lineage(&["analyst:skeptic", "detector:momentum"]),
+    );
+
+    let (modelled, ok) = submit_expressing(
+        &mut platform,
+        "AAA",
+        dec!("100"),
+        "prop-modelled",
+        "hyp-modelled",
+        start(),
+    );
+    assert!(ok, "the premise failed: the modelled order was refused");
+    let (plain, ok) = submit_expressing(
+        &mut platform,
+        "BBB",
+        dec!("100"),
+        "prop-plain",
+        "hyp-plain",
+        start(),
+    );
+    assert!(ok, "the premise failed: the plain order was refused");
+    let (unknown, ok) = submit_expressing(
+        &mut platform,
+        "AAA",
+        dec!("100"),
+        "prop-unknown",
+        "hyp-never-formed",
+        start(),
+    );
+    assert!(
+        ok,
+        "the premise failed: the unknown-lineage order was refused"
+    );
+    // Far past the position-weight limit, so it is refused by a rule.
+    let (refused, ok) = submit_expressing(
+        &mut platform,
+        "BBB",
+        dec!("1000000"),
+        "prop-refused-modelled",
+        "hyp-modelled",
+        start(),
+    );
+    assert!(!ok, "the premise failed: the oversized order was accepted");
+    let (refused_unknown, ok) = submit_expressing(
+        &mut platform,
+        "AAA",
+        dec!("1000000"),
+        "prop-refused-unknown",
+        "hyp-never-formed",
+        start(),
+    );
+    assert!(
+        !ok,
+        "the premise failed: the second oversized order was accepted"
+    );
+
+    // Premise: three fills and two refusals wait, nothing is priced yet.
+    assert_eq!(platform.filled_awaiting_score(), 3);
+    assert_eq!(platform.declined_awaiting_score(), 2);
+    assert!(platform.fill_scores().is_empty());
+    assert!(platform.declined_scores().is_empty());
+    assert!(platform.counterfactual_by_model().is_empty());
+
+    for symbol in ["AAA", "BBB"] {
+        platform.observe(flat_bars_after(symbol, start(), 5, 100.0));
+    }
+    platform.run_cycle(start().saturating_add(Duration::from_days(3)));
+
+    let fill = |id: &OrderId| {
+        platform
+            .fill_scores()
+            .iter()
+            .find(|score| &score.order_id == id)
+            .cloned()
+            .expect("the fill was priced")
+    };
+    let modelled_score = fill(&modelled);
+    assert_eq!(
+        modelled_score.models,
+        Some(vec!["ridge@3".to_string()]),
+        "the modelled fill is not scored with exactly its model"
+    );
+    assert_eq!(
+        fill(&plain).models,
+        Some(Vec::new()),
+        "a fill no model shaped must read as known-and-none"
+    );
+    assert_eq!(
+        fill(&unknown).models,
+        None,
+        "a fill whose hypothesis had no lineage must read as unknown"
+    );
+    let declined = platform
+        .declined_scores()
+        .iter()
+        .find(|score| score.order_id == refused)
+        .cloned()
+        .expect("the refusal was priced");
+    assert_eq!(declined.models, Some(vec!["ridge@3".to_string()]));
+    let declined_unknown = platform
+        .declined_scores()
+        .iter()
+        .find(|score| score.order_id == refused_unknown)
+        .cloned()
+        .expect("the second refusal was priced");
+    assert_eq!(
+        declined_unknown.models, None,
+        "a refusal whose hypothesis had no lineage must read as unknown"
+    );
+
+    // Keyed by model: only `ridge@3`, carrying exactly the one fill and the
+    // one refusal it shaped, and no detector or analyst key.
+    let by_model = platform.counterfactual_by_model();
+    assert_eq!(
+        by_model.keys().cloned().collect::<Vec<_>>(),
+        vec!["ridge@3".to_string()]
+    );
+    let ridge = by_model["ridge@3"];
+    assert_eq!((ridge.fills_scored, ridge.declined_scored), (1, 1));
+    assert_eq!(
+        ridge.fills_smaller_favoured,
+        usize::from(modelled_score.smaller_favoured)
+    );
+    assert_eq!(ridge.declined_regrets, usize::from(declined.regret));
+
+    // Journaled so it replays: the cycle's sealed counterfactual record
+    // carries the same model reference on the same fill.
+    let entries = platform.journal_entries()?;
+    let journaled = entries
+        .last()
+        .and_then(|entry| entry.counterfactuals.as_ref())
+        .expect("the pricing cycle journals its counterfactuals");
+    let sealed = journaled
+        .fill_outcomes
+        .iter()
+        .find(|score| score.order_id == modelled)
+        .expect("the modelled fill is in the sealed record");
+    assert_eq!(sealed.models, Some(vec!["ridge@3".to_string()]));
+    let sealed_declined = journaled
+        .declined_outcomes
+        .iter()
+        .find(|score| score.order_id == refused)
+        .expect("the refusal is in the sealed record");
+    assert_eq!(sealed_declined.models, Some(vec!["ridge@3".to_string()]));
+    Ok(())
+}

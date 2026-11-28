@@ -273,6 +273,15 @@ impl AttributionLineage {
             forecasters: Self::forecasters_of(hypothesis, roster),
             evidence_sources: sources,
         };
+        self.note_lineage(&id, lineage);
+    }
+
+    /// Remember `lineage` as what stood behind hypothesis `id`, evicting the
+    /// oldest past [`LINEAGE_HYPOTHESES`]. [`Self::note_hypothesis`] is the
+    /// production writer; this is the same store, open so a test can stand
+    /// in for a served model the cycle does not yet put behind a hypothesis.
+    pub fn note_lineage(&mut self, id: &str, lineage: HypothesisLineage) {
+        let id = id.to_string();
         if self.hypotheses.insert(id.clone(), lineage).is_none() {
             self.hypothesis_order.push_back(id);
             while self.hypothesis_order.len() > LINEAGE_HYPOTHESES {
@@ -365,12 +374,70 @@ impl AttributionLineage {
             .and_then(|stamped| stamped.quantities)
     }
 
+    /// The model references (`ModelCard::reference`, the `model:` prefix
+    /// removed) whose output shaped the hypotheses `hypotheses` names, for a
+    /// counterfactual score to be keyed by (ADR 0148 decision 4,
+    /// R12-MODEL-4025).
+    ///
+    /// `None` when any of them has no remembered lineage: the models behind
+    /// it are unknown, and a set built from the others would credit a score
+    /// to fewer models than shaped it — a guessed attribution. `Some(empty)`
+    /// when every lineage is known and none carries a model. Only `model:`
+    /// entries are copied: a `detector:` or `analyst:` forecaster is not a
+    /// model card and a hold read keyed by one would name nothing the
+    /// registry can hold.
+    pub fn models_of(&self, hypotheses: &[String]) -> Option<Vec<String>> {
+        let mut models = Vec::new();
+        for hypothesis in hypotheses {
+            let lineage = self.hypotheses.get(hypothesis)?;
+            models.extend(model_references(lineage.forecasters.iter()));
+        }
+        models.sort();
+        models.dedup();
+        Some(models)
+    }
+
+    /// The model references an accepted order was stamped with at release,
+    /// read the way [`Self::models_of`] reads a hypothesis: `None` when the
+    /// order was never stamped or has been evicted, or when a hypothesis it
+    /// expressed had no lineage (stamped `unattributed`); otherwise only the
+    /// `model:` entries of its `Dimension::Model` key, prefix removed.
+    pub fn order_models(&self, order_id: &str) -> Option<Vec<String>> {
+        let stamped = self.orders.get(order_id)?;
+        let forecasters = stamped.keys.values(Dimension::Model);
+        if forecasters.contains(&qip_learning_engine::keyed_attribution::UNATTRIBUTED) {
+            return None;
+        }
+        let mut models = model_references(forecasters);
+        models.sort();
+        models.dedup();
+        Some(models)
+    }
+
     fn quoted_spread_bps(&self, order_id: &str) -> Option<f64> {
         self.orders
             .get(order_id)
             .and_then(|stamped| stamped.quoted_spread_bps)
     }
 }
+
+/// The card references among `forecasters`: each `model:<reference>` entry
+/// with its prefix removed, every other forecaster dropped.
+fn model_references<S: AsRef<str>>(forecasters: impl IntoIterator<Item = S>) -> Vec<String> {
+    forecasters
+        .into_iter()
+        .filter_map(|forecaster| {
+            forecaster
+                .as_ref()
+                .strip_prefix(MODEL_PREFIX)
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// The prefix a model's forecaster id carries (`forecasters_of`), the same
+/// string as `model_tournament::CARD_PREFIX`.
+pub const MODEL_PREFIX: &str = "model:";
 
 /// One fill, with what LEARN knows about it now.
 #[derive(Clone, Debug, PartialEq)]

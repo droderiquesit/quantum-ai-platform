@@ -239,6 +239,7 @@ mod tests {
 
     fn declined(order: &str) -> DeclinedScore {
         DeclinedScore {
+            models: None,
             order_id: OrderId::from_string(order),
             object_id: ObjectId::from_string("AAA"),
             gate: "pre-trade".to_string(),
@@ -271,6 +272,7 @@ mod tests {
 
     fn fill(order: &str, unfilled: i64) -> FillScore {
         FillScore {
+            models: None,
             order_id: OrderId::from_string(order),
             object_id: ObjectId::from_string("CCC"),
             venue: "XSIM".to_string(),

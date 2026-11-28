@@ -90,13 +90,13 @@ const LOCKED: &[(&str, u32, &str)] = &[
     ),
     (
         "CycleJournalEntry",
-        2,
-        "1e7b8e84013b667304d80ea8c4ff1825c14d3d9fdad7782b2e3ee81e4530b6ae",
+        3,
+        "9447db112310254b33e03876a97c1b88a15e56c05af33d30bf962ce7741942d1",
     ),
     (
         "CycleJournalEntry/calibration+counterfactuals",
-        2,
-        "a58b5cc0a205e96c9d3992ec3cec8d16b3710fd62c06ef9927c3ace6b6e4a3e9",
+        3,
+        "c0a3b61ee413d5c57bee6ec7765aa86f0f622f9dbfa4d76b0445a0a0fc8fafd5",
     ),
 ];
 
@@ -312,6 +312,7 @@ fn cycle_journal_filled() -> CycleJournalEntry {
                 }],
                 venue: Some("sim".to_string()),
                 method: EstimationMethod::BarOpenReplay,
+                models: Some(vec!["ridge@3".to_string()]),
             }],
             fill_outcomes: vec![FillScore {
                 order_id: OrderId::from_string("ord-2"),
@@ -328,6 +329,7 @@ fn cycle_journal_filled() -> CycleJournalEntry {
                 predicted_outcome_bps: Some(1.0),
                 realised_outcome_bps: Some(1.0),
                 outcome_error_bps: Some(1.0),
+                models: Some(vec!["ridge@3".to_string()]),
             }],
             cell_declined_scored: 1,
             cell_declined_outcomes: vec![CellDeclinedScore {

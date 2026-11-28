@@ -836,6 +836,13 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// The instruments the latest federation review records two world
+    /// models contradicting on, with the contradiction (R12-WORLD-1181).
+    /// REASON caps a thesis on one at
+    /// [`crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP`]. Replaced
+    /// wholesale each UNDERSTAND, so it is bounded by the instruments one
+    /// pass arbitrates and a contradiction that resolved stops capping.
+    federation_contradicted: BTreeMap<String, crate::federation_stage::ViewContradiction>,
     /// Signed aggressor flow per (instrument, venue) since the last
     /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
@@ -4435,6 +4442,10 @@ struct DeclinedPath {
     /// `None` for every other refusal, which is about the platform's posture
     /// and not about a venue. Blueprint §12.3's fourth row is keyed on this.
     venue: Option<String>,
+    /// The models behind the refused order's hypotheses, captured at the
+    /// refusal: the hypothesis lineage is bounded and may be evicted by the
+    /// time the twin can price the path.
+    models: Option<Vec<String>>,
 }
 
 /// What a refused order would have done, once the twin has priced it.
@@ -4483,6 +4494,12 @@ pub struct DeclinedScore {
     /// priced by a method it never named.
     #[serde(default)]
     pub method: EstimationMethod,
+    /// The model cards whose output shaped the refused order's hypotheses,
+    /// read the way [`FillScore::models`] is, at the instant the order was
+    /// refused (R12-MODEL-4025). Defaulted to unknown for a score journalled
+    /// before the field existed.
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
 }
 
 /// One leg of an arbitrage cycle a cell refused whole, kept until the twin
@@ -4645,6 +4662,35 @@ pub struct FillScore {
     /// that sizes.
     #[serde(default)]
     pub outcome_error_bps: Option<f64>,
+    /// The model cards whose output shaped the order this scores, by
+    /// `ModelCard::reference` (ADR 0148 decision 4, R12-MODEL-4025): read
+    /// from the order's release stamp, so the models are the ones in force
+    /// when it went out and not whatever the registry holds at LEARN.
+    /// `None` when the stamp was evicted or a hypothesis it expressed had no
+    /// lineage — unknown, never a guessed set. `Some(empty)` when the
+    /// lineage is known and no model shaped it. Without this a fill could
+    /// not be charged to a model, and no counterfactual read keyed by model
+    /// existed for a hold to consult. Defaulted so a score journalled before
+    /// the field existed reads back as unknown rather than as "no model".
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
+}
+
+/// One model's share of the counterfactual record, as
+/// [`Platform::counterfactual_by_model`] counts it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCounterfactuals {
+    /// Fills the model shaped that the twin priced for size.
+    pub fills_scored: usize,
+    /// Of those, how many the twin's smaller size would have beaten.
+    pub fills_smaller_favoured: usize,
+    /// Of those, how many the twin's larger size would have beaten. A
+    /// finding only: nothing reads it to enlarge anything.
+    pub fills_larger_favoured: usize,
+    /// Refused orders the model shaped that the twin priced.
+    pub declined_scored: usize,
+    /// Of those, how many would have beaten standing aside.
+    pub declined_regrets: usize,
 }
 
 impl FillScore {
@@ -5576,7 +5622,10 @@ impl EventBody for CycleJournalEntry {
     const TOPIC: Topic = Topic::LearningCompleted;
     // 2: `cost_by` (R12-FINOPS-10136). A version-1 record decodes with it
     // absent.
-    const SCHEMA_VERSION: u32 = 2;
+    // 3: `models` on the counterfactual journal's `FillScore` and
+    // `DeclinedScore` (R12-MODEL-4025). An earlier record decodes with it
+    // absent, read as models unknown.
+    const SCHEMA_VERSION: u32 = 3;
 
     fn idempotency_key(&self) -> Option<String> {
         // One entry per cycle. A journal that could record the same cycle
@@ -7207,6 +7256,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            federation_contradicted: BTreeMap::new(),
             cycle_order_flow: BTreeMap::new(),
             lattice_flow_imbalance: BTreeMap::new(),
             federation_requests: Vec::new(),
@@ -17841,6 +17891,12 @@ impl Platform {
             &review,
             inputs.instruments.iter().map(|view| view.subject.clone()),
         );
+        // Two members asserting opposite outcomes for an instrument's next
+        // close is a different fact from a wide spread (R12-WORLD-1181): the
+        // pass has already journaled the request asking which is right, and
+        // REASON abstains from full confidence on that instrument until a
+        // pass stops recording the contradiction.
+        self.federation_contradicted = crate::federation_stage::contradicted_instruments(&review);
         // The widest disagreement among the forecasting members narrows the
         // capital society's grants (R12-CAPITAL-10122). A spread the arithmetic
         // cannot carry is a problem on this pass, not a silent clamp.
@@ -17955,6 +18011,14 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The instruments the latest federation review records a contradiction
+    /// on, which REASON caps a thesis's confidence against.
+    pub const fn federation_contradicted(
+        &self,
+    ) -> &BTreeMap<String, crate::federation_stage::ViewContradiction> {
+        &self.federation_contradicted
     }
 
     /// The decisions the latest DECIDE sized on a conviction it was unsure of
@@ -19376,6 +19440,24 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // R12-WORLD-1181: two world models assert opposite outcomes
+                // for this instrument's next close, so the thesis abstains
+                // from more than even odds. Applied here, beside the outside
+                // prior and before the confidence is counted, charted,
+                // written into a prediction or sized on, so every reader sees
+                // the capped number. It only ever lowers.
+                let contradicted = opportunity
+                    .affected_objects
+                    .first()
+                    .and_then(|subject| self.federation_contradicted.get(subject.as_str()))
+                    .cloned()
+                    .map(|c| (c, reasoned.hypothesis.confidence));
+                if contradicted.is_some() {
+                    reasoned.hypothesis.confidence = reasoned
+                        .hypothesis
+                        .confidence
+                        .min(crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP);
+                }
                 // Blueprint §9.4: the symbolic reasoners over this hypothesis,
                 // journaled as a derivation trace. Run before approval is read
                 // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
@@ -19523,6 +19605,19 @@ impl Platform {
                         }
                     ),
                 );
+                if let Some((c, held)) = &contradicted {
+                    outcome.detail.push_str(&format!(
+                        "; world models contradict on {}: {} at {:.3} against {} at {:.3}, \
+                         confidence {:.4} held to at most {:.2} and the question asked",
+                        c.proposition,
+                        c.for_model,
+                        c.for_probability,
+                        c.against_model,
+                        c.against_probability,
+                        held,
+                        crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP
+                    ));
+                }
                 if !reasoned.hypothesis.withheld_origins.is_empty() {
                     let named: Vec<String> = reasoned
                         .hypothesis
@@ -27227,6 +27322,9 @@ impl Platform {
         // order moves into the manager — see `crate::attribution`.
         let release_order_id = order.order_id.as_str().to_string();
         let release_hypotheses = order.hypotheses.clone();
+        // The models behind the order, read now for a refusal's score: an
+        // accepted order is read again from its release stamp at LEARN.
+        let release_models = self.attribution_lineage.models_of(&release_hypotheses);
         let release_scope = order.scope.clone();
         let release_type = order.order_type.as_str();
         let leg_quantities = self.leg_quantities.remove(&release_order_id);
@@ -27267,7 +27365,15 @@ impl Platform {
             now,
         );
 
-        self.capture_submission(&result, &object_id, side, quantity, arrival, now);
+        self.capture_submission(
+            &result,
+            &object_id,
+            side,
+            quantity,
+            arrival,
+            release_models,
+            now,
+        );
 
         if result.accepted {
             // Stamped at acceptance, from what was in force at acceptance:
@@ -27778,6 +27884,7 @@ impl Platform {
         side: Side,
         quantity: Decimal,
         arrival: Decimal,
+        models: Option<Vec<String>>,
         now: Timestamp,
     ) {
         let correlation = self.correlation_for(now);
@@ -27946,6 +28053,7 @@ impl Platform {
                         rules,
                         readings,
                         venue,
+                        models,
                     });
                 }
             }
@@ -30216,7 +30324,7 @@ impl Platform {
             else {
                 continue;
             };
-            let (object_id, gate, declined_at, rules, readings, venue) = {
+            let (object_id, gate, declined_at, rules, readings, venue, models) = {
                 let declined = &self.declined[index];
                 (
                     declined.object_id.clone(),
@@ -30225,6 +30333,7 @@ impl Platform {
                     declined.rules.clone(),
                     declined.readings.clone(),
                     declined.venue.clone(),
+                    declined.models.clone(),
                 )
             };
             let priced = self
@@ -30278,6 +30387,7 @@ impl Platform {
                         readings,
                         venue,
                         method,
+                        models,
                     });
                     if self.declined_scores.len() > DECLINED_HISTORY {
                         let excess = self.declined_scores.len() - DECLINED_HISTORY;
@@ -30621,6 +30731,7 @@ impl Platform {
                         raw - self.installed_fill_bias(path.venue.as_str()).unwrap_or(0.0)
                     });
                     scored += 1;
+                    let models = self.attribution_lineage.order_models(order_id.as_str());
                     self.fill_scores.push(FillScore {
                         order_id,
                         object_id: path.object_id,
@@ -30636,6 +30747,7 @@ impl Platform {
                         predicted_outcome_bps,
                         realised_outcome_bps,
                         outcome_error_bps,
+                        models,
                     });
                     if self.fill_scores.len() > DECLINED_HISTORY {
                         let excess = self.fill_scores.len() - DECLINED_HISTORY;
@@ -30687,10 +30799,53 @@ impl Platform {
         &self.fill_scores
     }
 
+    /// The counterfactual record keyed by model card reference (ADR 0148
+    /// decision 4, R12-MODEL-4025): for each model that shaped a scored fill
+    /// or a scored refusal, how many of each the twin priced and how many
+    /// it found the alternative favoured on.
+    ///
+    /// Read only from scores whose models are known (`Some`). A score with
+    /// unknown models is counted under no model rather than guessed into
+    /// one, so the read can undercount a model and never overcount one.
+    /// Counts and not a figure: what shortfall over how many scores holds a
+    /// model is a decision this read does not make. Empty while no served
+    /// model's output enters a hypothesis — the case on every committed
+    /// configuration today — and that emptiness is the honest answer.
+    pub fn counterfactual_by_model(&self) -> BTreeMap<String, ModelCounterfactuals> {
+        let mut by_model: BTreeMap<String, ModelCounterfactuals> = BTreeMap::new();
+        for score in &self.fill_scores {
+            for model in score.models.iter().flatten() {
+                let entry = by_model.entry(model.clone()).or_default();
+                entry.fills_scored += 1;
+                entry.fills_smaller_favoured += usize::from(score.smaller_favoured);
+                entry.fills_larger_favoured += usize::from(score.larger_favoured);
+            }
+        }
+        for score in &self.declined_scores {
+            for model in score.models.iter().flatten() {
+                let entry = by_model.entry(model.clone()).or_default();
+                entry.declined_scored += 1;
+                entry.declined_regrets += usize::from(score.regret);
+            }
+        }
+        by_model
+    }
+
     /// The venue the desk's orders go to: the name its fills are
     /// calibrated and its quotes priced under.
     pub fn desk_venue(&self) -> &str {
         self.broker.name()
+    }
+
+    /// The attribution lineage REASON writes and ACT stamps orders from, for
+    /// a test that puts a model behind a hypothesis: no committed path forms
+    /// a hypothesis a served model shaped yet (ADR 0148 decision 4), so a
+    /// test of the model-keyed counterfactual read has to stand one in. The
+    /// production writer is `note_hypothesis` in REASON; this is the same
+    /// store, not a second copy.
+    #[doc(hidden)]
+    pub fn attribution_lineage_mut(&mut self) -> &mut crate::attribution::AttributionLineage {
+        &mut self.attribution_lineage
     }
 
     /// The calibration the fill-scoring pass writes, for a test that sets a
@@ -35693,6 +35848,7 @@ mod decide_tests {
         let scores = |object: &str, venue: &str, error_bps: f64| -> Vec<FillScore> {
             (0..REPLAY_DIVERGENCE_MIN_SAMPLE)
                 .map(|index| FillScore {
+                    models: None,
                     order_id: OrderId::from_string(format!("ord-lane2-{venue}-{index}")),
                     object_id: qip_core::ObjectId::from_string(object),
                     venue: venue.to_string(),
@@ -43084,6 +43240,7 @@ mod counterfactual_sizing_tests {
     /// well-typed placeholder the arithmetic never looks at.
     fn score(regret: bool) -> DeclinedScore {
         DeclinedScore {
+            models: None,
             order_id: OrderId::from_string("ord-test"),
             object_id: ObjectId::from_string(OBJECT),
             gate: "pre-trade-risk".to_string(),
@@ -43358,6 +43515,7 @@ mod rule_review_tests {
     /// id so the defence's idempotency key moves with the sample.
     fn score(index: usize, regret: bool, earned: Decimal) -> DeclinedScore {
         DeclinedScore {
+            models: None,
             order_id: OrderId::from_string(format!("ord-review-{index}")),
             object_id: ObjectId::from_string("obj-AAA"),
             gate: "pre-trade-risk".to_string(),
@@ -44363,6 +44521,7 @@ mod counterfactual_trial_seam_tests {
 
     fn score(index: usize, regret: bool) -> DeclinedScore {
         DeclinedScore {
+            models: None,
             order_id: OrderId::from_string(format!("ord-trial-{index}")),
             object_id: ObjectId::from_string(OBJECT),
             gate: "pre-trade-risk".to_string(),
@@ -44384,6 +44543,7 @@ mod counterfactual_trial_seam_tests {
 
     fn fill(index: usize, larger_favoured: bool) -> FillScore {
         FillScore {
+            models: None,
             order_id: OrderId::from_string(format!("ord-fill-trial-{index}")),
             object_id: ObjectId::from_string(OBJECT),
             venue: "simulated-venue".to_string(),

@@ -209,6 +209,7 @@ mod tests {
 
     fn score(order: &str, gate: &str, regret: bool) -> DeclinedScore {
         DeclinedScore {
+            models: None,
             order_id: OrderId::from_string(order),
             object_id: ObjectId::from_string("obj-AAA"),
             gate: gate.to_string(),
