@@ -214,6 +214,39 @@ supplies it. It does not amend ADR 0392.
   with the daily figure it comes from. This is simulation arithmetic, not
   a risk limit or a sizing figure.
 
+### 9. The default synthetic feed carries a stated signal, so the default cycle can act
+
+- **What blocked it.** A 900-cycle probe counted 0 proposals, 0 fills and
+  0 scored sources (recorded on R12-DATA-2025). It ran on:
+  - the committed universe, `data/datasets/universe.json`;
+  - `PlatformConfig::default`, with the shipped limits;
+  - the synthetic feed.
+
+  REASON rejected every thesis, at confidence 0.12 to 0.31 against the 0.5
+  it requires. So on committed configuration, every row whose clause needs
+  an open position, a fill, a scored fill or a stressed book is vacuous.
+  Two independent readers refuted R12-EXPAND-6033 on exactly that ground on
+  2026-11-28.
+- **Decision.** The action bar of 0.5 stays as it is, and so does every
+  limit. Instead, the synthetic market feed states a signal strength: a
+  persistent per-instrument return component, such as a drift or an
+  autocorrelated term. Its value is the smallest at which the default cycle
+  forms at least one thesis above the existing bar, and the paper desk
+  opens at least one position within the first 1,000 cycles. That holds on
+  the committed universe, with the shipped limits, at the committed cadence
+  and seed. The strength is measured and recorded with the measurement, and
+  the feed stays labelled synthetic.
+- **Why.** The feed is synthetic, so its signal is a parameter of a
+  demonstration, like the material-news rate decided on 2026-11-24. A feed
+  with no learnable signal leaves every control downstream of a position
+  unable to fire. Lowering the bar instead would make the platform act on
+  weaker evidence everywhere, real data included. Raising the signal of a
+  labelled synthetic feed changes only the demonstration.
+- **Not covered.** No real-data path changes, and no bar or limit value
+  moves. Positions are paper positions under the existing three paper
+  layers. If no strength makes the default cycle act without some other
+  change, the record says what else blocked it, in those words.
+
 ## Not decided here
 
 - **R12-RISK-3022: the central plane's gated halt through `qip-api`'s
