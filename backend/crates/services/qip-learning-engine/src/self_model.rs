@@ -823,10 +823,21 @@ impl SelfModel {
     ///
     /// Every rule only withholds: nothing here raises a factor, relaxes a
     /// limit or touches sizing. Detectors and analysts alike produce their
-    /// evidence from the bars the feed delivered for the subject, so a halted
-    /// platform, a non-fresh ingestion or feed row, a stale subject and a
-    /// drifted subject each withhold every origin. A blind spot is not read
-    /// here: it caps a weight rather than zeroing it, see [`Self::blind_spot`].
+    /// evidence from the bars the feed delivered for the subject, so a
+    /// non-fresh ingestion or feed row, a stale subject and a drifted subject
+    /// each withhold every origin. A blind spot is not read here: it caps a
+    /// weight rather than zeroing it, see [`Self::blind_spot`].
+    ///
+    /// A tripped kill switch is deliberately **not** a reason. It is recorded
+    /// on [`OperationalHealth::halted`] and halts trading at ACT, which is the
+    /// seam that refuses an order on it and journals the refusal under the
+    /// `kill-switch` gate. Withholding here as well left a halted cycle with
+    /// no thesis above the review's bar, so ACT had nothing to refuse and the
+    /// record named no halt: the platform did nothing and its log blamed the
+    /// evidence instead of the operator's switch
+    /// (`qip-acceptance` `vertical_slice_decide::a_tripped_kill_switch_halts_the_cycle_before_anything_trades`).
+    /// A halt says nothing about whether the bars a component read are true;
+    /// a feed fault that does is read by the ingestion and feed rows above.
     pub fn withheld_origins<'a>(
         &self,
         origins: impl IntoIterator<Item = &'a str>,
@@ -844,9 +855,6 @@ impl SelfModel {
     /// The reason every origin on `subject` is withheld, if there is one.
     fn shared_withholding(&self, subject: &str) -> Option<String> {
         if let Some(health) = &self.health {
-            if health.halted {
-                return Some("unhealthy: the kill switch was tripped".to_string());
-            }
             for row in [TableRow::Ingestion, TableRow::Feed] {
                 if let Some(freshness) = health.degraded.get(&row) {
                     return Some(format!(
