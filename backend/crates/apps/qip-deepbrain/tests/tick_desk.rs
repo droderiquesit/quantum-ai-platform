@@ -645,6 +645,7 @@ fn a_fill_model_that_does_not_beat_its_baseline_issues_no_card() {
 
 fn fill(venue: &str, ms: i64, error: Option<f64>) -> FillScore {
     FillScore {
+        models: None,
         order_id: OrderId::from_string(format!("ord-{venue}-{ms}")),
         object_id: ObjectId::from_string("obj-ACME".to_string()),
         venue: venue.to_string(),

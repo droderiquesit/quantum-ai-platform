@@ -225,6 +225,7 @@ mod tests {
     fn score(index: usize, smaller: bool, larger: bool) -> FillScore {
         let at = Timestamp::from_secs(1_760_000_000);
         FillScore {
+            models: None,
             order_id: OrderId::from_string(format!("ord-fill-{index}")),
             object_id: ObjectId::from_string(OBJECT),
             venue: "simulated-venue".to_string(),

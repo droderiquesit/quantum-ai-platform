@@ -412,6 +412,7 @@ mod tests {
 
     fn score(venue: &str, error: Option<f64>, scored_at: i64) -> FillScore {
         FillScore {
+            models: None,
             order_id: OrderId::from_string(format!("ord-{scored_at}")),
             object_id: ObjectId::from_string("obj-AAA"),
             venue: venue.to_string(),
