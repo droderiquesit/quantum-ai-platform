@@ -1049,13 +1049,20 @@ fn reason_after_grading_on_nwsc(second: &str) -> Result<BlindRun> {
 }
 
 /// The failure this guards: a component graded only on information-technology
-/// names was weighed at that record on a thesis in energy, where nothing it
-/// produced has ever resolved. On the committed catalogue, which is common
-/// stock only, a blind spot keyed on asset class could never fire; the
-/// (component, sector) cell the decision record defines does.
+/// names was weighed on a thesis in energy, where nothing it produced has ever
+/// resolved, as if its record covered energy too, with nothing on the record
+/// to say so. On the committed catalogue, which is common stock only, a blind
+/// spot keyed on asset class could never fire; the (component, sector) cell
+/// the decision record defines does.
 ///
-/// Mutation: `SelfModel::is_blind_in` returns false -- the MRDN thesis
-/// withholds nothing.
+/// The blind spot caps the weight rather than zeroing it
+/// (`docs/blueprint/owner-decisions-2026-11-23.md`, "Figures decided on
+/// 2026-11-24"): with one graded outcome nothing is below the minimum sample,
+/// so the cap is the ungraded weight and the record says so.
+///
+/// Mutations: `SelfModel::is_blind_in` returns false -- the MRDN thesis reads
+/// no blind spot; `synthesise` keys the detector's blind spot by its evidence
+/// name rather than its claim class -- the detector's line is missing.
 #[test]
 fn a_component_graded_in_one_sector_is_blind_in_another_on_the_committed_universe() -> Result<()> {
     let run = reason_after_grading_on_nwsc(MRDN)?;
@@ -1069,26 +1076,31 @@ fn a_component_graded_in_one_sector_is_blind_in_another_on_the_committed_univers
         "premise: the detector's evidence name differs from the class it is graded under"
     );
     assert!(
-        detail.contains("self-model withheld the evidence of "),
-        "nothing was withheld on the energy thesis: {detail}"
+        detail.contains("; self-model read a blind spot for "),
+        "no blind spot was read on the energy thesis: {detail}"
+    );
+    assert!(
+        !detail.contains("self-model withheld the evidence of "),
+        "a blind spot withheld evidence outright rather than capping it: {detail}"
     );
     // The analyst graded on NWSC, under its own name.
     assert!(
         detail.contains(
-            "equity-analyst (blind spot: equity-analyst has graded outcomes only outside the \
-             energy sector)"
+            "equity-analyst (blind spot: analyst:equity-analyst has graded outcomes only outside \
+             the energy sector; ungraded, full weight)"
         ),
-        "the analyst blind in energy was weighed: {detail}"
+        "the analyst blind in energy was not read blind: {detail}"
     );
     // The detector, charged under its claim class and carrying its evidence
-    // under its own name: the withholding is read under the one and filed
+    // under its own name: the blind spot is read under the one and filed
     // under the other.
     assert!(
         detail.contains(&format!(
-            "{} (blind spot: {} has graded outcomes only outside the energy sector)",
+            "{} (blind spot: detector:{} has graded outcomes only outside the energy sector; \
+             ungraded, full weight)",
             run.worked_detector, run.graded_class
         )),
-        "the detector blind in energy was weighed: {detail}"
+        "the detector blind in energy was not read blind: {detail}"
     );
     Ok(())
 }

@@ -19535,6 +19535,25 @@ impl Platform {
                         named.join(", ")
                     ));
                 }
+                if !reasoned.hypothesis.blind_origins.is_empty() {
+                    let named: Vec<String> = reasoned
+                        .hypothesis
+                        .blind_origins
+                        .iter()
+                        .map(|(origin, reason)| {
+                            match reasoned.hypothesis.origin_factors.get(origin) {
+                                Some(factor) => {
+                                    format!("{origin} ({reason}; weighed at {factor:.4})")
+                                }
+                                None => format!("{origin} ({reason}; ungraded, full weight)"),
+                            }
+                        })
+                        .collect();
+                    outcome.detail.push_str(&format!(
+                        "; self-model read a blind spot for {}",
+                        named.join(", ")
+                    ));
+                }
                 if matches!(predicted, Ok(false)) {
                     self.telemetry.metrics.count(
                         names::OPPORTUNITIES_UNPRICED,
@@ -22567,34 +22586,50 @@ impl Platform {
             )));
         }
         // R12-WORLD-3036: the self-model's reading of each producing
-        // component for this thesis — unhealthy, stale, drifted or blind —
-        // withholds that origin's supporting evidence. Read here, where the
-        // thesis is formed, and nowhere near sizing or a limit.
+        // component for this thesis. Unhealthy, stale or drifted withholds
+        // that origin's supporting evidence (weight 0); a blind spot caps it
+        // at what grading gives. Read here, where the thesis is formed, and
+        // nowhere near sizing or a limit.
         let sector = self.sector_of(subject.as_str());
         let origins: BTreeSet<&str> = std::iter::once(anomaly.detector.as_str())
             .chain(report.findings.iter().map(|f| f.agent_id.as_str()))
             .collect();
-        let mut withheld =
-            self.self_model
-                .withheld_origins(origins, subject.as_str(), sector.as_deref());
-        // The detector is charged in LEARN under the claim class it raised
-        // (`components_of` keys it by `evaluation.class`, the anomaly kind),
-        // while its evidence travels under the detector's own name. Read
-        // under the name only, its blind spot never reached this thesis: a
-        // detector graded on information-technology names was weighed at
-        // full weight on an energy name. So the detector is also read under
-        // its kind, and a withholding found there is filed under the origin
-        // its evidence carries. It only ever withholds.
-        let kind = anomaly.kind.as_str();
-        if !withheld.contains_key(anomaly.detector.as_str())
-            && let Some(reason) = self
-                .self_model
-                .withheld_origins([kind], subject.as_str(), sector.as_deref())
-                .remove(kind)
-        {
-            withheld.insert(anomaly.detector.clone(), reason);
+        let withheld = self.self_model.withheld_origins(origins, subject.as_str());
+        // Each origin beside the component LEARN grades it under. The
+        // detector is charged under the claim class it raised (`components_of`
+        // keys it by `evaluation.class`, the anomaly kind) while its evidence
+        // travels under the detector's own name, so the factor table handed
+        // at LEARN, keyed by component id, never named the detector's
+        // evidence: a detector graded wrong sixty times was weighed at full
+        // weight in every thesis it raised. Its graded weight is handed here
+        // under the name its evidence carries. A cap only ever lowers.
+        let mut producers: Vec<(String, ComponentKey)> = Vec::new();
+        if let Ok(key) = ComponentKey::detector(anomaly.kind.as_str()) {
+            producers.push((anomaly.detector.clone(), key));
         }
-        let outcome = self.reasoning.reason_withholding(
+        for finding in &report.findings {
+            if let Ok(key) = ComponentKey::analyst(finding.agent_id.as_str()) {
+                producers.push((finding.agent_id.clone(), key));
+            }
+        }
+        let mut caps: BTreeMap<String, f64> = BTreeMap::new();
+        let mut blind: BTreeMap<String, String> = BTreeMap::new();
+        for (origin, key) in &producers {
+            let mut cap = self.self_model.factor(key);
+            if let Some(spot) = sector
+                .as_deref()
+                .and_then(|sector| self.self_model.blind_spot(key, sector))
+            {
+                cap = Some(cap.map_or(spot.weight, |held| held.min(spot.weight)));
+                blind.insert(origin.clone(), spot.reason);
+            }
+            if let Some(cap) = cap {
+                caps.entry(origin.clone())
+                    .and_modify(|held: &mut f64| *held = held.min(cap))
+                    .or_insert(cap);
+            }
+        }
+        let outcome = self.reasoning.reason_weighing(
             SynthesisInput {
                 hypothesis_id: qip_core::ids::HypothesisId::from_string(format!(
                     "hyp-{}-{}",
@@ -22630,7 +22665,9 @@ impl Platform {
                 market_priced_in: None,
                 models: Vec::new(),
             },
+            &caps,
             &withheld,
+            &blind,
         )?;
         Ok(Some(outcome))
     }
@@ -41325,6 +41362,76 @@ mod self_model_tests {
         let contraction = reliability_contraction(&graded)
             .expect("a worse-than-chance detector contracted nothing");
         assert!(contraction.multiplier < Decimal::ONE, "{contraction:?}");
+    }
+
+    /// R12-WORLD-3036, the keying: a detector is graded under the claim
+    /// class it raised, while its evidence travels under the detector's own
+    /// name, so the factor table LEARN hands REASON (keyed by component id)
+    /// never named the detector's evidence, and a detector graded wrong a
+    /// dozen times was weighed at full weight in every thesis it raised.
+    /// The same tape is reasoned twice; the second platform's self-model has
+    /// graded the detector's class wrong thirteen times and holds the table
+    /// LEARN would have handed over.
+    ///
+    /// Mutation: drop the detector from `producers` in `synthesise` -- the
+    /// graded thesis forms at the ungraded confidence and the first
+    /// assertion after the premises fails.
+    #[test]
+    fn reason_weighs_a_detectors_evidence_by_the_grade_of_the_class_it_is_charged_under() {
+        use qip_learning_engine::self_model::{MINIMUM_SAMPLE, ScoredOutcome};
+
+        let mut probe = reasoning_platform();
+        probe.observe(tape());
+        probe.run_cycle(start());
+        let claim = probe.predictions()[0]
+            .claim
+            .clone()
+            .expect("premise: the tape formed a claim");
+        let ungraded = claim.confidence;
+
+        let mut graded = reasoning_platform();
+        let key = ComponentKey::detector(&claim.class).expect("a detector key");
+        for n in 0..=MINIMUM_SAMPLE + 2 {
+            graded.self_model.record(
+                key.clone(),
+                ScoredOutcome::new(format!("past-{n}"), 0.9, false, start())
+                    .expect("a probability"),
+            );
+        }
+        let factor = graded
+            .self_model
+            .factor(&key)
+            .expect("premise: thirteen outcomes clear the minimum sample");
+        assert!(factor < 0.35, "premise: thirteen misses leave {factor}");
+        // The table LEARN hands over, keyed by the class.
+        graded
+            .reasoning
+            .set_origin_factors(graded.self_model.origin_factors());
+        assert_eq!(
+            graded
+                .reasoning
+                .origin_factors()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![claim.class.clone()],
+            "premise: the handed table names the detector's class and nothing else"
+        );
+        graded.observe(tape());
+        graded.run_cycle(start());
+        let formed = graded
+            .predictions()
+            .first()
+            .and_then(|p| p.claim.clone())
+            .expect("premise: the graded platform formed the same claim");
+        assert_eq!(formed.class, claim.class, "premise: the same class");
+        assert!(
+            formed.confidence < ungraded,
+            "the detector graded at {factor} under {} was weighed at full weight: {} against the \
+             ungraded {ungraded}",
+            claim.class,
+            formed.confidence
+        );
     }
 
     #[test]

@@ -350,6 +350,13 @@ pub struct Hypothesis {
     /// origins with supporting evidence present, like `origin_factors`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub withheld_origins: BTreeMap<String, String>,
+    /// Origins whose producing component read blind for this thesis — graded
+    /// only in other sectors — with the self-model's reason (R12-WORLD-3036).
+    /// Not withheld: their weight was capped at what grading gives, and the
+    /// factor applied is in `origin_factors`. Recorded so a reader can tell a
+    /// weight earned in this sector from one carried in from another.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub blind_origins: BTreeMap<String, String>,
     /// Observations that would falsify the hypothesis. Required.
     pub falsifiers: Vec<String>,
     /// The competing explanation the author considered most credible, and why
@@ -480,6 +487,7 @@ impl Hypothesis {
             belief,
             origin_factors,
             withheld_origins,
+            blind_origins: BTreeMap::new(),
             falsifiers: draft.falsifiers,
             leading_alternative: draft.leading_alternative,
             horizon: draft.horizon,

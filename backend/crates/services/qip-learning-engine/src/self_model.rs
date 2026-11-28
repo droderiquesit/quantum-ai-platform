@@ -88,6 +88,26 @@ pub const DRIFT_TOLERANCE: f64 = 0.05;
 /// than weighted by a record about a different distribution.
 pub const INPUT_DRIFT_PSI: f64 = 0.25;
 
+/// The weight REASON gives the supporting evidence of an origin the
+/// self-model has no graded weight for: full weight, because
+/// `qip_reasoning_engine`'s `strengths` leaves an origin
+/// [`SelfModel::origin_factors`] does not name at one. Named here so the
+/// blind-spot cap ([`SelfModel::blind_spot`]) is stated against the figure
+/// REASON actually uses rather than a second copy of it.
+pub const UNGRADED_WEIGHT: f64 = 1.0;
+
+/// A (component, sector) cell the component has never been graded in, for a
+/// component graded elsewhere (R12-WORLD-3036).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlindSpot {
+    /// The most REASON may weigh the component's supporting evidence by in
+    /// this cell: never above its graded weight, never above an ungraded
+    /// origin's.
+    pub weight: f64,
+    /// Why, for the hypothesis's record.
+    pub reason: String,
+}
+
 /// The kind of component an estimate is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -756,50 +776,69 @@ impl SelfModel {
         self.boundary.as_ref()
     }
 
-    /// Whether `origin` (a detector or analyst id) is blind in `sector`:
-    /// graded in at least one sector and never in this one.
-    pub fn is_blind_in(&self, origin: &str, sector: &str) -> bool {
-        self.graded_sectors.iter().any(|(key, sectors)| {
-            matches!(key.kind, ComponentKind::Detector | ComponentKind::Analyst)
-                && key.id == origin
-                && !sectors.is_empty()
-                && !sectors.contains(sector)
+    /// Whether `key` is blind in `sector`: graded in at least one sector and
+    /// never in this one. Read by key, not by evidence origin, because a
+    /// detector is graded under the claim class it raised and its evidence
+    /// travels under the detector's own name; the caller knows which key
+    /// produced which origin, this model does not.
+    pub fn is_blind_in(&self, key: &ComponentKey, sector: &str) -> bool {
+        matches!(key.kind, ComponentKind::Detector | ComponentKind::Analyst)
+            && self
+                .graded_sectors
+                .get(key)
+                .is_some_and(|sectors| !sectors.is_empty() && !sectors.contains(sector))
+    }
+
+    /// The blind spot `key` reads in `sector`, if it is blind there
+    /// (R12-WORLD-3036): the weight REASON may give its supporting evidence
+    /// in that cell, and the reason.
+    ///
+    /// The weight is decided in `docs/blueprint/owner-decisions-2026-11-23.md`,
+    /// section "Figures decided on 2026-11-24": the weight an ungraded origin
+    /// already carries ([`UNGRADED_WEIGHT`], what REASON gives an origin
+    /// [`Self::origin_factors`] does not name), capped at the component's
+    /// lowest graded weight elsewhere ([`Self::factor`], `None` below
+    /// [`MINIMUM_SAMPLE`]). So a cell nothing has resolved in never weighs
+    /// more than grading gives, and is not silenced either: weight 0 there
+    /// starved every thesis outside the first sector graded, which is a
+    /// refusal nobody decided.
+    pub fn blind_spot(&self, key: &ComponentKey, sector: &str) -> Option<BlindSpot> {
+        if !self.is_blind_in(key, sector) {
+            return None;
+        }
+        let weight = self
+            .factor(key)
+            .map_or(UNGRADED_WEIGHT, |graded| graded.min(UNGRADED_WEIGHT));
+        Some(BlindSpot {
+            weight,
+            reason: format!(
+                "blind spot: {key} has graded outcomes only outside the {sector} sector"
+            ),
         })
     }
 
-    /// The origins whose supporting evidence REASON must withhold on a thesis
-    /// about `subject` in `sector`, each with the reason (R12-WORLD-3036).
+    /// The origins whose supporting evidence REASON must withhold (weight
+    /// zero) on a thesis about `subject`, each with the reason
+    /// (R12-WORLD-3036).
     ///
     /// Every rule only withholds: nothing here raises a factor, relaxes a
     /// limit or touches sizing. Detectors and analysts alike produce their
     /// evidence from the bars the feed delivered for the subject, so a halted
-    /// platform, a non-fresh ingestion or feed row and a drifted subject each
-    /// withhold every origin; a blind spot withholds the one origin that is
-    /// blind in the sector.
+    /// platform, a non-fresh ingestion or feed row, a stale subject and a
+    /// drifted subject each withhold every origin. A blind spot is not read
+    /// here: it caps a weight rather than zeroing it, see [`Self::blind_spot`].
     pub fn withheld_origins<'a>(
         &self,
         origins: impl IntoIterator<Item = &'a str>,
         subject: &str,
-        sector: Option<&str>,
     ) -> BTreeMap<String, String> {
-        let shared = self.shared_withholding(subject);
-        let mut withheld = BTreeMap::new();
-        for origin in origins {
-            let reason = shared.clone().or_else(|| {
-                sector
-                    .filter(|sector| self.is_blind_in(origin, sector))
-                    .map(|sector| {
-                        format!(
-                            "blind spot: {origin} has graded outcomes only outside the {sector} \
-                             sector"
-                        )
-                    })
-            });
-            if let Some(reason) = reason {
-                withheld.insert(origin.to_string(), reason);
-            }
-        }
-        withheld
+        let Some(shared) = self.shared_withholding(subject) else {
+            return BTreeMap::new();
+        };
+        origins
+            .into_iter()
+            .map(|origin| (origin.to_string(), shared.clone()))
+            .collect()
     }
 
     /// The reason every origin on `subject` is withheld, if there is one.
