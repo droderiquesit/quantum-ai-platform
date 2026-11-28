@@ -113,15 +113,38 @@ fn every_present_federation_member_is_declared_by_the_stage_and_names_a_test_tha
 
 #[test]
 fn the_stage_is_reached_from_the_platform_cycle_in_which_every_central_binary_runs() {
+    // The call, not the name: a definition nothing calls would satisfy a
+    // search for the bare symbol.
     holds(
         "crates/runtime/qip-kernel/src/platform.rs",
-        "understand_federation",
+        "= self.understand_federation(now);",
         "federation reached from the cycle",
+    );
+    // The fast brain's step runs that cycle, and the REASON seam the
+    // contradiction reaches reads what UNDERSTAND left.
+    holds(
+        "crates/apps/qip-fastbrain/src/node.rs",
+        "platform.run_cycle(now)",
+        "the fast brain runs the cycle",
+    );
+    holds(
+        "crates/runtime/qip-kernel/src/platform.rs",
+        ".and_then(|subject| self.federation_contradicted.get(subject.as_str()))",
+        "REASON reads the contradicted instruments",
     );
 }
 
+const PLATFORM: &str = "crates/runtime/qip-kernel/src/platform.rs";
+const TAPE_TEST: &str = "crates/apps/qip-fastbrain/tests/contradiction.rs";
+
 /// R12-WORLD-1181: (scope item, seam file, seam symbol, test file, test).
-const ARBITRATION: [(&str, &str, &str, &str, &str); 6] = [
+///
+/// Every item's seam is on the default cycle's path: the stage runs from
+/// `understand_federation`, which `Platform::run_cycle` reaches in every
+/// central binary (checked below). The test named for each item drives
+/// that path, the stage's own `run` or the cycle, never a hand-built
+/// arbitration alone.
+const ARBITRATION: [(&str, &str, &str, &str, &str); 11] = [
     (
         "compare competing states",
         WM_SRC,
@@ -151,6 +174,13 @@ const ARBITRATION: [(&str, &str, &str, &str, &str); 6] = [
         "fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_a_wide_spread",
     ),
     (
+        "detect contradictions: the margin measured on the shipped feed",
+        STAGE,
+        "pub const CONTRADICTION_MARGIN: f64",
+        TAPE_TEST,
+        "fn the_contradiction_margin_sits_in_an_empty_band_of_the_shipped_feeds_opposed_views",
+    ),
+    (
         "maintain uncertainty",
         WM_SRC,
         "pub uncertainty: f64",
@@ -164,13 +194,47 @@ const ARBITRATION: [(&str, &str, &str, &str, &str); 6] = [
         WM_TESTS,
         "fn arbitration_produces_each_of_the_four_actions_with_a_reason_and_the_right_output",
     ),
+    (
+        "decide merge, on real passes",
+        STAGE,
+        "Decision::Merge =>",
+        STAGE,
+        "fn real_passes_open_two_branches_that_both_hold_views_and_a_merge_decision_folds_them",
+    ),
+    (
+        "request information on a contradiction",
+        STAGE,
+        "pub fn contradiction_request",
+        STAGE,
+        "fn each_contradiction_journals_a_request_naming_its_two_members_and_replay_refuses_an_edited_one",
+    ),
+    (
+        "abstain on a contradiction, through the cycle",
+        PLATFORM,
+        "self.federation_contradicted = crate::federation_stage::contradicted_instruments(&review);",
+        CYCLE_TEST,
+        "fn a_contradicted_instrument_journals_a_request_naming_both_views_and_reason_holds_its_thesis_to_even_odds",
+    ),
+    (
+        "abstain on a contradiction, on the shipped tape",
+        PLATFORM,
+        ".min(crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP);",
+        TAPE_TEST,
+        "fn a_thesis_on_a_contradicted_instrument_is_held_to_even_odds_on_the_shipped_tape",
+    ),
 ];
 
 #[test]
 fn every_arbitration_scope_item_names_a_seam_and_a_test_that_still_exist() {
-    assert_eq!(ARBITRATION.len(), 6, "premise: the row lists six items");
+    assert_eq!(
+        ARBITRATION.len(),
+        11,
+        "premise: the row's six items and their five reaction and measurement seams"
+    );
     for (item, seam_file, seam, test_file, test) in ARBITRATION {
         holds(seam_file, seam, item);
-        holds(test_file, test, item);
+        // The open parenthesis delimits the name: a test whose name merely
+        // starts with the one listed is not the listed test.
+        holds(test_file, &format!("{test}("), item);
     }
 }

@@ -1670,15 +1670,45 @@ fn a_hypothesis_on_a_future_that_expires_before_its_horizon_is_ruled_against_on_
 ///
 /// Mutation: in `FederationStage::run`, record no contradictions -- the
 /// replay then finds the recorded list is not the one the recorded views
-/// contain and refuses the record. The one-sided case this tape cannot pose
-/// is the unit test
-/// `only_views_on_opposite_sides_past_the_margin_are_a_contradiction`.
+/// contain and refuses the record. Mutation: drop the against-side condition
+/// in `contradictions_in` -- the macro member's unopposed view is named a
+/// contradiction and the straddle assertion fails ("is named but its views
+/// do not straddle"). That mutation survived this
+/// test until the pass carried a one-sided arbitration and the test asserted
+/// that it did (it is also killed by the unit test
+/// `only_views_on_opposite_sides_past_the_margin_are_a_contradiction`).
 #[test]
 fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_a_wide_spread()
 -> Result<()> {
     use federation_stage::CONTRADICTION_MARGIN;
     let mut platform = platform()?;
-    platform.observe(trend("AAA", 120));
+    let mut records = trend("AAA", 120);
+    // One CPI release above its consensus, so the macro member holds a view
+    // on its persistence with no member against it: the one-sided case the
+    // unopposed assertion below needs on this pass, and the only arbitration
+    // here confident upward without opposition, which is what a contradiction
+    // check that forgot the against side would name.
+    let period = start().saturating_sub(Duration::from_days(20));
+    records.push(SensedRecord::Macro(Box::new(
+        qip_financial::intelligence::MacroObservation {
+            series_id: "US.CPI.YOY".to_string(),
+            region: "US".to_string(),
+            value: 3.4,
+            unit: "percent".to_string(),
+            reference_date: period,
+            consensus: Some(3.1),
+            previous: None,
+            is_revision: false,
+            provenance: Provenance::new(
+                "wire",
+                period,
+                start().saturating_sub(Duration::from_days(1)),
+            ),
+            quality: DataQuality::clean(),
+            evidence_unretrievable: false,
+        },
+    )));
+    platform.observe(records);
     platform.run_cycle(start());
     let reviews = federation_stage::replay(&platform)?;
     let review = reviews.first().expect("one review, read from the log");
@@ -1737,17 +1767,32 @@ fn opposed_views_past_the_margin_are_journaled_as_a_contradiction_distinct_from_
             a.disagreement.views
         );
     }
-    let unopposed = review.arbitrations.iter().filter(|a| {
-        a.disagreement
-            .views
+    let confident = |a: &qip_world_model::federation::Arbitration, up: bool| {
+        a.disagreement.views.iter().any(|v| {
+            if up {
+                v.probability >= 0.5 + CONTRADICTION_MARGIN
+            } else {
+                v.probability <= 0.5 - CONTRADICTION_MARGIN
+            }
+        })
+    };
+    let unopposed: Vec<_> = review
+        .arbitrations
+        .iter()
+        .filter(|a| confident(a, true) != confident(a, false))
+        .collect();
+    // Premise for the loop below: the real pass holds at least one
+    // arbitration with a confident side and no confident opposition, so
+    // the one-sided case is exercised here and not only by the unit test.
+    assert!(
+        unopposed.iter().any(|a| confident(a, true)),
+        "premise: no arbitration on this pass is confident upward without opposition: {:?}",
+        review
+            .arbitrations
             .iter()
-            .any(|v| v.probability >= 0.5 + CONTRADICTION_MARGIN)
-            && !a
-                .disagreement
-                .views
-                .iter()
-                .any(|v| v.probability <= 0.5 - CONTRADICTION_MARGIN)
-    });
+            .map(|a| &a.proposition)
+            .collect::<Vec<_>>()
+    );
     for a in unopposed {
         assert!(
             review
@@ -2897,5 +2942,105 @@ fn a_blocked_act_reaches_the_symbolic_finding_as_the_ids_of_the_constraints_that
         .find(|f| f.label == "constraints_blocking")
         .map(|f| f.value);
     assert_eq!(blocking, Some(conflict.len() as f64));
+    Ok(())
+}
+
+/// R12-WORLD-1181, the reaction, through `Platform::run_cycle`: a cycle whose
+/// federation records two members contradicting each other on an
+/// instrument's next close (1) journals an information request naming
+/// exactly those two members, (2) hands REASON that instrument as
+/// contradicted, and (3) REASON holds the thesis it forms on that instrument
+/// to at most even odds and says why, naming both views. Before this, the
+/// contradiction was recorded and nothing read it.
+///
+/// The shipped-tape twin of this test, where the cap binds on a thesis the
+/// panel reached above it, is `qip-fastbrain/tests/contradiction.rs`.
+///
+/// Mutation: drop the `federation_contradicted` assignment in
+/// `understand_federation` -- REASON is handed nothing and the hand-over
+/// assertion fails (`left: None`). Mutation: build no request in the
+/// stage's `run` -- replay refuses the record, whose requests are not the
+/// ones its contradictions ask, and the test returns that refusal.
+#[test]
+fn a_contradicted_instrument_journals_a_request_naming_both_views_and_reason_holds_its_thesis_to_even_odds()
+-> Result<()> {
+    use federation_stage::CONTRADICTED_CONFIDENCE_CAP;
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    let report = platform.run_cycle(start());
+    let reviews = federation_stage::replay(&platform)?;
+    let review = reviews.first().expect("one review, read from the log");
+    let proposition = federation_stage::instrument_proposition(object("AAA").as_str(), 1);
+    let contradiction = review
+        .contradictions
+        .iter()
+        .find(|c| c.proposition == proposition)
+        .unwrap_or_else(|| {
+            panic!(
+                "premise: {proposition} is contradicted: {:?}",
+                review.contradictions
+            )
+        });
+    // Premise: the thesis REASON forms is on the contradicted instrument.
+    assert!(
+        !platform.predictions().is_empty(),
+        "premise: no thesis was formed:\n{}",
+        report.summarise()
+    );
+
+    // (1) The request, read back from the log.
+    let index = review
+        .contradictions
+        .iter()
+        .position(|c| c.proposition == proposition)
+        .expect("found above");
+    let request = &review.contradiction_requests[index];
+    assert_eq!(request.proposition, proposition);
+    assert_eq!(
+        request.models,
+        [
+            contradiction.for_model.clone(),
+            contradiction.against_model.clone()
+        ]
+    );
+
+    // (2) What UNDERSTAND handed REASON.
+    assert_eq!(
+        platform
+            .federation_contradicted()
+            .get(object("AAA").as_str()),
+        Some(contradiction)
+    );
+
+    // (3) The thesis, as REASON reported it.
+    let reason = report.stage(Stage::Reason).expect("reason ran");
+    let named = format!(
+        "; world models contradict on {proposition}: {} at {:.3} against {} at {:.3}, confidence ",
+        contradiction.for_model,
+        contradiction.for_probability,
+        contradiction.against_model,
+        contradiction.against_probability
+    );
+    assert!(
+        reason.detail.contains(&named),
+        "REASON did not act on the contradiction: {}",
+        reason.detail
+    );
+    let reported: f64 = reason
+        .detail
+        .split(" at confidence ")
+        .nth(1)
+        .and_then(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
+        .expect("REASON reports the thesis confidence");
+    assert!(
+        reported <= CONTRADICTED_CONFIDENCE_CAP,
+        "a thesis on a contradicted instrument was admitted at {reported}"
+    );
     Ok(())
 }

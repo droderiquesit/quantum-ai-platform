@@ -836,6 +836,13 @@ pub struct Platform {
     /// What the latest federation review earns each instrument in DECIDE's
     /// caps (ADR 0125 decision 4), with the spread behind it.
     federation_narrowing: BTreeMap<String, (crate::federation_stage::Narrowing, f64)>,
+    /// The instruments the latest federation review records two world
+    /// models contradicting on, with the contradiction (R12-WORLD-1181).
+    /// REASON caps a thesis on one at
+    /// [`crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP`]. Replaced
+    /// wholesale each UNDERSTAND, so it is bounded by the instruments one
+    /// pass arbitrates and a contradiction that resolved stops capping.
+    federation_contradicted: BTreeMap<String, crate::federation_stage::ViewContradiction>,
     /// Signed aggressor flow per (instrument, venue) since the last
     /// UNDERSTAND (ADR 0255), taken by it. Bounded by the instruments and
     /// venues one cycle's trades name.
@@ -7207,6 +7214,7 @@ impl Platform {
             pending_routing: None,
             drifted_models: BTreeSet::new(),
             federation_narrowing: BTreeMap::new(),
+            federation_contradicted: BTreeMap::new(),
             cycle_order_flow: BTreeMap::new(),
             lattice_flow_imbalance: BTreeMap::new(),
             federation_requests: Vec::new(),
@@ -17841,6 +17849,12 @@ impl Platform {
             &review,
             inputs.instruments.iter().map(|view| view.subject.clone()),
         );
+        // Two members asserting opposite outcomes for an instrument's next
+        // close is a different fact from a wide spread (R12-WORLD-1181): the
+        // pass has already journaled the request asking which is right, and
+        // REASON abstains from full confidence on that instrument until a
+        // pass stops recording the contradiction.
+        self.federation_contradicted = crate::federation_stage::contradicted_instruments(&review);
         // The widest disagreement among the forecasting members narrows the
         // capital society's grants (R12-CAPITAL-10122). A spread the arithmetic
         // cannot carry is a problem on this pass, not a silent clamp.
@@ -17955,6 +17969,14 @@ impl Platform {
         &self,
     ) -> &BTreeMap<String, (crate::federation_stage::Narrowing, f64)> {
         &self.federation_narrowing
+    }
+
+    /// The instruments the latest federation review records a contradiction
+    /// on, which REASON caps a thesis's confidence against.
+    pub const fn federation_contradicted(
+        &self,
+    ) -> &BTreeMap<String, crate::federation_stage::ViewContradiction> {
+        &self.federation_contradicted
     }
 
     /// The decisions the latest DECIDE sized on a conviction it was unsure of
@@ -19376,6 +19398,24 @@ impl Platform {
                 if let Some(multiplier) = outside_narrowing {
                     reasoned.hypothesis.confidence *= multiplier;
                 }
+                // R12-WORLD-1181: two world models assert opposite outcomes
+                // for this instrument's next close, so the thesis abstains
+                // from more than even odds. Applied here, beside the outside
+                // prior and before the confidence is counted, charted,
+                // written into a prediction or sized on, so every reader sees
+                // the capped number. It only ever lowers.
+                let contradicted = opportunity
+                    .affected_objects
+                    .first()
+                    .and_then(|subject| self.federation_contradicted.get(subject.as_str()))
+                    .cloned()
+                    .map(|c| (c, reasoned.hypothesis.confidence));
+                if contradicted.is_some() {
+                    reasoned.hypothesis.confidence = reasoned
+                        .hypothesis
+                        .confidence
+                        .min(crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP);
+                }
                 // Blueprint §9.4: the symbolic reasoners over this hypothesis,
                 // journaled as a derivation trace. Run before approval is read
                 // (ADR 0125 decision 2, R12-REASON-3053), so the rule pack's
@@ -19523,6 +19563,19 @@ impl Platform {
                         }
                     ),
                 );
+                if let Some((c, held)) = &contradicted {
+                    outcome.detail.push_str(&format!(
+                        "; world models contradict on {}: {} at {:.3} against {} at {:.3}, \
+                         confidence {:.4} held to at most {:.2} and the question asked",
+                        c.proposition,
+                        c.for_model,
+                        c.for_probability,
+                        c.against_model,
+                        c.against_probability,
+                        held,
+                        crate::federation_stage::CONTRADICTED_CONFIDENCE_CAP
+                    ));
+                }
                 if !reasoned.hypothesis.withheld_origins.is_empty() {
                     let named: Vec<String> = reasoned
                         .hypothesis

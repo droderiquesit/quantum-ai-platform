@@ -642,6 +642,19 @@ pub struct FederationReview {
     /// on a record written before the field existed.
     #[serde(default)]
     pub contradictions: Vec<ViewContradiction>,
+    /// The information each contradiction asks for: one request per entry
+    /// of `contradictions`, in the same order, naming the two members that
+    /// assert opposite outcomes (R12-WORLD-1181). A contradiction is not a
+    /// disagreement to average away or a spread to size around; it is two
+    /// claims of which at least one is wrong, and the pass says so by asking
+    /// which. REASON reads the same contradictions and caps the confidence
+    /// of any thesis on the contradicted instrument
+    /// ([`CONTRADICTED_CONFIDENCE_CAP`]). Derived from the recorded views,
+    /// so [`replay`] recomputes and checks it. Absent on a record written
+    /// before the field existed, and left out of a record when empty so a
+    /// pass with no contradiction journals no more than it did before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradiction_requests: Vec<qip_world_model::federation::InformationRequest>,
     /// Every contagion path the counterparty member carried pressure along
     /// this pass (R12-WORLD-3049). Absent on a record written before the
     /// field existed.
@@ -654,10 +667,62 @@ pub struct FederationReview {
 }
 
 /// How far from even odds each of two opposed views must be before the
-/// pair is recorded as a contradiction, not a lean. A chosen constant: a
-/// view at 0.55 against one at 0.45 is two members near indifference, not
-/// two claims, and recording it would bury the contradictions that matter.
+/// pair is recorded as a contradiction, not a lean. A view at 0.55 against
+/// one at 0.45 is two members near indifference, not two claims, and
+/// recording it would bury the contradictions that matter.
+///
+/// Measured, not only chosen (R12-WORLD-1181): on the committed
+/// demonstration tape through the fast brain's default configuration,
+/// `qip-fastbrain/tests/contradiction.rs` reads every arbitration
+/// the cycle journaled and finds no pair of opposed views whose nearer side
+/// sits inside the band this margin excludes, so the margin separates the
+/// opposed pairs that exist from near-even noise rather than cutting through
+/// them. That test fails if the shipped feed ever puts an opposed pair in
+/// the band, which is when this figure needs revisiting.
 pub const CONTRADICTION_MARGIN: f64 = 0.1;
+
+/// The most confidence REASON admits for a thesis on an instrument whose
+/// next close two world models contradict on this pass (R12-WORLD-1181).
+/// Even odds: with one member past the margin for the outcome and another
+/// past it against, the federation's honest reading of that question is
+/// that it cannot say, and a thesis resting on it may not claim more. A cap
+/// only ever lowers a confidence; it raises no weight, relaxes no limit and
+/// names no size.
+pub const CONTRADICTED_CONFIDENCE_CAP: f64 = 0.5;
+
+/// The information request a contradiction raises: which of its two
+/// members is right. Named by the two views so the request says what is
+/// contradicted and by whom, not only that something is.
+pub fn contradiction_request(
+    contradiction: &ViewContradiction,
+) -> qip_world_model::federation::InformationRequest {
+    qip_world_model::federation::InformationRequest {
+        proposition: contradiction.proposition.clone(),
+        models: vec![
+            contradiction.for_model.clone(),
+            contradiction.against_model.clone(),
+        ],
+    }
+}
+
+/// The instrument whose next close `proposition` asks about at `cycle`, or
+/// `None` where it asks about something else.
+pub fn instrument_of(proposition: &str, cycle: u64) -> Option<&str> {
+    let subject = proposition.strip_suffix(&format!(":next-close-up@{cycle}"))?;
+    (instrument_proposition(subject, cycle) == proposition).then_some(subject)
+}
+
+/// Every instrument this review records a contradiction on, with the
+/// contradiction: what REASON caps a thesis's confidence against.
+pub fn contradicted_instruments(review: &FederationReview) -> BTreeMap<String, ViewContradiction> {
+    review
+        .contradictions
+        .iter()
+        .filter_map(|c| {
+            instrument_of(&c.proposition, review.cycle).map(|s| (s.to_string(), c.clone()))
+        })
+        .collect()
+}
 
 /// Two members asserting opposite outcomes for one proposition. Both views
 /// are kept as recorded; nothing here picks a side.
@@ -806,6 +871,8 @@ pub struct JournaledReview {
     pub request_spreads_bp: Vec<u32>,
     #[serde(default)]
     pub contradictions: Vec<ViewContradiction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradiction_requests: Vec<qip_world_model::federation::InformationRequest>,
     #[serde(default)]
     pub contagion: Vec<ContagionPath>,
     #[serde(default)]
@@ -864,6 +931,7 @@ impl JournaledReview {
             information_requests: review.information_requests.clone(),
             request_spreads_bp: review.request_spreads_bp.clone(),
             contradictions: review.contradictions.clone(),
+            contradiction_requests: review.contradiction_requests.clone(),
             contagion: review.contagion.clone(),
             counterparty_unmodelled: review.counterparty_unmodelled.clone(),
         }
@@ -972,6 +1040,7 @@ pub fn rebuild(record: JournaledReview, bases: &mut JournalBases) -> Result<Fede
         information_requests: record.information_requests,
         request_spreads_bp: record.request_spreads_bp,
         contradictions: record.contradictions,
+        contradiction_requests: record.contradiction_requests,
         contagion: record.contagion,
         counterparty_unmodelled: record.counterparty_unmodelled,
     })
@@ -2750,6 +2819,7 @@ impl FederationStage {
         let journal_base = self.federation.journal_base();
         let events = self.federation.drain_journal();
         let contradictions = contradictions_in(&arbitrations);
+        let contradiction_requests = contradictions.iter().map(contradiction_request).collect();
         FederationReview {
             cycle: inputs.cycle,
             at: now,
@@ -2767,6 +2837,7 @@ impl FederationStage {
             information_requests,
             request_spreads_bp,
             contradictions,
+            contradiction_requests,
             contagion,
             counterparty_unmodelled,
         }
@@ -3112,6 +3183,18 @@ fn trusted(review: FederationReview) -> Result<FederationReview> {
         return Err(qip_core::error::Error::invalid(format!(
             "the journaled contradictions of cycle {} are not the ones its own recorded \
              views contain; the record is not trusted as a replay",
+            review.cycle
+        )));
+    }
+    let asked: Vec<_> = review
+        .contradictions
+        .iter()
+        .map(contradiction_request)
+        .collect();
+    if review.contradiction_requests != asked {
+        return Err(qip_core::error::Error::invalid(format!(
+            "the journaled contradiction requests of cycle {} are not the ones its own \
+             recorded contradictions ask; the record is not trusted as a replay",
             review.cycle
         )));
     }
@@ -3699,6 +3782,99 @@ mod tests {
         assert!(!branch_ids(&stage, day(2)).contains(&branch));
         // A closed branch is no longer fed or reported silent.
         assert!(third.refused.is_empty(), "{:?}", third.refused);
+    }
+
+    /// WORLD-1181 on real passes: the `Merge` arm is reached from the
+    /// stage's own arbitration, not a hand-built one. Two instruments that
+    /// split the panel in different ways open branches following two
+    /// different runner-ups; both stay live because each forecast the side
+    /// that printed, both are fed and hold views, and a later pass whose
+    /// views agree (or whose leader is clear) decides `Merge` and folds the
+    /// two branches into one. Every root stays live.
+    ///
+    /// Mutation: make the `Decision::Merge` arm `continue` before merging
+    /// -- no pass ever journals a `Merged` event and the `expect` fails.
+    #[test]
+    fn real_passes_open_two_branches_that_both_hold_views_and_a_merge_decision_folds_them() {
+        use qip_world_model::federation::Event;
+        let mut stage = FederationStage::new();
+        let (mut a_close, mut b_close) = (100.0, 100.0);
+        let mut roots: Vec<String> = Vec::new();
+        let mut folded = None;
+        for n in 1..40u64 {
+            a_close += if n % 4 < 2 { 1.0 } else { -1.0 };
+            b_close += if n % 2 == 0 { 0.5 } else { -0.9 };
+            let at = day(n as i64 - 1);
+            let mut pass = rising(n, a_close, at);
+            let mut second = pass.instruments[0].clone();
+            second.subject = "BBB".into();
+            second.last_close = b_close;
+            second.returns = series(40, 0.0);
+            pass.instruments.push(second);
+            let branches_before: BTreeSet<String> = stage.branches.keys().cloned().collect();
+            let review = stage.run(&pass, at);
+            if n == 1 {
+                roots = review.population.iter().map(|m| m.id.clone()).collect();
+            }
+            let merged: Vec<&qip_world_model::federation::Lineage> = review
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Merged { lineage, .. } => Some(lineage),
+                    _ => None,
+                })
+                .collect();
+            if let Some(lineage) = merged.first() {
+                folded = Some((n, branches_before, (*lineage).clone(), review));
+                break;
+            }
+        }
+        let (n, before, lineage, review) =
+            folded.expect("no real pass in 39 produced a merge of two branches");
+        // Premise: the pass reached a `Merge` decision on an arbitration in
+        // which two live branches held views.
+        let deciding = review
+            .arbitrations
+            .iter()
+            .find(|a| {
+                a.decision == Decision::Merge
+                    && a.disagreement
+                        .views
+                        .iter()
+                        .filter(|v| before.contains(&v.model))
+                        .count()
+                        >= 2
+            })
+            .unwrap_or_else(|| panic!("pass {n} merged without a Merge on two held branch views"));
+        assert!(deciding.arbitrated_probability.is_some(), "{deciding:?}");
+        // The two parents are the branches, never roots.
+        assert_eq!(lineage.parents.len(), 2, "{lineage:?}");
+        for parent in &lineage.parents {
+            assert!(
+                before.contains(parent),
+                "{parent} was not a branch: {before:?}"
+            );
+            assert!(!roots.contains(parent), "a root was merged: {parent}");
+        }
+        assert_eq!(roots.len(), 17, "premise: seventeen roots");
+        let live = |id: &str| {
+            matches!(
+                stage.federation().status(id),
+                Ok(qip_world_model::federation::Status::Live)
+            )
+        };
+        let gone: Vec<&String> = roots.iter().filter(|r| !live(r)).collect();
+        assert!(gone.is_empty(), "a root left the population: {gone:?}");
+        for parent in &lineage.parents {
+            assert!(
+                matches!(
+                    stage.federation().status(parent),
+                    Ok(qip_world_model::federation::Status::Merged { .. })
+                ),
+                "{parent} was not marked merged"
+            );
+            assert!(!stage.branches.contains_key(parent));
+        }
     }
 
     /// WORLD-1181: a `Merge` folds two branches into one and never two roots.
@@ -4507,6 +4683,81 @@ mod tests {
         assert!(
             replay(&platform).is_err(),
             "replay still refuses the whole read"
+        );
+    }
+
+    /// R12-WORLD-1181: the information request a contradiction raises is
+    /// journaled beside it, names the two members that assert opposite
+    /// outcomes, and is checked on replay like the contradiction itself. A
+    /// record whose request names a member the contradiction does not is
+    /// refused, so a request nobody's views asked for cannot enter the log
+    /// as if the pass had raised it.
+    ///
+    /// Mutation: drop the request check in `trusted` -- the edited record
+    /// replays and the refusal assertion fails. Mutation: build no request
+    /// in `run` -- the premise that each contradiction carries one fails.
+    #[test]
+    fn each_contradiction_journals_a_request_naming_its_two_members_and_replay_refuses_an_edited_one()
+     {
+        let config = crate::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(day(0), config.seed);
+        let mut platform = crate::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        let mut stage = FederationStage::new();
+        let mut asked = 0;
+        for cycle in 1..=3u64 {
+            let mut review = stage.run(&rising(cycle, 100.0 + cycle as f64, day(0)), day(0));
+            assert_eq!(
+                review.contradiction_requests.len(),
+                review.contradictions.len(),
+                "premise: one request per contradiction"
+            );
+            for (c, request) in review
+                .contradictions
+                .iter()
+                .zip(&review.contradiction_requests)
+            {
+                assert_eq!(request.proposition, c.proposition);
+                assert_eq!(
+                    request.models,
+                    [c.for_model.clone(), c.against_model.clone()]
+                );
+                assert_ne!(c.for_model, c.against_model);
+            }
+            asked += review.contradiction_requests.len();
+            if cycle == 2 {
+                let first = review
+                    .contradiction_requests
+                    .first_mut()
+                    .expect("premise: the rising tape records a contradiction");
+                first.models[1] = "a member that asserted nothing".into();
+            }
+            platform
+                .journal_record(review, "kernel/federation", day(0))
+                .unwrap_or_else(|e| panic!("journaled: {e}"));
+        }
+        assert!(
+            asked >= 3,
+            "premise: every pass asked something, {asked} in all"
+        );
+        let each = replay_each(&platform).unwrap_or_else(|e| panic!("the journal reads: {e}"));
+        let positions: Vec<Option<u64>> = each
+            .iter()
+            .map(|r| r.as_ref().ok().map(|review| review.cycle))
+            .collect();
+        assert_eq!(positions, [Some(1), None, Some(3)], "{each:?}");
+        let refusal = each[1].as_ref().err().map(|e| e.message().to_string());
+        assert!(
+            refusal
+                .as_deref()
+                .is_some_and(|m| m.contains("contradiction requests of cycle 2 ")),
+            "{refusal:?}"
         );
     }
 
