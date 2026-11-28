@@ -423,14 +423,24 @@ fn a_component_below_the_minimum_sample_reports_no_accuracy_and_is_not_calibrate
                 "key": ANALYST,
                 "samples": 1,
                 "accuracy": null,
-                "calibrated": false
+                "calibrated": false,
+                "uncertainty": {
+                    "resolved": 1,
+                    "prior_share": "0.8",
+                    "below_minimum_sample": true
+                }
             },
             {
                 "kind": "detector",
                 "key": DETECTOR,
                 "samples": 1,
                 "accuracy": null,
-                "calibrated": false
+                "calibrated": false,
+                "uncertainty": {
+                    "resolved": 1,
+                    "prior_share": "0.8",
+                    "below_minimum_sample": true
+                }
             }
         ]),
         "{text}"
@@ -472,6 +482,18 @@ fn the_minimum_sample_the_body_states_is_the_count_at_which_the_engine_starts_re
         assert_eq!(components.len(), 2, "{text}");
         for row in components {
             assert_eq!(row["samples"], serde_json::json!(n), "{text}");
+            // R12-WORLD-3036: the share of the grade that is the prior,
+            // k / (k + n) with the same four pseudo-counts, and whether the
+            // sample is below the minimum (owner decision 2 of 2026-11-28).
+            assert_eq!(
+                row["uncertainty"],
+                serde_json::json!({
+                    "resolved": n,
+                    "prior_share": (4.0 / (4.0 + n as f64)).to_string(),
+                    "below_minimum_sample": n < minimum
+                }),
+                "{n}: {text}"
+            );
             if n < minimum {
                 assert_eq!(row["calibrated"], serde_json::json!(false), "{n}: {text}");
                 assert_eq!(row["accuracy"], serde_json::Value::Null, "{n}: {text}");

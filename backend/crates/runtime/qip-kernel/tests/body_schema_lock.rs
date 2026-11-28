@@ -264,6 +264,7 @@ fn cycle_journal() -> CycleJournalEntry {
         }],
         sensed_unlisted: 1,
         risk_discovery: None,
+        self_model: None,
     }
 }
 

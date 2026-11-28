@@ -53,6 +53,7 @@ pub use feedback::{
 };
 pub use research::{MINIMUM_CLUSTER, ResearchLedger, ResearchPrompt};
 pub use self_model::{
-    CAPABILITY_WINDOW, Capability, CapabilityEstimate, ComponentKey, ComponentKind, MAX_COMPONENTS,
-    MINIMUM_SAMPLE, ScoredOutcome, SelfModel,
+    BLIND_SPOT_DISCOUNT, CAPABILITY_WINDOW, Capability, CapabilityEstimate, ComponentKey,
+    ComponentKind, MAX_COMPONENTS, MINIMUM_SAMPLE, PSEUDO_COUNTS, ScoredOutcome, SelfModel,
+    UncertaintyReading,
 };

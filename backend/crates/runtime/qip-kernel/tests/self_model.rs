@@ -25,7 +25,7 @@ use qip_financial::quality::{DataQuality, Provenance};
 use qip_financial::universe::Universe;
 use qip_kernel::config::PlatformConfig;
 use qip_kernel::cycle::Stage;
-use qip_kernel::platform::Platform;
+use qip_kernel::platform::{Platform, SelfModelJournal};
 use qip_learning_engine::self_model::{ComponentKey, MINIMUM_SAMPLE, ScoredOutcome, SelfModel};
 use qip_market::bar::{Bar, Interval};
 use qip_market_ingestion::adapter::SensedRecord;
@@ -686,11 +686,19 @@ fn quiet_bars(symbol: &str, count: i64) -> Vec<SensedRecord> {
 /// feed kept flowing, and REASON weighed the detector reading that frozen
 /// series as if it were reading the market.
 ///
-/// Mutation: drop the `stale_inputs` arm in `SelfModel::shared_withholding`
-/// -- the AAA thesis withholds nothing.
+/// Until owner decision 2 of 2026-11-28 REASON withheld that detector's
+/// evidence and still formed the thesis. The capability boundary is now
+/// drawn per instrument, and an instrument whose own bars stopped lies
+/// outside it, so the thesis is refused outright: the stricter of the two.
+/// The stale area is still recorded on the self-model, which is what the
+/// first half of this test holds. A series the universe does not hold raises
+/// no opportunity at all, so the withholding arm is not reachable through
+/// the cycle any more and this test no longer guards it.
+///
+/// Mutation: drop the per-instrument refusal in `Platform::synthesise` --
+/// the AAA thesis is formed and the detail carries no refusal.
 #[test]
-fn an_input_whose_bars_stopped_is_a_stale_area_and_reason_withholds_the_evidence_read_from_it()
--> Result<()> {
+fn an_input_whose_bars_stopped_is_a_stale_area_and_reason_forms_no_thesis_on_it() -> Result<()> {
     use qip_contracts::degradation::Capability;
     use qip_kernel::platform::FEED_HORIZON;
     let mut platform = platform()?;
@@ -725,16 +733,32 @@ fn an_input_whose_bars_stopped_is_a_stale_area_and_reason_withholds_the_evidence
     let detail = reason_detail(&report);
     assert!(
         detail.contains(&format!(
-            "(stale: the input {} has had no bar since",
+            "no thesis was formed on {}: the feed serves it no fresh bar, so it lies outside the \
+             capability boundary drawn per instrument;",
             object("AAA").as_str()
         )),
-        "a stale input's evidence was weighed: {detail}"
+        "a thesis was formed on a stale input: {detail}"
+    );
+    assert!(
+        platform
+            .predictions()
+            .iter()
+            .all(|p| !p.hypothesis.ends_with(object("AAA").as_str())),
+        "a thesis was written on AAA"
     );
 
     let mut fresh = platform_fresh()?;
     let fresh_report = fresh.run_cycle(start());
     assert!(fresh.self_model().stale_inputs().is_empty());
     assert!(!reason_detail(&fresh_report).contains("self-model withheld"));
+    assert!(
+        fresh
+            .predictions()
+            .iter()
+            .any(|p| p.hypothesis.ends_with(object("AAA").as_str())),
+        "premise: with its bars flowing the same AAA thesis is formed: {}",
+        reason_detail(&fresh_report)
+    );
     Ok(())
 }
 
@@ -957,6 +981,10 @@ struct BlindRun {
     /// The detector and the anomaly kind of the opportunity worked on `second`.
     worked_detector: String,
     worked_kind: String,
+    /// The detector's graded factor when the thesis on `second` was formed:
+    /// `None` below the minimum sample, so REASON weighs it at the ungraded
+    /// weight wherever it is not blind.
+    detector_factor: Option<f64>,
 }
 
 /// What REASON said about the first thesis it formed on `second`, after the
@@ -1055,12 +1083,34 @@ fn reason_after_grading_on_nwsc(second: &str) -> Result<BlindRun> {
     );
     let (worked_detector, worked_kind) =
         worked.expect("premise: the opportunity on the second name was at the queue's head");
+    let detector_factor = platform.self_model().factor(&detector);
     Ok(BlindRun {
         detail,
         graded_class: detector.id,
         worked_detector,
         worked_kind,
+        detector_factor,
     })
+}
+
+/// The two weights the blind-spot line names for `origin`: what grading
+/// would give and what REASON weighed it at.
+fn blind_weights(detail: &str, origin_and_reason: &str) -> (f64, f64) {
+    let at = detail
+        .find(origin_and_reason)
+        .unwrap_or_else(|| panic!("no blind-spot line for {origin_and_reason}: {detail}"));
+    let rest = &detail[at + origin_and_reason.len()..];
+    let graded = rest
+        .strip_prefix(", where grading gives ")
+        .and_then(|r| r.get(..6))
+        .and_then(|n| n.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no graded weight after {origin_and_reason}: {rest}"));
+    let weighed = rest
+        .find("; weighed at ")
+        .and_then(|i| rest.get(i + "; weighed at ".len()..i + "; weighed at ".len() + 6))
+        .and_then(|n| n.parse::<f64>().ok())
+        .unwrap_or_else(|| panic!("no applied weight after {origin_and_reason}: {rest}"));
+    (graded, weighed)
 }
 
 /// The failure this guards: a component graded only on information-technology
@@ -1070,14 +1120,24 @@ fn reason_after_grading_on_nwsc(second: &str) -> Result<BlindRun> {
 /// spot keyed on asset class could never fire; the (component, sector) cell
 /// the decision record defines does.
 ///
-/// The blind spot caps the weight rather than zeroing it
-/// (`docs/blueprint/owner-decisions-2026-11-23.md`, "Figures decided on
-/// 2026-11-24"): with one graded outcome nothing is below the minimum sample,
-/// so the cap is the ungraded weight and the record says so.
+/// The blind spot halves the weight grading would give
+/// (`docs/blueprint/owner-decisions-2026-11-28.md`, decision 2): with one
+/// graded outcome nothing is above the minimum sample, so grading gives the
+/// ungraded weight, 1, and the blind cell is weighed at 0.5. Until that
+/// decision the cell was capped at the weight the origin carried anyway, so
+/// the line was a label that moved no weight; this test read "ungraded, full
+/// weight" here and held exactly that.
+///
+/// The twin is the same detector in the sector it was graded in, VNTG's: it
+/// reads no blind spot and, with no factor below the minimum sample, REASON
+/// weighs it at the ungraded weight, the 1 the blind line names, which is
+/// twice the blind cell's.
 ///
 /// Mutations: `SelfModel::is_blind_in` returns false -- the MRDN thesis reads
 /// no blind spot; `synthesise` keys the detector's blind spot by its evidence
-/// name rather than its claim class -- the detector's line is missing.
+/// name rather than its claim class -- the detector's line is missing;
+/// `BLIND_SPOT_DISCOUNT` set to 1.0 -- the cell is weighed at full weight and
+/// the line reads "ungraded, full weight".
 #[test]
 fn a_component_graded_in_one_sector_is_blind_in_another_on_the_committed_universe() -> Result<()> {
     let run = reason_after_grading_on_nwsc(MRDN)?;
@@ -1096,26 +1156,60 @@ fn a_component_graded_in_one_sector_is_blind_in_another_on_the_committed_univers
     );
     assert!(
         !detail.contains("self-model withheld the evidence of "),
-        "a blind spot withheld evidence outright rather than capping it: {detail}"
+        "a blind spot withheld evidence outright rather than discounting it: {detail}"
     );
     // The analyst graded on NWSC, under its own name.
-    assert!(
-        detail.contains(
-            "equity-analyst (blind spot: analyst:equity-analyst has graded outcomes only outside \
-             the energy sector; ungraded, full weight)"
-        ),
-        "the analyst blind in energy was not read blind: {detail}"
+    let (analyst_graded, analyst_weighed) = blind_weights(
+        detail,
+        "equity-analyst (blind spot: analyst:equity-analyst has graded outcomes only outside \
+         the energy sector",
     );
     // The detector, charged under its claim class and carrying its evidence
     // under its own name: the blind spot is read under the one and filed
     // under the other.
-    assert!(
-        detail.contains(&format!(
-            "{} (blind spot: detector:{} has graded outcomes only outside the energy sector; \
-             ungraded, full weight)",
+    let (detector_graded, detector_weighed) = blind_weights(
+        detail,
+        &format!(
+            "{} (blind spot: detector:{} has graded outcomes only outside the energy sector",
             run.worked_detector, run.graded_class
-        )),
-        "the detector blind in energy was not read blind: {detail}"
+        ),
+    );
+    for (who, graded, weighed) in [
+        ("analyst", analyst_graded, analyst_weighed),
+        ("detector", detector_graded, detector_weighed),
+    ] {
+        assert!(
+            approx_eq(graded, 1.0, 1e-9),
+            "premise: below the minimum sample grading gives the {who} full weight, read {graded}"
+        );
+        assert!(
+            approx_eq(weighed, 0.5, 1e-9),
+            "the blind {who} was weighed at {weighed}, not half the {graded} grading gives"
+        );
+    }
+
+    // The graded twin: the same detector on VNTG, in the sector it was
+    // graded in.
+    let twin = reason_after_grading_on_nwsc(VNTG)?;
+    assert_eq!(
+        twin.worked_kind, twin.graded_class,
+        "premise: the twin thesis is raised by the same kind of anomaly"
+    );
+    assert!(
+        !twin.detail.contains("(blind spot: "),
+        "premise: the twin cell is not blind: {}",
+        twin.detail
+    );
+    assert_eq!(
+        twin.detector_factor, None,
+        "premise: no factor caps the twin, so REASON weighs it at the ungraded weight"
+    );
+    // REASON leaves an origin it holds no factor for at full weight.
+    let twin_weight = 1.0;
+    assert!(
+        approx_eq(twin_weight, 2.0 * detector_weighed, 1e-9),
+        "the graded twin ({twin_weight}) does not weigh twice the blind cell \
+         ({detector_weighed})"
     );
     Ok(())
 }
@@ -1154,4 +1248,236 @@ fn big_jump_bars(symbol: &str, count: usize) -> Vec<SensedRecord> {
             bar(symbol, at, open, price)
         })
         .collect()
+}
+
+/// Bars for `object_id` on the committed catalogue: `records` (built against
+/// the fixture clock) moved onto the committed one.
+fn committed(records: Vec<SensedRecord>, object_id: &str) -> Vec<SensedRecord> {
+    readdressed(records, object_id, committed_start().since(start()))
+}
+
+/// The committed catalogue's other three instruments.
+const ATFB: &str = "OBJ00000000000000000ATFB";
+const HLCX: &str = "OBJ00000000000000000HLCX";
+const RSRC: &str = "OBJ00000000000000000RSRC";
+
+/// The failure this guards: on the committed universe, six common stocks in
+/// one asset class, the capability boundary was drawn by asset class, so it
+/// fired only once the whole feed had stopped. One instrument's bars stopping
+/// left it inside, and REASON formed a thesis on a series nothing was serving
+/// (owner decision 2 of 2026-11-28 draws the boundary per instrument).
+///
+/// MRDN's bars stop `FEED_HORIZON` plus a day ago, its old series still holding
+/// the jump a detector fires on; NWSC is served now with a jump of its own;
+/// the other four are served and quiet. The thesis on MRDN is refused and
+/// the one on NWSC is admitted.
+///
+/// Mutations: the per-instrument refusal in `Platform::synthesise` removed --
+/// a thesis is written on MRDN; `observe_served_boundary` declares every
+/// universe instrument regardless of freshness -- MRDN reads inside.
+#[test]
+fn an_instrument_whose_bars_stopped_is_outside_the_boundary_on_the_committed_universe() -> Result<()>
+{
+    use qip_kernel::platform::FEED_HORIZON;
+    use qip_learning_engine::self_model::BoundaryReading;
+    let mut platform = committed_platform()?;
+    platform.observe(committed(
+        bars_ending("AAA", 120, FEED_HORIZON + Duration::from_days(1)),
+        MRDN,
+    ));
+    platform.observe(committed(bars("AAA", 120), NWSC));
+    for quiet in [VNTG, ATFB, HLCX, RSRC] {
+        platform.observe(committed(quiet_bars("AAA", 40), quiet));
+    }
+    let mut details = Vec::new();
+    for step in 0..6 {
+        let report =
+            platform.run_cycle(committed_start().saturating_add(Duration::from_mins(step)));
+        details.push(reason_detail(&report));
+    }
+    let model = platform.self_model();
+    assert_eq!(
+        model.boundary_of("equity"),
+        BoundaryReading::Inside,
+        "premise: the one class is still served, so a class boundary would refuse nothing"
+    );
+    let served: Vec<&str> = model
+        .served_instruments()
+        .expect("the boundary was read")
+        .iter()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        served,
+        vec![ATFB, HLCX, NWSC, RSRC, VNTG],
+        "the boundary is not exactly the five instruments served fresh bars"
+    );
+    for (instrument, reading) in [
+        (MRDN, BoundaryReading::Outside),
+        (NWSC, BoundaryReading::Inside),
+        (VNTG, BoundaryReading::Inside),
+        (ATFB, BoundaryReading::Inside),
+        (HLCX, BoundaryReading::Inside),
+        (RSRC, BoundaryReading::Inside),
+    ] {
+        assert_eq!(
+            model.instrument_boundary_of(instrument),
+            reading,
+            "{instrument}"
+        );
+    }
+    let refusal = format!(
+        "no thesis was formed on {MRDN}: the feed serves it no fresh bar, so it lies outside the \
+         capability boundary drawn per instrument;"
+    );
+    assert!(
+        details.iter().any(|d| d.contains(&refusal)),
+        "REASON did not refuse the MRDN thesis: {details:#?}"
+    );
+    assert!(
+        platform
+            .predictions()
+            .iter()
+            .all(|p| !p.hypothesis.ends_with(MRDN)),
+        "a thesis was written on MRDN"
+    );
+    assert!(
+        platform
+            .predictions()
+            .iter()
+            .any(|p| p.hypothesis.ends_with(NWSC)),
+        "the served NWSC thesis was not admitted: {details:#?}"
+    );
+    Ok(())
+}
+
+/// The failure this guards: the self-model shrank every grade toward one half
+/// by its pseudo-counts and refused one below the minimum sample, and nothing
+/// said how much of a grade was measurement, so a component graded once and
+/// one graded a hundred times read alike to anyone but the code
+/// (owner decision 2 of 2026-11-28). The reading is journaled, so it replays
+/// from the log alone, and only when it moves, so the journal does not restate
+/// it once per cycle.
+///
+/// The journal carries a change record, not the table: world-model members
+/// are graded on nearly every cycle, so restating the table per entry would
+/// grow the fast brain's in-memory log by the whole of it each cycle.
+///
+/// Mutations: `UncertaintyReading::over` with the prior share inverted
+/// (`n / (PSEUDO_COUNTS + n)`) -- the share reads 0.2; `journal_cycle` writes
+/// `self_model: None` -- the replay finds no reading; `change_to` names every
+/// row whether it moved or not -- the repeated cycle restates the detector.
+#[test]
+fn grading_a_thesis_moves_the_uncertainty_reading_and_the_journal_replays_it() -> Result<()> {
+    let mut platform = platform()?;
+    platform.observe(bars("AAA", 120));
+    platform.run_cycle(start());
+    let prediction = platform
+        .predictions()
+        .first()
+        .cloned()
+        .expect("premise: a claim to resolve");
+    let detector = ComponentKey::detector(&prediction.claim.expect("a claim").class)?;
+    assert_eq!(
+        platform.self_model().uncertainty(&detector),
+        None,
+        "premise: nothing is graded before the thesis resolves"
+    );
+    let horizon = prediction.proposition.resolves_at;
+    let swings: Vec<SensedRecord> = (0..20)
+        .map(|i| {
+            let (open, close) = if i % 2 == 0 {
+                (100.0, 150.0)
+            } else {
+                (150.0, 100.0)
+            };
+            let at = horizon.saturating_sub(Duration::from_mins((20 - i) * 60));
+            hourly_bar("AAA", at, open, close)
+        })
+        .collect();
+    platform.observe(swings);
+    let graded_at = horizon.saturating_add(Duration::from_mins(1));
+    platform.run_cycle(graded_at);
+    let reading = platform
+        .self_model()
+        .uncertainty(&detector)
+        .expect("premise: grading charged the detector");
+    assert_eq!(reading.resolved, 1);
+    assert!(
+        approx_eq(reading.prior_share, 0.8, 1e-12),
+        "one resolved thesis against four pseudo-counts is four fifths prior: {reading:?}"
+    );
+    assert!(reading.below_minimum_sample);
+
+    let entries = platform.journal_entries()?;
+    let replayed = SelfModelJournal::replay(&entries);
+    assert_eq!(
+        replayed.get(&detector.to_string()),
+        Some(&reading),
+        "the journal does not replay the detector's reading"
+    );
+    let live: BTreeMap<String, _> = platform
+        .self_model()
+        .uncertainty_readings()
+        .into_iter()
+        .map(|(key, reading)| (key.to_string(), reading))
+        .collect();
+    assert!(
+        live.len() > 1,
+        "premise: more than one component is graded, so the table is not trivial"
+    );
+    assert_eq!(
+        replayed, live,
+        "the journal does not replay the table the self-model holds"
+    );
+    assert_eq!(
+        SelfModelJournal::replay_health(&entries).as_ref(),
+        platform.self_model().health(),
+        "the journal does not replay the health reading the self-model holds"
+    );
+    let graded_entry = entries
+        .last()
+        .expect("premise: the grading cycle was journaled");
+    assert_eq!(
+        graded_entry
+            .self_model
+            .as_ref()
+            .and_then(|j| j.uncertainty.get(&detector.to_string())),
+        Some(&Some(reading.clone())),
+        "the grading cycle's entry does not name the detector it moved"
+    );
+
+    // A cycle on which the detector is not graded again does not restate it:
+    // a second cycle at the same instant.
+    platform.run_cycle(graded_at);
+    assert_eq!(
+        platform.self_model().uncertainty(&detector),
+        Some(reading),
+        "premise: the detector was not graded on the repeated cycle"
+    );
+    let after = platform.journal_entries()?;
+    assert_eq!(
+        after.len(),
+        entries.len() + 1,
+        "premise: the cycle was journaled"
+    );
+    assert!(
+        after
+            .last()
+            .and_then(|e| e.self_model.as_ref())
+            .is_none_or(|j| !j.uncertainty.contains_key(&detector.to_string())),
+        "an unchanged reading was journaled again"
+    );
+    let live: BTreeMap<String, _> = platform
+        .self_model()
+        .uncertainty_readings()
+        .into_iter()
+        .map(|(key, reading)| (key.to_string(), reading))
+        .collect();
+    assert_eq!(
+        SelfModelJournal::replay(&after),
+        live,
+        "the journal stopped replaying the table after an entry that moved less"
+    );
+    Ok(())
 }

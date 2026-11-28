@@ -882,6 +882,9 @@ pub struct Platform {
     /// reason: experience attributed to a cycle that did not measure it is
     /// an audit trail worse than an empty one.
     cycle_experience: Option<ExperienceReport>,
+    /// What the journal last said of the self-model, so an entry carries
+    /// only what changed (R12-WORLD-3036).
+    journaled_self_model: JournaledSelfModel,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
     /// Everything the platform decided, and what came of it — refusals
@@ -4079,6 +4082,124 @@ pub struct CycleJournalEntry {
     /// field existed, which is why it is defaulted rather than required.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub risk_discovery: Option<crate::cycle::RiskDiscovery>,
+    /// What moved in the self-model's uncertainty reading per component and
+    /// its operational-health reading since the last entry (R12-WORLD-3036).
+    /// Absent on a cycle where nothing moved; [`SelfModelJournal::replay`]
+    /// folds the journal back into the table. Defaulted so an older journal
+    /// replays.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub self_model: Option<SelfModelJournal>,
+}
+
+/// What the self-model said of its own uncertainty and health, as the
+/// journal records it (R12-WORLD-3036, owner decision 2 of 2026-11-28).
+///
+/// A change record, not a table. World-model members are graded on almost
+/// every cycle, so an entry restating every component's reading would grow
+/// the fast brain's in-memory log by the whole table per cycle; an entry
+/// names only the rows that moved, and [`SelfModelJournal::replay`] folds the
+/// journal back into the table the self-model held.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SelfModelJournal {
+    /// Each component, keyed `kind:id`, whose reading changed since the last
+    /// entry: the graded resolved theses behind its grade, the share of the
+    /// grade that is the prior, and whether the sample is below the minimum.
+    /// `null` where the self-model no longer holds the component (evicted
+    /// past its bound).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub uncertainty: BTreeMap<String, Option<qip_learning_engine::self_model::UncertaintyReading>>,
+    /// The operational-health reading the cycle ended on, present only when
+    /// whether it was halted or which rows were degraded changed since the
+    /// last entry that carried one. Its instant moves every cycle and is not
+    /// a change on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<qip_learning_engine::self_model::OperationalHealth>,
+}
+
+impl SelfModelJournal {
+    /// Fold `entries`, oldest first, into the uncertainty table the
+    /// self-model held after the last of them: a replay from the log alone.
+    pub fn replay<'a>(
+        entries: impl IntoIterator<Item = &'a CycleJournalEntry>,
+    ) -> BTreeMap<String, qip_learning_engine::self_model::UncertaintyReading> {
+        let mut table = BTreeMap::new();
+        for journal in entries.into_iter().filter_map(|e| e.self_model.as_ref()) {
+            for (key, reading) in &journal.uncertainty {
+                match reading {
+                    Some(reading) => {
+                        table.insert(key.clone(), reading.clone());
+                    }
+                    None => {
+                        table.remove(key);
+                    }
+                }
+            }
+        }
+        table
+    }
+
+    /// The newest health reading `entries` carry, oldest first.
+    pub fn replay_health<'a>(
+        entries: impl IntoIterator<Item = &'a CycleJournalEntry>,
+    ) -> Option<qip_learning_engine::self_model::OperationalHealth> {
+        entries
+            .into_iter()
+            .filter_map(|e| e.self_model.as_ref().and_then(|j| j.health.clone()))
+            .last()
+    }
+}
+
+/// What the journal last said of the self-model, so the next entry carries
+/// only what moved.
+#[derive(Clone, Debug, Default)]
+struct JournaledSelfModel {
+    uncertainty: BTreeMap<String, qip_learning_engine::self_model::UncertaintyReading>,
+    health: Option<(
+        bool,
+        BTreeMap<qip_contracts::degradation::Capability, qip_contracts::degradation::Freshness>,
+    )>,
+}
+
+impl JournaledSelfModel {
+    /// The change record from what was journaled to what `model` holds, or
+    /// `None` when nothing moved, beside the state it would leave journaled.
+    fn change_to(&self, model: &SelfModel) -> (Option<SelfModelJournal>, Self) {
+        let now: BTreeMap<String, qip_learning_engine::self_model::UncertaintyReading> = model
+            .uncertainty_readings()
+            .into_iter()
+            .map(|(key, reading)| (key.to_string(), reading))
+            .collect();
+        let mut uncertainty = BTreeMap::new();
+        for (key, reading) in &now {
+            if self.uncertainty.get(key) != Some(reading) {
+                uncertainty.insert(key.clone(), Some(reading.clone()));
+            }
+        }
+        for key in self.uncertainty.keys() {
+            if !now.contains_key(key) {
+                uncertainty.insert(key.clone(), None);
+            }
+        }
+        let health_state = model.health().map(|h| (h.halted, h.degraded.clone()));
+        let health = (health_state != self.health)
+            .then(|| model.health().cloned())
+            .flatten();
+        let next = Self {
+            uncertainty: now,
+            health: health_state,
+        };
+        if uncertainty.is_empty() && health.is_none() {
+            (None, next)
+        } else {
+            (
+                Some(SelfModelJournal {
+                    uncertainty,
+                    health,
+                }),
+                next,
+            )
+        }
+    }
 }
 
 /// The most records one journal entry names as having fed its cycle.
@@ -7263,6 +7384,7 @@ impl Platform {
             decision_uncertainties: Vec::new(),
             cycle_second_order: None,
             cycle_experience: None,
+            journaled_self_model: JournaledSelfModel::default(),
             journal: DurableLogTransport::in_memory("kernel-journal"),
             outcomes: OutcomeCapture::new(),
             counterfactuals,
@@ -15541,8 +15663,16 @@ impl Platform {
     /// assembly declared, so this only narrows; a class whose bars stopped
     /// arriving leaves the boundary, and REASON forms no thesis in it, even
     /// while the series it left behind still raises anomalies.
+    ///
+    /// The same reading drawn per instrument (owner decision 2 of
+    /// 2026-11-28): the universe's instruments whose own newest bar closed
+    /// within [`FEED_HORIZON`] of `now`. The committed universe is one asset
+    /// class, so the class boundary fires only when the whole feed stops;
+    /// this one fires when one instrument's bars stop. A series the universe
+    /// does not hold is not an instrument the platform can act on and is
+    /// never put inside.
     fn observe_served_boundary(&mut self, now: Timestamp) {
-        let served: BTreeSet<String> = self
+        let fresh: Vec<&String> = self
             .bar_history
             .iter()
             .filter(|(_, bars)| {
@@ -15551,11 +15681,26 @@ impl Platform {
                     .max()
                     .is_some_and(|close| now.since(close) <= FEED_HORIZON)
             })
-            .filter_map(|(object, _)| self.asset_class_of(object))
+            .map(|(object, _)| object)
+            .collect();
+        let served: BTreeSet<String> = fresh
+            .iter()
+            .filter_map(|object| self.asset_class_of(object))
+            .collect();
+        let instruments: BTreeSet<String> = fresh
+            .iter()
+            .filter(|object| self.asset_class_of(object).is_some())
+            .map(|object| (*object).clone())
             .collect();
         if let Err(error) = self.self_model.declare_boundary(served) {
             self.capture_problems.push(format!(
                 "the self-model refused the served capability boundary: {}",
+                error.message()
+            ));
+        }
+        if let Err(error) = self.self_model.declare_served_instruments(instruments) {
+            self.capture_problems.push(format!(
+                "the self-model refused the served instrument boundary: {}",
                 error.message()
             ));
         }
@@ -16231,6 +16376,12 @@ impl Platform {
             sensed: std::mem::take(&mut self.sensed_pending),
             sensed_unlisted: std::mem::take(&mut self.sensed_unlisted),
             risk_discovery: Some(report.risk_discovery.clone()),
+            self_model: None,
+        };
+        let (change, journaled) = self.journaled_self_model.change_to(&self.self_model);
+        let entry = CycleJournalEntry {
+            self_model: change,
+            ..entry
         };
 
         let facts = EventFacts::derived(
@@ -16253,6 +16404,9 @@ impl Platform {
 
         self.event_log.append(&envelope.to_frame()?)?;
         self.journal.publish(envelope, now)?;
+        // Moved only once both logs took the entry: a change whose entry was
+        // never written must be carried by the next one.
+        self.journaled_self_model = journaled;
         Ok(())
     }
 
@@ -22677,6 +22831,27 @@ impl Platform {
             return Err(Error::denied(format!(
                 "no thesis was formed on {}: its asset class {class} lies outside the capability \
                  boundary the feed serves; it re-enters once a bar in that class arrives",
+                subject.as_str()
+            )));
+        }
+        // The boundary drawn per instrument (owner decision 2 of 2026-11-28):
+        // an instrument the universe holds whose own bars stopped is outside,
+        // though its class is still served by the others. Refused, and taken
+        // off the queue, for the class rule's reason.
+        if self.asset_class_of(subject.as_str()).is_some()
+            && self.self_model.instrument_boundary_of(subject.as_str())
+                == qip_learning_engine::self_model::BoundaryReading::Outside
+        {
+            self.telemetry.metrics.count(
+                names::OPPORTUNITIES_UNPRICED,
+                labels([("reason", "outside_capability_boundary")]),
+            );
+            self.queue
+                .retain(|queued| queued.opportunity_id != opportunity.opportunity_id);
+            return Err(Error::denied(format!(
+                "no thesis was formed on {}: the feed serves it no fresh bar, so it lies outside \
+                 the capability boundary drawn per instrument; it re-enters once its next bar \
+                 arrives",
                 subject.as_str()
             )));
         }

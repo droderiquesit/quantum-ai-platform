@@ -65,7 +65,11 @@ pub const MINIMUM_SAMPLE: usize = 10;
 /// penalty fades as the sample grows. Four is small enough that a hundred
 /// outcomes are barely touched and large enough that the minimum sample is
 /// not a certainty.
-const PSEUDO_COUNTS: f64 = 4.0;
+///
+/// Public so the uncertainty reading ([`SelfModel::uncertainty`]) states the
+/// share of a grade that comes from the prior against the figure the
+/// estimate actually uses, not a second copy of it.
+pub const PSEUDO_COUNTS: f64 = 4.0;
 
 /// How much worse the newer half of a component's window may score, in mean
 /// Brier, than the older half before the component is called drifting.
@@ -96,6 +100,50 @@ pub const INPUT_DRIFT_PSI: f64 = 0.25;
 /// REASON actually uses rather than a second copy of it.
 pub const UNGRADED_WEIGHT: f64 = 1.0;
 
+/// The share of the weight grading would give that a blind-spot cell keeps:
+/// evidence from a component in a (component, sector) cell with no graded
+/// resolved thesis weighs `BLIND_SPOT_DISCOUNT x min(UNGRADED_WEIGHT,
+/// SelfModel::factor)`.
+///
+/// Decided in `docs/blueprint/owner-decisions-2026-11-28.md`, decision 2.
+/// The two ends were both ruled out there: weight zero starved the shipped
+/// review (`qip-fastbrain` `tests/tape.rs`), and a cap equal to the weight
+/// the origin already carries changed no weight in any configuration, so
+/// the blind spot was a label and nothing else. Half keeps the evidence and
+/// still says it is less known. It only ever lowers a weight.
+pub const BLIND_SPOT_DISCOUNT: f64 = 0.5;
+
+/// How much of a component's grade is measurement and how much is the prior
+/// it is shrunk toward (R12-WORLD-3036, owner decision 2 of 2026-11-28).
+///
+/// The shrinkage was already applied by [`CapabilityEstimate::estimate`];
+/// this makes it readable instead of implicit, and introduces no figure of
+/// its own: `prior_share` is `PSEUDO_COUNTS / (PSEUDO_COUNTS + resolved)`,
+/// the weight of the pseudo-observations in the estimate's own formula.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UncertaintyReading {
+    /// The graded resolved theses behind the grade: the window the estimate
+    /// is computed over, so at most [`CAPABILITY_WINDOW`].
+    pub resolved: usize,
+    /// The share of the grade that is the prior, in `(0, 1]`.
+    pub prior_share: f64,
+    /// Whether `resolved` is below [`MINIMUM_SAMPLE`], so that no grade is
+    /// computed at all and REASON leaves the origin's weight alone.
+    pub below_minimum_sample: bool,
+}
+
+impl UncertaintyReading {
+    /// The reading for a grade over `resolved` outcomes.
+    pub fn over(resolved: usize) -> Self {
+        let n = resolved as f64;
+        Self {
+            resolved,
+            prior_share: PSEUDO_COUNTS / (PSEUDO_COUNTS + n),
+            below_minimum_sample: resolved < MINIMUM_SAMPLE,
+        }
+    }
+}
+
 /// A (component, sector) cell the component has never been graded in, for a
 /// component graded elsewhere (R12-WORLD-3036).
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +152,10 @@ pub struct BlindSpot {
     /// this cell: never above its graded weight, never above an ungraded
     /// origin's.
     pub weight: f64,
+    /// The weight grading would give the same evidence outside a blind
+    /// spot, `min(UNGRADED_WEIGHT, factor)`: what `weight` is
+    /// [`BLIND_SPOT_DISCOUNT`] of.
+    pub graded_weight: f64,
     /// Why, for the hypothesis's record.
     pub reason: String,
 }
@@ -499,6 +551,14 @@ pub struct SelfModel {
     /// feed horizon, with the instant that bar closed: the stale areas.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     stale_inputs: BTreeMap<String, Timestamp>,
+    /// The instruments the feed serves with fresh bars, or `None` before the
+    /// first reading: the capability boundary drawn per instrument
+    /// (`docs/blueprint/owner-decisions-2026-11-28.md`, decision 2). The
+    /// committed universe holds one asset class, so the class boundary above
+    /// fires only when the whole feed has stopped; this one fires when one
+    /// instrument's bars stop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    served_instruments: Option<BTreeSet<String>>,
 }
 
 /// How the platform was running when it last looked at itself
@@ -776,6 +836,60 @@ impl SelfModel {
         self.boundary.as_ref()
     }
 
+    /// Replace the per-instrument boundary with the instruments the feed
+    /// serves with fresh bars now. An empty set is a reading that the feed
+    /// serves none, and every instrument then reads outside. A blank id is
+    /// refused: it would put an unnamed instrument inside.
+    pub fn declare_served_instruments(
+        &mut self,
+        instruments: impl IntoIterator<Item = String>,
+    ) -> Result<()> {
+        let instruments: BTreeSet<String> = instruments.into_iter().collect();
+        if instruments.iter().any(|i| i.trim().is_empty()) {
+            return Err(Error::invalid(
+                "a capability boundary names no blank instrument",
+            ));
+        }
+        self.served_instruments = Some(instruments);
+        Ok(())
+    }
+
+    /// Where `instrument` lies against the per-instrument boundary.
+    pub fn instrument_boundary_of(&self, instrument: &str) -> BoundaryReading {
+        match &self.served_instruments {
+            None => BoundaryReading::Undeclared,
+            Some(served) if served.contains(instrument) => BoundaryReading::Inside,
+            Some(_) => BoundaryReading::Outside,
+        }
+    }
+
+    /// The instruments inside the per-instrument boundary, once read.
+    pub fn served_instruments(&self) -> Option<&BTreeSet<String>> {
+        self.served_instruments.as_ref()
+    }
+
+    /// The uncertainty reading of `key`'s grade, or `None` where the model
+    /// holds no record of it.
+    pub fn uncertainty(&self, key: &ComponentKey) -> Option<UncertaintyReading> {
+        self.components
+            .get(key)
+            .map(|estimate| UncertaintyReading::over(estimate.sample_count()))
+    }
+
+    /// The uncertainty reading of every component the model holds, in key
+    /// order, so two replays render the same table.
+    pub fn uncertainty_readings(&self) -> BTreeMap<ComponentKey, UncertaintyReading> {
+        self.components
+            .iter()
+            .map(|(key, estimate)| {
+                (
+                    key.clone(),
+                    UncertaintyReading::over(estimate.sample_count()),
+                )
+            })
+            .collect()
+    }
+
     /// Whether `key` is blind in `sector`: graded in at least one sector and
     /// never in this one. Read by key, not by evidence origin, because a
     /// detector is graded under the claim class it raised and its evidence
@@ -793,26 +907,30 @@ impl SelfModel {
     /// (R12-WORLD-3036): the weight REASON may give its supporting evidence
     /// in that cell, and the reason.
     ///
-    /// The weight is decided in `docs/blueprint/owner-decisions-2026-11-23.md`,
-    /// section "Figures decided on 2026-11-24": the weight an ungraded origin
-    /// already carries ([`UNGRADED_WEIGHT`], what REASON gives an origin
-    /// [`Self::origin_factors`] does not name), capped at the component's
-    /// lowest graded weight elsewhere ([`Self::factor`], `None` below
-    /// [`MINIMUM_SAMPLE`]). So a cell nothing has resolved in never weighs
-    /// more than grading gives, and is not silenced either: weight 0 there
-    /// starved every thesis outside the first sector graded, which is a
-    /// refusal nobody decided.
+    /// The weight is decided in `docs/blueprint/owner-decisions-2026-11-28.md`,
+    /// decision 2: [`BLIND_SPOT_DISCOUNT`] of the weight grading would give,
+    /// which is the weight an ungraded origin already carries
+    /// ([`UNGRADED_WEIGHT`], what REASON gives an origin
+    /// [`Self::origin_factors`] does not name) capped at the component's
+    /// graded weight ([`Self::factor`], `None` below [`MINIMUM_SAMPLE`]).
+    /// Until that decision the weight was the cap alone, which is the weight
+    /// the origin carries anyway, so a blind spot changed no weight in any
+    /// configuration. Weight 0 is ruled out too: it starved every thesis
+    /// outside the first sector graded, which is a refusal nobody decided.
     pub fn blind_spot(&self, key: &ComponentKey, sector: &str) -> Option<BlindSpot> {
         if !self.is_blind_in(key, sector) {
             return None;
         }
-        let weight = self
+        let graded_weight = self
             .factor(key)
             .map_or(UNGRADED_WEIGHT, |graded| graded.min(UNGRADED_WEIGHT));
+        let weight = BLIND_SPOT_DISCOUNT * graded_weight;
         Some(BlindSpot {
             weight,
+            graded_weight,
             reason: format!(
-                "blind spot: {key} has graded outcomes only outside the {sector} sector"
+                "blind spot: {key} has graded outcomes only outside the {sector} sector, \
+                 where grading gives {graded_weight:.4}"
             ),
         })
     }

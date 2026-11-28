@@ -59,6 +59,24 @@ pub struct ComponentView {
     pub accuracy: Option<String>,
     /// Whether an accuracy was reported. Always `accuracy.is_some()`.
     pub calibrated: bool,
+    /// How much of the grade is measurement and how much the prior it is
+    /// shrunk toward (R12-WORLD-3036, owner decision 2 of 2026-11-28).
+    pub uncertainty: UncertaintyView,
+}
+
+/// The engine's uncertainty reading of one component's grade, as a page
+/// renders it. Every field is read off the engine's own reading; the route
+/// computes none of them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UncertaintyView {
+    /// The graded resolved theses behind the grade.
+    pub resolved: usize,
+    /// The share of the grade that is the prior,
+    /// `PSEUDO_COUNTS / (PSEUDO_COUNTS + resolved)`, as the engine's exact
+    /// shortest round-trip decimal text, for `accuracy`'s reason.
+    pub prior_share: String,
+    /// Whether `resolved` is below the engine's minimum sample.
+    pub below_minimum_sample: bool,
 }
 
 /// The self-model's newest operational-health reading, as a page renders it
@@ -121,12 +139,23 @@ pub fn self_model(platform: &Platform) -> Result<SelfModelView, String> {
                 if calibrated { "reported" } else { "withheld" }
             ));
         }
+        let Some(reading) = platform.self_model().uncertainty(key) else {
+            return Err(format!(
+                "the engine holds {key} but gave it no uncertainty reading; the two are read \
+                 off one record and cannot disagree unless the engine is broken"
+            ));
+        };
         components.push(ComponentView {
             kind: key.kind.as_str().to_string(),
             key: key.id.clone(),
             samples,
             accuracy,
             calibrated,
+            uncertainty: UncertaintyView {
+                resolved: reading.resolved,
+                prior_share: reading.prior_share.to_string(),
+                below_minimum_sample: reading.below_minimum_sample,
+            },
         });
     }
     // The engine's map orders by its kind enum, which a page cannot know;

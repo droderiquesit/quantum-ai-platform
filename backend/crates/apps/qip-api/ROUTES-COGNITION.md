@@ -33,8 +33,10 @@ accuracy.
 ```json
 {
   "components": [
-    { "kind": "analyst",  "key": "macro-analyst",     "samples": 1,  "accuracy": null,                  "calibrated": false },
-    { "kind": "detector", "key": "price_dislocation", "samples": 10, "accuracy": "0.21428571428571427", "calibrated": true }
+    { "kind": "analyst",  "key": "macro-analyst",     "samples": 1,  "accuracy": null,                  "calibrated": false,
+      "uncertainty": { "resolved": 1, "prior_share": "0.8", "below_minimum_sample": true } },
+    { "kind": "detector", "key": "price_dislocation", "samples": 10, "accuracy": "0.21428571428571427", "calibrated": true,
+      "uncertainty": { "resolved": 10, "prior_share": "0.2857142857142857", "below_minimum_sample": false } }
   ],
   "minimum_sample": 10,
   "health": {
@@ -53,6 +55,10 @@ accuracy.
 | `components[].samples` | integer | Graded outcomes in the component's window. The window is bounded by the engine (128); older outcomes fall off. |
 | `components[].accuracy` | decimal string or `null` | The engine's estimated accuracy — the hit rate shrunk toward one half by four pseudo-observations, `(hits + 2) / (samples + 4)` — as the exact text of the engine's own number. `null` whenever `samples < minimum_sample`: the engine refuses to estimate a thin record and the route does not fill the gap. Render `null` as "not yet measured", not as zero. |
 | `components[].calibrated` | bool | Whether `accuracy` is present. Always equal to `accuracy != null` and to `samples >= minimum_sample`; the route refuses to serve a body in which those disagree. |
+| `components[].uncertainty` | object | The engine's uncertainty reading of the grade (R12-WORLD-3036, owner decision 2 of 2026-11-28). It makes the shrinkage readable: no figure here is the route's own. |
+| `components[].uncertainty.resolved` | integer | The graded resolved theses behind the grade: the same window as `samples`. |
+| `components[].uncertainty.prior_share` | decimal string | The share of the grade that comes from the prior, `4 / (4 + resolved)`, as the exact text of the engine's own number. Present below `minimum_sample` too, where it says how little has been measured. |
+| `components[].uncertainty.below_minimum_sample` | bool | Whether `resolved < minimum_sample`, so the engine computed no grade and REASON leaves the component's weight alone. |
 | `minimum_sample` | integer | The count below which the engine reports no accuracy. Present on every body, including an empty one, so a page can explain a `null` without a second request. |
 | `health` | object or `null` | The self-model's newest operational-health reading, which the kernel takes after LEARN on every cycle. `null` before the first cycle has taken one; never filled in as healthy. |
 | `health.observed_at` | RFC 3339 string | The instant of the reading. |

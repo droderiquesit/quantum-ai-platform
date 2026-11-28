@@ -667,3 +667,75 @@ fn a_snapshot_written_before_health_boundary_and_drift_existed_loads_as_unobserv
     assert!(approx_eq(old.weight(), old.accuracy, 0.0));
     Ok(())
 }
+
+/// The failure this guards: the shrinkage toward one half was applied and
+/// never stated, so a grade over one outcome and a grade over a hundred read
+/// alike to anyone but the code (R12-WORLD-3036, owner decision 2 of
+/// 2026-11-28). The reading is the estimate's own pseudo-count weight.
+///
+/// Mutation: the prior share inverted to `n / (PSEUDO_COUNTS + n)` -- the
+/// unrecorded component reads 0 rather than 1.
+#[test]
+fn the_uncertainty_reading_states_the_prior_share_and_the_minimum_sample_of_each_grade()
+-> qip_core::error::Result<()> {
+    use qip_learning_engine::self_model::UncertaintyReading;
+    let mut model = SelfModel::new();
+    let thin = ComponentKey::detector("thin")?;
+    let measured = ComponentKey::analyst("measured")?;
+    model.record(thin.clone(), ScoredOutcome::new("hyp-0", 0.6, true, at(0))?);
+    for i in 0..MINIMUM_SAMPLE {
+        model.record(
+            measured.clone(),
+            ScoredOutcome::new(format!("hyp-{i}"), 0.6, i % 2 == 0, at(i))?,
+        );
+    }
+    assert_eq!(
+        model.uncertainty(&thin),
+        Some(UncertaintyReading {
+            resolved: 1,
+            prior_share: 0.8,
+            below_minimum_sample: true,
+        })
+    );
+    let reading = model.uncertainty(&measured).expect("a record");
+    assert_eq!(reading.resolved, MINIMUM_SAMPLE);
+    assert!(!reading.below_minimum_sample);
+    assert!(
+        approx_eq(reading.prior_share, 4.0 / 14.0, 1e-12),
+        "{reading:?}"
+    );
+    assert_eq!(model.uncertainty(&ComponentKey::rung("never")?), None);
+    let none = UncertaintyReading::over(0);
+    assert!(
+        approx_eq(none.prior_share, 1.0, 1e-12) && none.below_minimum_sample,
+        "a grade over nothing is all prior: {none:?}"
+    );
+    assert_eq!(
+        model.uncertainty_readings().keys().collect::<Vec<_>>(),
+        vec![&thin, &measured],
+        "the table names every component, in key order"
+    );
+    Ok(())
+}
+
+/// The boundary drawn per instrument starts undeclared, refuses a blank id,
+/// and reads an instrument outside once a reading omits it.
+///
+/// Mutation: `instrument_boundary_of` answers `Inside` for a declared set
+/// that does not hold the instrument -- the stopped instrument reads inside.
+#[test]
+fn the_instrument_boundary_is_undeclared_until_read_and_outside_for_an_instrument_it_omits()
+-> qip_core::error::Result<()> {
+    let mut model = SelfModel::new();
+    assert_eq!(
+        model.instrument_boundary_of("a"),
+        BoundaryReading::Undeclared
+    );
+    assert!(model.declare_served_instruments([" ".to_string()]).is_err());
+    model.declare_served_instruments(["a".to_string(), "b".to_string()])?;
+    assert_eq!(model.instrument_boundary_of("a"), BoundaryReading::Inside);
+    model.declare_served_instruments(["b".to_string()])?;
+    assert_eq!(model.instrument_boundary_of("a"), BoundaryReading::Outside);
+    assert_eq!(model.instrument_boundary_of("b"), BoundaryReading::Inside);
+    Ok(())
+}
