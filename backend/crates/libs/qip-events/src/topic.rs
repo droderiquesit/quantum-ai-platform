@@ -272,6 +272,13 @@ pub enum Topic {
     AutonomyLevelChanged,
     BudgetExhausted,
     SystemAlert,
+    /// A log held only in memory released its oldest records as one whole
+    /// range to stay under its byte ceiling (ADR 0748): the range's last
+    /// hash, its record count, and what a replay from this point needs that
+    /// the released records held. From here on the chain is verified from
+    /// this checkpoint, not from genesis. The platform's own account of
+    /// what it no longer holds, so permanently.
+    EventLogCheckpointed,
 
     // --- REFLEX FABRIC ---
     /// A reflex pass was marked in the journal — the instant a pass began,
@@ -344,7 +351,7 @@ pub enum Topic {
 impl Topic {
     /// Every topic, in declaration order. Used by the registry, the
     /// documentation-drift test and the observability bootstrap.
-    pub const ALL: [Self; 94] = [
+    pub const ALL: [Self; 95] = [
         Self::MarketTick,
         Self::MarketQuote,
         Self::MarketTrade,
@@ -431,6 +438,7 @@ impl Topic {
         Self::AutonomyLevelChanged,
         Self::BudgetExhausted,
         Self::SystemAlert,
+        Self::EventLogCheckpointed,
         Self::ReflexPassMarked,
         Self::ReflexFeatureDigested,
         Self::ReflexJournalRecorded,
@@ -531,6 +539,7 @@ impl Topic {
             Self::AutonomyLevelChanged => "system.autonomy_changed",
             Self::BudgetExhausted => "system.budget_exhausted",
             Self::SystemAlert => "system.alert",
+            Self::EventLogCheckpointed => "system.event_log_checkpointed",
             Self::ReflexPassMarked => "reflex.pass_marked",
             Self::ReflexFeatureDigested => "reflex.feature_digested",
             Self::ReflexJournalRecorded => "reflex.journal_recorded",
@@ -643,6 +652,7 @@ impl Topic {
             | Self::AutonomyLevelChanged
             | Self::BudgetExhausted
             | Self::SystemAlert
+            | Self::EventLogCheckpointed
             | Self::ReflexPassMarked
             | Self::ReflexFeatureDigested
             | Self::ReflexJournalRecorded
@@ -792,7 +802,8 @@ impl Topic {
             | Self::KillSwitchReleased
             | Self::AutonomyLevelChanged
             | Self::BudgetExhausted
-            | Self::SystemAlert => RetentionClass::Irreplaceable,
+            | Self::SystemAlert
+            | Self::EventLogCheckpointed => RetentionClass::Irreplaceable,
             // A pass marker, a journal entry and an applied market event:
             // book state at each of the cell's own decisions (ADR 0100 §5's
             // P2 row), not the raw feed (ADR 0089's Transient; M18). The

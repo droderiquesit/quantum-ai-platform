@@ -244,6 +244,23 @@ fn run() -> Result<()> {
         limits,
     )?;
 
+    // The byte ceiling on the in-memory log, before the first cycle (owner
+    // decision 3 of 2026-11-28, ADR 0748). On the committed `memory` store
+    // the event log and the kernel journal held every record twice with no
+    // bound by size, and the node outgrew its 2 GiB container in minutes —
+    // hours before the first material release on its seed. On a durable
+    // store the log is archived and nothing is released.
+    if !config.storage.is_durable() {
+        platform
+            .bound_memory_log(qip_fastbrain::config::MEMORY_LOG_CEILING_BYTES)
+            .map_err(|error| Error::invalid(format!("configuration: {}", error.message())))?;
+        println!(
+            "  event log:        held in memory under {} MiB; past it the oldest records are \
+             released as a whole range and the log replays from a checkpoint, not from genesis",
+            qip_fastbrain::config::MEMORY_LOG_CEILING_BYTES / (1024 * 1024)
+        );
+    }
+
     // The survival policy, before anything is served (R12-CAPITAL-4089): the
     // hedge capacity and emergency reserve every construction withholds, and
     // the survival ceiling the Risk Gate reads re-derived under them at once.

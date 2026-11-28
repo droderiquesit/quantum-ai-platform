@@ -131,6 +131,16 @@ impl DurableLogTransport {
     pub fn records(&self) -> &[LogRecord] {
         self.log.records()
     }
+
+    /// Release the oldest records through `through` from a transport held
+    /// only in memory — [`EventLog::release_through`], delegated for the
+    /// reason [`Self::verify_chain`] is. Refused on a file-backed transport.
+    /// The subscription cursor is a log position and is left where it is: a
+    /// consumer past the range has already read it, and one behind it reads
+    /// on from what is retained.
+    pub fn release_through(&mut self, through: u64) -> Result<qip_events::log::ReleasedRange> {
+        self.log.release_through(through)
+    }
 }
 
 impl Publisher for DurableLogTransport {

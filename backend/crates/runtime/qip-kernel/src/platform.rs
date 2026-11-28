@@ -884,6 +884,10 @@ pub struct Platform {
     cycle_experience: Option<ExperienceReport>,
     /// The durable, hash-chained mirror of the cycle journal.
     journal: DurableLogTransport,
+    /// The byte ceiling on the two logs when both are held only in memory,
+    /// or `None` for a platform that states none (ADR 0748). Set by
+    /// [`Platform::bound_memory_log`] and nowhere else.
+    memory_log: Option<crate::memory_log::MemoryLogBound>,
     /// Everything the platform decided, and what came of it — refusals
     /// included.
     outcomes: OutcomeCapture,
@@ -7264,6 +7268,7 @@ impl Platform {
             cycle_second_order: None,
             cycle_experience: None,
             journal: DurableLogTransport::in_memory("kernel-journal"),
+            memory_log: None,
             outcomes: OutcomeCapture::new(),
             counterfactuals,
             forecaster: DemandForecaster::new(),
@@ -15819,6 +15824,17 @@ impl Platform {
                     ));
                 }
             }
+        }
+        // After the journal entry, so the release never splits a cycle: what
+        // it takes is whole cycles' records from the head, and the cycle just
+        // written is always retained.
+        if let Err(error) = self.release_memory_log(now)
+            && let Some(learn) = report.stages.last_mut()
+        {
+            learn.problems.push(format!(
+                "the in-memory log was not kept under its ceiling: {}",
+                error.message()
+            ));
         }
         report.events_logged = self.event_log.len();
         self.telemetry.metrics.gauge(
@@ -29343,6 +29359,123 @@ impl Platform {
     /// is what a downstream consumer subscribes to.
     pub fn journal(&self) -> &DurableLogTransport {
         &self.journal
+    }
+
+    /// Keep the platform's event log and the kernel journal, together, under
+    /// `ceiling_bytes` of estimated memory (ADR 0748).
+    ///
+    /// Only for a platform whose event log is held solely in memory: a log
+    /// written to a file is the durable record and is never released, so a
+    /// ceiling stated over one is refused rather than ignored. A ceiling
+    /// smaller than what one cycle writes would release on every cycle and
+    /// still hold more than it says; it is the caller's to size, from the
+    /// memory the deployment commits, and zero is refused.
+    pub fn bound_memory_log(&mut self, ceiling_bytes: u64) -> Result<()> {
+        if self.config.event_log.survives_this_process() {
+            return Err(Error::invalid(
+                "a byte ceiling releases the oldest records of a log held only in memory; this \
+                 platform writes its event log to a file, which is the durable record and is \
+                 never released. Bound it with the log's capacity and snapshot window instead",
+            ));
+        }
+        if ceiling_bytes == 0 {
+            return Err(Error::invalid(
+                "a byte ceiling of zero would release every record as it was written; give \
+                 bound_memory_log the bytes this deployment may spend on its in-memory log",
+            ));
+        }
+        self.memory_log = Some(crate::memory_log::MemoryLogBound {
+            ceiling_bytes,
+            bases: crate::federation_stage::JournalBases::default(),
+        });
+        Ok(())
+    }
+
+    /// The ceiling [`Self::bound_memory_log`] stated, if any.
+    pub fn memory_log_ceiling(&self) -> Option<u64> {
+        self.memory_log.as_ref().map(|bound| bound.ceiling_bytes)
+    }
+
+    /// The estimated bytes the event log and the kernel journal hold
+    /// together: what the ceiling is measured against.
+    pub fn memory_log_bytes(&self) -> u64 {
+        self.event_log
+            .retained_bytes()
+            .saturating_add(self.journal.log().retained_bytes())
+    }
+
+    /// The newest checkpoint the kernel journal holds, if a release has
+    /// happened: where a replay of the journal now begins.
+    pub fn memory_log_checkpoint(&self) -> Result<Option<crate::memory_log::EventLogCheckpointed>> {
+        let mut newest: Option<crate::memory_log::EventLogCheckpointed> = None;
+        for envelope in self.replay_journal(
+            &EventFilter::new().topic(crate::memory_log::EventLogCheckpointed::TOPIC),
+        )? {
+            let body = envelope
+                .decode::<crate::memory_log::EventLogCheckpointed>()?
+                .body;
+            if newest
+                .as_ref()
+                .is_none_or(|held| held.journal.through < body.journal.through)
+            {
+                newest = Some(body);
+            }
+        }
+        Ok(newest)
+    }
+
+    /// Release the oldest whole range of each in-memory log once the two
+    /// together exceed the stated ceiling, and checkpoint what was released.
+    /// A no-op without a ceiling, and below it.
+    fn release_memory_log(&mut self, now: Timestamp) -> Result<()> {
+        let Some(bound) = self.memory_log.as_ref() else {
+            return Ok(());
+        };
+        let ceiling_bytes = bound.ceiling_bytes;
+        let held_bytes = self.memory_log_bytes();
+        if held_bytes <= ceiling_bytes {
+            return Ok(());
+        }
+        // A quarter each, so the two together come back to half the ceiling
+        // and the release runs once per half-ceiling of growth rather than
+        // on every cycle past it.
+        let keep = ceiling_bytes / 4;
+        let cut = |log: &EventLog| -> Option<u64> {
+            let cut = log.release_cut(keep)?;
+            // Never the newest record, which the next append chains to.
+            let records = log.records();
+            let newest_but_one = records.len().checked_sub(2).map(|i| records[i].sequence)?;
+            Some(cut.min(newest_but_one))
+        };
+        let (Some(log_cut), Some(journal_cut)) = (cut(&self.event_log), cut(self.journal.log()))
+        else {
+            return Ok(());
+        };
+        // The bases the federation journal stands on as of the journal's
+        // cut, advanced from the previous checkpoint's over what is released.
+        let mut bases = bound.bases.clone();
+        let records = self.journal.records();
+        let released = records
+            .iter()
+            .take_while(|record| record.sequence <= journal_cut)
+            .count();
+        bases.advance_over(&records[..released]);
+        let event_log = self.event_log.release_through(log_cut)?;
+        let journal = self.journal.release_through(journal_cut)?;
+        if let Some(bound) = self.memory_log.as_mut() {
+            bound.bases = bases.clone();
+        }
+        self.journal_record(
+            crate::memory_log::EventLogCheckpointed {
+                ceiling_bytes,
+                held_bytes,
+                event_log,
+                journal,
+                federation_bases: bases.entries(),
+            },
+            crate::memory_log::MEMORY_LOG_ORIGIN,
+            now,
+        )
     }
 
     /// Everything the journal holds that matches a filter, as envelopes.

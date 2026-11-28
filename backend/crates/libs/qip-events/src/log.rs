@@ -206,6 +206,17 @@ pub struct EventLog {
     /// two different records share a sequence number and the break invisible.
     last_sequence: u64,
     last_hash: String,
+    /// The estimated in-memory footprint of each retained record, in the
+    /// same order as `records`, and their sum. See [`record_footprint`] for
+    /// what is counted and why it is an estimate of the heap rather than the
+    /// length of the record's text.
+    footprints: Vec<u64>,
+    retained_bytes: u64,
+    /// The newest range [`Self::release_through`] took out of memory, or
+    /// `None` for a log that never released one. What the retained span's
+    /// head is held to by [`Self::verify_from_checkpoint`].
+    checkpoint: Option<ReleasedRange>,
+    released: u64,
     /// The handle holding the exclusive advisory lock on the file, for a
     /// file-backed log; released when the log is dropped. Two processes
     /// appending to one file would each mint the next sequence from the
@@ -312,6 +323,10 @@ impl EventLog {
             rolled_by_age: 0,
             last_sequence: 0,
             last_hash: GENESIS_HASH.to_string(),
+            footprints: Vec::new(),
+            retained_bytes: 0,
+            checkpoint: None,
+            released: 0,
             lock: None,
         }
     }
@@ -631,6 +646,7 @@ impl EventLog {
         self.evicted_replaceable
             .saturating_add(self.evicted_observations)
             .saturating_add(self.rolled_by_age)
+            .saturating_add(self.released)
     }
 
     /// What a replay over [`Self::records`] must join onto, and how much of
@@ -666,6 +682,141 @@ impl EventLog {
                 dropped,
             },
         }
+    }
+
+    /// The estimated bytes the retained records hold in this process: the
+    /// sum of [`record_footprint`] over [`Self::records`]. What a byte
+    /// ceiling on a log held only in memory is measured against, because a
+    /// record count does not measure memory — one cycle's journal entry and
+    /// one tick are each one record.
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
+
+    /// The newest range [`Self::release_through`] took out of memory, or
+    /// `None` for a log that has released nothing and so still begins at
+    /// genesis.
+    pub fn checkpoint(&self) -> Option<&ReleasedRange> {
+        self.checkpoint.as_ref()
+    }
+
+    /// Records released from memory as whole ranges over this log's life.
+    /// Counted in [`Self::dropped`] beside the evictions, because a replay
+    /// re-anchoring across the head must be able to account for them.
+    pub const fn released(&self) -> u64 {
+        self.released
+    }
+
+    /// The sequence through which the oldest records must be released for
+    /// what remains to hold at most `keep_bytes`, or `None` when it already
+    /// does. The cut is always the end of a whole prefix of the retained
+    /// span, never a record from the middle.
+    pub fn release_cut(&self, keep_bytes: u64) -> Option<u64> {
+        if self.retained_bytes <= keep_bytes {
+            return None;
+        }
+        let mut remaining = self.retained_bytes;
+        for (record, footprint) in self.records.iter().zip(&self.footprints) {
+            remaining = remaining.saturating_sub(*footprint);
+            if remaining <= keep_bytes {
+                return Some(record.sequence);
+            }
+        }
+        self.records.last().map(|record| record.sequence)
+    }
+
+    /// Take every retained record at or below `through` out of memory, as
+    /// one range from the head, and say what was taken.
+    ///
+    /// This is for a log held **only** in memory, and is refused on any
+    /// other: a file-backed log's file is the durable copy, and an index
+    /// shortened under a file that still holds the range would make the
+    /// process answer queries from a span its own file contradicts. On a
+    /// log held in memory nothing outlives the process anyway; what this
+    /// changes is that the log no longer replays from genesis but from the
+    /// range's end, which ADR 0748 records. The returned range carries the
+    /// last released record's hash and the number of records released, so
+    /// the caller can append a checkpoint that the chain from then on is
+    /// held to ([`Self::verify_from_checkpoint`]).
+    ///
+    /// Refused, with nothing released, for an inspected log, for a
+    /// `through` below the first retained record (nothing to release), and
+    /// for a `through` at or past the newest record: a release that emptied
+    /// the log would leave the checkpoint the caller appends next with no
+    /// retained predecessor the chain could be checked across, and the
+    /// newest record is the one the next append chains to.
+    pub fn release_through(&mut self, through: u64) -> Result<ReleasedRange> {
+        if self.inspected || self.path.is_some() {
+            return Err(Error::denied(
+                "only an event log held solely in memory releases a range of its records: a \
+                 file-backed log's file holds the range and its index must not contradict it, \
+                 and an inspected log is read-only. Bound a file-backed log with its capacity \
+                 and snapshot window instead",
+            ));
+        }
+        let count = self
+            .records
+            .iter()
+            .take_while(|record| record.sequence <= through)
+            .count();
+        if count == 0 {
+            return Err(Error::invalid(format!(
+                "no retained record is at or below sequence {through}; the oldest retained is \
+                 {}, so there is no range to release",
+                self.records.first().map_or(0, |r| r.sequence)
+            )));
+        }
+        if count >= self.records.len() {
+            return Err(Error::invalid(format!(
+                "releasing through sequence {through} would release every retained record, \
+                 including the newest, which the next append chains to; release through an \
+                 earlier sequence"
+            )));
+        }
+        let released: Vec<LogRecord> = self.records.drain(..count).collect();
+        let bytes: u64 = self.footprints.drain(..count).sum();
+        self.retained_bytes = self.retained_bytes.saturating_sub(bytes);
+        self.rebuild_indexes();
+        let (Some(first), Some(last)) = (released.first(), released.last()) else {
+            return Err(Error::invalid("a non-empty release holds no record"));
+        };
+        let range = ReleasedRange {
+            first_sequence: first.sequence,
+            through: last.sequence,
+            last_hash: last.record_hash.clone(),
+            records: count as u64,
+            bytes,
+        };
+        self.released = self.released.saturating_add(count as u64);
+        self.checkpoint = Some(range.clone());
+        Ok(range)
+    }
+
+    /// Verify the chain from the newest released range forward: the first
+    /// retained record must follow the range and name the range's last
+    /// hash as its predecessor, and every later record is held as
+    /// [`Self::verify_retained_chain`] holds it. A log that has released
+    /// nothing is verified as `verify_retained_chain` verifies it, from
+    /// genesis. Never weaker than that check: a released head is held to a
+    /// hash this log recorded when it released the range, not to whatever
+    /// the first surviving record claims.
+    pub fn verify_from_checkpoint(&self) -> std::result::Result<(), u64> {
+        let Some(range) = &self.checkpoint else {
+            return self.verify_retained_chain();
+        };
+        let Some(first) = self.records.first() else {
+            return Ok(());
+        };
+        if first.sequence <= range.through {
+            return Err(first.sequence);
+        }
+        if first.sequence == range.through.saturating_add(1) {
+            return self.verify_chain_from(&range.last_hash, GapPolicy::Evicted);
+        }
+        // Something after the range was evicted too; the head re-anchors
+        // on its claimed predecessor, exactly as an eviction gap does.
+        let claimed = first.previous_hash.clone();
+        self.verify_chain_from(&claimed, GapPolicy::Evicted)
     }
 
     pub fn len(&self) -> usize {
@@ -872,6 +1023,9 @@ impl EventLog {
         if record.event.idempotency_key.is_some() {
             self.by_idempotency.insert(record.event.dedup_key());
         }
+        let footprint = record_footprint(&record);
+        self.retained_bytes = self.retained_bytes.saturating_add(footprint);
+        self.footprints.push(footprint);
         self.records.push(record);
     }
 
@@ -927,6 +1081,8 @@ impl EventLog {
                 )));
             };
             self.records.remove(index);
+            let spent = self.footprints.remove(index);
+            self.retained_bytes = self.retained_bytes.saturating_sub(spent);
             if replaceable {
                 self.evicted_replaceable = self.evicted_replaceable.saturating_add(1);
             } else {
@@ -974,10 +1130,18 @@ impl EventLog {
     fn roll(&mut self, window: Duration, newest: Timestamp) {
         let cutoff = newest.saturating_sub(window);
         let before = self.records.len();
-        self.records.retain(|record| {
-            !record.event.topic.retention_class().is_replaceable()
+        let records = std::mem::take(&mut self.records);
+        let footprints = std::mem::take(&mut self.footprints);
+        for (record, footprint) in records.into_iter().zip(footprints) {
+            if !record.event.topic.retention_class().is_replaceable()
                 || record.event.recorded_at >= cutoff
-        });
+            {
+                self.records.push(record);
+                self.footprints.push(footprint);
+            } else {
+                self.retained_bytes = self.retained_bytes.saturating_sub(footprint);
+            }
+        }
         let rolled = before.saturating_sub(self.records.len());
         if rolled == 0 {
             return;
@@ -1265,6 +1429,119 @@ impl RetainedAnchor {
     /// legitimately be missing from the span.
     pub const fn dropped(&self) -> u64 {
         self.dropped
+    }
+}
+
+/// A whole range of the oldest records [`EventLog::release_through`] took
+/// out of memory: where it began and ended, the hash of its last record —
+/// what the first record after it names as its predecessor — and how many
+/// records and estimated bytes it held.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleasedRange {
+    pub first_sequence: u64,
+    pub through: u64,
+    pub last_hash: String,
+    pub records: u64,
+    pub bytes: u64,
+}
+
+/// The estimated heap a retained record holds in this process, in bytes.
+///
+/// An estimate, and stated as one: the payload is a `serde_json::Value`
+/// tree, and what it costs is the tree, not the length of its text, which
+/// understates it several times over for the small, deeply keyed bodies this
+/// platform journals. An object is a `BTreeMap<String, Value>`, whose every
+/// node allocates room for eleven entries whether it holds one or eleven, so
+/// a three-key object costs a whole node; a string and an array cost their
+/// capacity; and every allocation is charged the allocator's own header. The
+/// record's strings and its four index entries are charged the same way.
+/// Measured against the resident memory of the committed fast brain
+/// (`qip-fastbrain/examples/memory_log_soak.rs`, ADR 0748): an estimate that
+/// read the text instead came to less than half of what the process held,
+/// and a ceiling read against it would have let the process grow to twice
+/// what it said.
+pub fn record_footprint(record: &LogRecord) -> u64 {
+    let event = &record.event;
+    let lineage = &event.lineage;
+    let strings = [
+        record.previous_hash.capacity(),
+        record.record_hash.capacity(),
+        event.event_id.as_str().len(),
+        event.payload_hash.capacity(),
+        lineage.correlation_id.as_str().len(),
+        lineage.producer.capacity(),
+        lineage
+            .causation_id
+            .as_ref()
+            .map_or(0, |c| c.as_str().len()),
+        lineage.trace_id.as_ref().map_or(0, |t| t.as_str().len()),
+        event.idempotency_key.as_ref().map_or(0, String::capacity),
+    ]
+    .into_iter()
+    .map(allocation)
+    .sum::<u64>();
+    // The four indexes: the event id and the correlation id are keyed by an
+    // owned copy of the string, the topic index by position, and the
+    // idempotency set by the dedup key; each entry sits in a B-tree node.
+    let indexes = 2 * allocation(event.event_id.as_str().len())
+        + event.idempotency_key.as_ref().map_or(0, |k| {
+            allocation(k.capacity() + event.topic.name().len() + 1)
+        })
+        + 4 * INDEX_ENTRY;
+    let fixed = std::mem::size_of::<LogRecord>() as u64;
+    fixed + strings + indexes + value_footprint(&event.payload)
+}
+
+/// The allocator's header on every heap allocation, and the granule it rounds
+/// a request up to.
+const ALLOCATION_HEADER: u64 = 16;
+
+/// What one entry of a `BTreeMap` index costs beside its key: its share of a
+/// node, at the two-thirds fill a B-tree settles to.
+const INDEX_ENTRY: u64 = 48;
+
+/// The heap one allocation of `bytes` holds, or nothing for an empty one.
+fn allocation(bytes: usize) -> u64 {
+    if bytes == 0 {
+        return 0;
+    }
+    (bytes as u64).div_ceil(ALLOCATION_HEADER) * ALLOCATION_HEADER + ALLOCATION_HEADER
+}
+
+fn value_footprint(value: &serde_json::Value) -> u64 {
+    use serde_json::Value;
+    const NODE: usize = std::mem::size_of::<Value>();
+    const KEY: usize = std::mem::size_of::<String>();
+    // A B-tree leaf holds up to eleven keys and values, a parent pointer
+    // and two counters; an internal node adds twelve child pointers.
+    const LEAF: usize = 11 * (KEY + NODE) + 16;
+    const INTERNAL: usize = LEAF + 12 * 8;
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(text) => allocation(text.capacity()),
+        Value::Array(items) => {
+            allocation(items.capacity() * NODE) + items.iter().map(value_footprint).sum::<u64>()
+        }
+        Value::Object(map) => {
+            let entries = map.len();
+            if entries == 0 {
+                return 0;
+            }
+            // One leaf up to eleven entries; beyond that, leaves settle
+            // about two-thirds full, with an internal node per six or so.
+            let leaves = if entries <= 11 {
+                1
+            } else {
+                entries.div_ceil(8)
+            };
+            let internals = if leaves > 1 { leaves.div_ceil(6) } else { 0 };
+            let nodes = leaves as u64 * allocation(LEAF) + internals as u64 * allocation(INTERNAL);
+            nodes
+                + map
+                    .iter()
+                    .map(|(key, item)| allocation(key.capacity()) + value_footprint(item))
+                    .sum::<u64>()
+        }
     }
 }
 

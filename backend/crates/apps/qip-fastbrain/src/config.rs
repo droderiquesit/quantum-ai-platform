@@ -27,6 +27,25 @@ use crate::roster::MAXIMUM_BUDGET;
 /// came from loopback, so binding widely does not hand anyone a stop button.
 pub const DEFAULT_HEALTH_ADDRESS: &str = "0.0.0.0:8080";
 
+/// The memory Cloud Run gives this service, as committed in
+/// `infrastructure/terraform/catalogue.tf` (`fastbrain`, `memory = "2Gi"`).
+///
+/// Stated here rather than read at start-up because nothing the binary can
+/// read states it: Cloud Run sets no variable naming the limit, and a cgroup
+/// read would make the ceiling a fact about whichever machine ran the test.
+/// `tests/memory_log.rs` reads `catalogue.tf` and fails when the two differ,
+/// so a change to the container's memory cannot leave this ceiling sized for
+/// the old one.
+pub const CONTAINER_MEMORY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// The byte ceiling on the in-memory event log and kernel journal together,
+/// on a store that does not outlive the process: one quarter of the
+/// committed container memory, 512 MiB for 2 GiB (owner decision 3 of
+/// 2026-11-28, ADR 0748). The other three quarters are the rest of the
+/// process — the book, the models, the federation, the feed — which the
+/// ceiling does not bound.
+pub const MEMORY_LOG_CEILING_BYTES: u64 = CONTAINER_MEMORY_BYTES / 4;
+
 /// How often a cycle starts when the environment does not say.
 pub const DEFAULT_CYCLE_INTERVAL: Duration = Duration::from_millis(100);
 

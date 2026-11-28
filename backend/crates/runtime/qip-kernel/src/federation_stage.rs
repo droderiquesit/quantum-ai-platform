@@ -953,6 +953,60 @@ impl JournaledReview {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct JournalBases(BTreeMap<String, (u64, Arbitration)>);
 
+impl JournalBases {
+    /// The bases as plain entries — stem, the pass that held it in full,
+    /// and that arbitration — for a checkpoint to carry across a released
+    /// range (ADR 0748). Stem order, so two checkpoints of one state are
+    /// byte-identical.
+    pub fn entries(&self) -> Vec<(String, u64, Arbitration)> {
+        self.0
+            .iter()
+            .map(|(stem, (cycle, base))| (stem.clone(), *cycle, base.clone()))
+            .collect()
+    }
+
+    /// The bases a checkpoint carried.
+    pub fn from_entries(entries: Vec<(String, u64, Arbitration)>) -> Self {
+        Self(
+            entries
+                .into_iter()
+                .map(|(stem, cycle, base)| (stem, (cycle, base)))
+                .collect(),
+        )
+    }
+
+    /// Advance these bases over the federation records among `records`, in
+    /// log order, as [`replay_each`] would: what a checkpoint must carry so
+    /// that the records after a released range rebuild without the range.
+    /// A record that does not decode advances nothing, exactly as a replay
+    /// reading it would refuse it and move on.
+    pub fn advance_over(&mut self, records: &[qip_events::log::LogRecord]) {
+        for record in records {
+            if record.event.topic != <FederationReview as EventBody>::TOPIC {
+                continue;
+            }
+            let Ok(envelope) = qip_streaming::envelope::StreamEnvelope::from_frame(&record.event)
+            else {
+                continue;
+            };
+            if !is_federation_key(&envelope.idempotency_key()) {
+                continue;
+            }
+            if let Ok(decoded) = envelope.decode::<JournaledReview>() {
+                let _ = rebuild(decoded.body, self);
+            }
+        }
+    }
+}
+
+/// Whether an envelope's key — `<topic name>:<body key>` — is a federation
+/// review's, read exactly rather than by searching for the prefix.
+fn is_federation_key(key: &str) -> bool {
+    key.strip_prefix(<FederationReview as EventBody>::TOPIC.name())
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|k| k.starts_with(IDEMPOTENCY_PREFIX))
+}
+
 /// The stem of a proposition asked at `cycle`, when its name is exactly
 /// `<stem>@<cycle>`.
 fn stem_of(proposition: &str, cycle: u64) -> Option<&str> {
@@ -3144,16 +3198,19 @@ pub fn replay_each(platform: &crate::platform::Platform) -> Result<Vec<Result<Fe
     let mut reviews = Vec::new();
     // Carried across records in log order: a re-asked arbitration is rebuilt
     // from the last record that held its stem in full.
-    let mut bases = JournalBases::default();
+    //
+    // On a log held only in memory the oldest records may have been
+    // released (ADR 0748); a reference into the released range is then
+    // rebuilt from the bases the newest checkpoint carried, which is what
+    // lets every retained review replay from the checkpoint forward.
+    let mut bases = platform
+        .memory_log_checkpoint()?
+        .map(|checkpoint| JournalBases::from_entries(checkpoint.federation_bases))
+        .unwrap_or_default();
     for envelope in envelopes {
         // The envelope's key is `<topic name>:<body key>`; read the body's
         // key exactly rather than searching for the prefix anywhere in it.
-        let key = envelope.idempotency_key();
-        let ours = key
-            .strip_prefix(<FederationReview as EventBody>::TOPIC.name())
-            .and_then(|rest| rest.strip_prefix(':'))
-            .is_some_and(|k| k.starts_with(IDEMPOTENCY_PREFIX));
-        if !ours {
+        if !is_federation_key(&envelope.idempotency_key()) {
             continue;
         }
         reviews.push(
