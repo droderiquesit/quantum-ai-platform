@@ -480,8 +480,13 @@ fn run() -> Result<()> {
         config.cycle_budget.as_millis()
     );
     println!(
-        "  archived so far:  {} record(s) handed over between cycles",
-        summary.archived_while_running
+        "  archived so far:  {} record(s) handed over between cycles{}",
+        summary.archived_while_running,
+        if config.storage.is_durable() {
+            ""
+        } else {
+            " (none: the store is memory, which a restart empties)"
+        }
     );
     println!(
         "  desk outcomes:    {} shipped to the ledger's stream, {} still pending ({})",
@@ -494,6 +499,20 @@ fn run() -> Result<()> {
         }
     );
 
+    // The same rule as between cycles, for the same reason. With nothing
+    // handed over while running, a flush into a memory store had the whole
+    // log to seal: measured on the committed configuration, it spent the
+    // entire shutdown budget (5,032 ms) sealing 9,472 records into a store
+    // discarded a moment later, at the process's largest, and reported 8,034
+    // left behind as though something had been lost.
+    if !config.storage.is_durable() {
+        println!(
+            "  shutdown:         nothing flushed: the store is memory and keeps nothing past this \
+             process, so the log's {} event record(s) end with it",
+            platform.event_log().len()
+        );
+        return Ok(());
+    }
     let flushed = node::flush(
         &platform,
         &archive,

@@ -214,7 +214,8 @@ pub struct RunSummary {
     pub breaches: u64,
     pub worst_cycle: Duration,
     /// Event records handed to the chain archive between cycles, before the
-    /// shutdown flush ran at all.
+    /// shutdown flush ran at all. Always zero on a store that does not
+    /// survive this process: see [`run`].
     pub archived_while_running: usize,
     /// Desk ledger records the fabric acknowledged over the run, including
     /// the final flush.
@@ -257,6 +258,14 @@ pub fn run(
     let mut archived = 0usize;
     let mut since_archive = 0u64;
     let mut desk_shipped = 0usize;
+    // Only a store that outlives the process is worth the hand-over. The
+    // archive's whole purpose between cycles is what a crash takes with it,
+    // and a memory store loses everything to a crash anyway; handing it the
+    // log every interval kept a third copy of every record — beside the
+    // platform's log and the kernel's journal — in a process whose committed
+    // configuration is memory on 2 GiB, which went from 52 MB to 2.2 GB in
+    // two minutes. `main.rs` skips the shutdown flush on the same test.
+    let archive_between_cycles = config.archive_every > 0 && config.storage.is_durable();
 
     // The four golden signals, with the cycle as this service's unit of work
     // (OBS-018). Into the platform's own registry, so they are scraped and
@@ -352,7 +361,7 @@ pub fn run(
         // spend here. What the interval trades is how many cycles a crash takes
         // with it.
         since_archive += 1;
-        if config.archive_every > 0 && since_archive >= config.archive_every {
+        if archive_between_cycles && since_archive >= config.archive_every {
             since_archive = 0;
             archived += archive.absorb(platform.event_log().records())?;
         }
@@ -505,6 +514,7 @@ mod tests {
     use qip_observability::Telemetry;
     use qip_risk::limits::LimitSet;
     use qip_storage::MemoryKeyValueStore;
+    use qip_storage::settings::StorageSettings;
 
     fn start() -> Timestamp {
         Timestamp::from_secs(1_760_000_000)
@@ -798,17 +808,30 @@ mod tests {
         );
     }
 
+    /// Settings a restart would find again. Nothing here opens them: the run
+    /// loop reads only whether they are durable, and the archive the tests
+    /// hand it is their own.
+    fn durable() -> StorageSettings {
+        let root = std::env::temp_dir().join("qip-fastbrain-node-tests-never-opened");
+        StorageSettings::from_values(Some("engine"), root.to_str())
+            .expect("an engine target with a root resolves")
+    }
+
     #[test]
     fn the_run_hands_records_to_the_archive_between_cycles_rather_than_only_at_the_end() {
         let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
         let mut platform = platform(clock.clone());
         let mut feed = backfilled(20);
         let archive = archive();
+        // On a store that survives the process: the only one a crash between
+        // archives can cost anything on.
         let config = FastBrainConfig {
             max_cycles: Some(4),
             archive_every: 1,
+            storage: durable(),
             ..brisk()
         };
+        assert!(config.storage.is_durable(), "premise: the store is durable");
         let status = shared(&config);
         let stop = Arc::new(AtomicBool::new(false));
 
@@ -832,6 +855,62 @@ mod tests {
         assert!(
             archive.len().expect("the archive counts itself") > 0,
             "the archive is empty after four archived cycles"
+        );
+    }
+
+    /// The failure this prevents: on the committed configuration — memory,
+    /// 2 GiB, a cycle every 100 ms, an archive every 100 cycles — the archive
+    /// held a third copy of every record, as JSON values, in a store a
+    /// restart empties. The real binary went from 52,672 kB to 2,338,832 kB
+    /// in 130 s.
+    ///
+    /// Mutation: drop `config.storage.is_durable()` from
+    /// `archive_between_cycles` and the archive holds every record of the
+    /// four cycles.
+    #[test]
+    fn a_memory_store_is_never_handed_the_log_between_cycles() {
+        let clock: Arc<dyn Clock> = Arc::new(ManualClock::new(start()));
+        let mut platform = platform(clock.clone());
+        let mut feed = backfilled(20);
+        let archive = archive();
+        let config = FastBrainConfig {
+            max_cycles: Some(4),
+            archive_every: 1,
+            storage: StorageSettings::in_memory(),
+            ..brisk()
+        };
+        let status = shared(&config);
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let summary = run(
+            &mut platform,
+            &mut feed,
+            &archive,
+            &config,
+            &status,
+            &stop,
+            &clock,
+            &mut DeskShipper::unshipped("QIP_FABRIC_URL"),
+            |_| {},
+        )
+        .expect("the loop runs");
+
+        assert_eq!(
+            summary.cycles, 4,
+            "premise: every archive interval came round"
+        );
+        assert!(
+            !platform.event_log().records().is_empty(),
+            "premise: the cycles recorded something an archive could have been handed"
+        );
+        assert_eq!(
+            summary.archived_while_running, 0,
+            "a memory store was handed the log between cycles"
+        );
+        assert_eq!(
+            archive.len().expect("the archive counts itself"),
+            0,
+            "the archive holds records from a run whose store keeps nothing"
         );
     }
 

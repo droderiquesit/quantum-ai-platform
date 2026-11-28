@@ -45,7 +45,10 @@
 //! [`FEDERATION_PENDING_CYCLES`] passes is abandoned on the record rather than
 //! scored against an outcome nobody saw; and the federation's own journal is
 //! drained into each review, so the event log is the record and the
-//! in-process copy does not grow with uptime.
+//! in-process copy does not grow with uptime. What a review repeats — an
+//! arbitration asked again on a tape that has not moved, an event that
+//! copies its own record's arbitration — is journaled as a reference
+//! ([`JournaledReview`]) that [`replay_each`] rebuilds exactly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -725,6 +728,457 @@ impl EventBody for FederationReview {
 /// record from anything else written under the same topic.
 pub const IDEMPOTENCY_PREFIX: &str = "federation:";
 
+/// Passes an unchanged arbitration may be journaled as re-asked before it is
+/// journaled in full again. A chosen bound, not a measurement: it caps how
+/// far back a reader must reach to rebuild any review, so a reader whose log
+/// begins mid-run, or whose oldest records were evicted, loses at most this
+/// many passes of one question rather than every pass since its tape last
+/// moved. A hundred passes is ten seconds at the fast brain's cadence and
+/// costs one full arbitration per question per hundred passes.
+pub const REASKED_KEYFRAME_PASSES: u64 = 100;
+
+/// One arbitration as the log holds it.
+///
+/// Every proposition is keyed by the pass that asked it
+/// (`<stem>@<cycle>`), so an instrument whose tape has not moved is asked
+/// the same question under a new name on every pass, and the fast brain
+/// cycles ten times between one-second bars. Each such arbitration is the
+/// last one journaled in full under the same stem with only the name, the
+/// instant and the research citation moved; journaling it whole put roughly
+/// 65 KB in the log per pass that said nothing the previous pass had not
+/// (measured over 1,000 cycles of the committed configuration: 76-95 KB per
+/// review from cycle 220, against 13 KB before the six instruments held
+/// [`FEDERATION_MIN_RETURNS`] returns). `Reasked` is written only when
+/// [`rebuild`] turns it back into exactly the arbitration the pass made;
+/// anything else is `Recorded`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JournaledArbitration {
+    Reasked { reasked: Reasked },
+    Recorded(Box<Arbitration>),
+}
+
+/// An arbitration identical to the one journaled in full under the same stem
+/// at `of_cycle`, asked again this pass as `proposition`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Reasked {
+    pub proposition: String,
+    pub of_cycle: u64,
+}
+
+/// One federation journal event as the log holds it. A `Decided` event and a
+/// `ResearchRaised` event carry exactly what the same record's arbitration of
+/// that proposition already carries, and were a third of every review's
+/// bytes; each is written as a reference to the arbitration when, and only
+/// when, it is identical to it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JournaledEvent {
+    DecidedAsArbitrated { decided_as_arbitrated: String },
+    ResearchAsArbitrated { research_as_arbitrated: String },
+    Recorded(Event),
+}
+
+/// A [`FederationReview`] as the log holds it: the same record, with what it
+/// repeats written as references. Version 2, so a reader that decodes the
+/// record as a version-1 [`FederationReview`] is refused by the envelope
+/// rather than handed a review with its arbitrations missing; a version-1
+/// record, every reference absent, decodes as this type unchanged. Read it
+/// back through [`replay_each`], which rebuilds the review.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JournaledReview {
+    pub cycle: u64,
+    pub at: Timestamp,
+    pub population: Vec<MemberStanding>,
+    pub uncovered: Vec<String>,
+    pub silent: Vec<String>,
+    pub refused: Vec<(String, String)>,
+    pub unreadable: Vec<String>,
+    pub resolved: Vec<Resolution>,
+    pub abandoned: Vec<String>,
+    pub arbitrations: Vec<JournaledArbitration>,
+    pub system: SystemView,
+    pub journal_base: usize,
+    pub events: Vec<JournaledEvent>,
+    #[serde(default)]
+    pub information_requests: Vec<qip_contracts::control::InformationRequest>,
+    #[serde(default)]
+    pub request_spreads_bp: Vec<u32>,
+    #[serde(default)]
+    pub contradictions: Vec<ViewContradiction>,
+    #[serde(default)]
+    pub contagion: Vec<ContagionPath>,
+    #[serde(default)]
+    pub counterparty_unmodelled: Vec<String>,
+}
+
+impl EventBody for JournaledReview {
+    const TOPIC: Topic = Topic::WorldModelUpdated;
+    const SCHEMA_VERSION: u32 = 2;
+
+    fn idempotency_key(&self) -> Option<String> {
+        Some(format!("{IDEMPOTENCY_PREFIX}{}", self.cycle))
+    }
+}
+
+impl JournaledReview {
+    /// The review with nothing written as a reference: what a version-1
+    /// record holds.
+    fn recorded(review: &FederationReview) -> Self {
+        Self::with(
+            review,
+            review
+                .arbitrations
+                .iter()
+                .cloned()
+                .map(|a| JournaledArbitration::Recorded(Box::new(a)))
+                .collect(),
+            review
+                .events
+                .iter()
+                .cloned()
+                .map(JournaledEvent::Recorded)
+                .collect(),
+        )
+    }
+
+    fn with(
+        review: &FederationReview,
+        arbitrations: Vec<JournaledArbitration>,
+        events: Vec<JournaledEvent>,
+    ) -> Self {
+        Self {
+            cycle: review.cycle,
+            at: review.at,
+            population: review.population.clone(),
+            uncovered: review.uncovered.clone(),
+            silent: review.silent.clone(),
+            refused: review.refused.clone(),
+            unreadable: review.unreadable.clone(),
+            resolved: review.resolved.clone(),
+            abandoned: review.abandoned.clone(),
+            arbitrations,
+            system: review.system.clone(),
+            journal_base: review.journal_base,
+            events,
+            information_requests: review.information_requests.clone(),
+            request_spreads_bp: review.request_spreads_bp.clone(),
+            contradictions: review.contradictions.clone(),
+            contagion: review.contagion.clone(),
+            counterparty_unmodelled: review.counterparty_unmodelled.clone(),
+        }
+    }
+
+    /// How many arbitrations this record holds as re-asked.
+    pub fn reasked(&self) -> usize {
+        self.arbitrations
+            .iter()
+            .filter(|a| matches!(a, JournaledArbitration::Reasked { .. }))
+            .count()
+    }
+}
+
+/// The last arbitration journaled in full under each proposition stem, and
+/// the pass that journaled it: what a `Reasked` entry is rebuilt from.
+/// Bounded by the propositions one pass arbitrates, because a stem the
+/// latest record did not arbitrate is dropped.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JournalBases(BTreeMap<String, (u64, Arbitration)>);
+
+/// The stem of a proposition asked at `cycle`, when its name is exactly
+/// `<stem>@<cycle>`.
+fn stem_of(proposition: &str, cycle: u64) -> Option<&str> {
+    let (stem, pass) = proposition.rsplit_once('@')?;
+    (pass == cycle.to_string()).then_some(stem)
+}
+
+/// The position in the federation's journal of the first `Decided` event on
+/// `proposition` in `events`.
+fn decided_position(events: &[JournaledEvent], base: usize, proposition: &str) -> Option<usize> {
+    events
+        .iter()
+        .position(|event| match event {
+            JournaledEvent::DecidedAsArbitrated {
+                decided_as_arbitrated,
+            } => decided_as_arbitrated == proposition,
+            JournaledEvent::Recorded(Event::Decided {
+                proposition: decided,
+                ..
+            }) => decided == proposition,
+            _ => false,
+        })
+        .map(|index| base + index)
+}
+
+/// `base` asked again as `proposition` at `at`, its research task citing the
+/// journal position `cites`. `None` where a research task has nothing to cite.
+fn reask(
+    base: &Arbitration,
+    proposition: &str,
+    at: Timestamp,
+    cites: Option<usize>,
+) -> Option<Arbitration> {
+    let mut again = base.clone();
+    let was = std::mem::replace(&mut again.proposition, proposition.to_string());
+    again.at = at;
+    if let Decision::RequestMoreInformation(request) = &mut again.decision
+        && request.proposition == was
+    {
+        request.proposition = proposition.to_string();
+    }
+    if let Some(task) = &mut again.research {
+        if task.proposition == was {
+            task.proposition = proposition.to_string();
+        }
+        task.raised_at = at;
+        task.cites = cites?;
+    }
+    Some(again)
+}
+
+/// The review `record` stands for, rebuilt against `bases`, which it then
+/// advances: every arbitration it holds in full becomes its stem's base, and
+/// a stem it does not arbitrate is dropped. A reference that names a base the
+/// log does not hold is refused rather than guessed.
+///
+/// The bases advance whether or not the review rebuilt. What a record holds
+/// in full needs nothing before it, and the encoder made it the base its later
+/// records name; a reader that dropped it because some other arbitration in
+/// the same record named a pass the log lacks would refuse those later
+/// records too, each of which may hold another stem's keyframe beside a
+/// reference to the lost one. Stems keyframe on different passes, so that
+/// chain did not end: with the record of cycle 5 lost from a log of 405
+/// passes on two stems keyframing three passes apart, a reader that advanced
+/// only on success refused all 400 reviews after it, against the 99 (cycles
+/// 6 to 104) that name it.
+pub fn rebuild(record: JournaledReview, bases: &mut JournalBases) -> Result<FederationReview> {
+    let rebuilt = rebuild_against(&record, bases);
+    advance(&record, bases);
+    let (arbitrations, events) = rebuilt?;
+    Ok(FederationReview {
+        cycle: record.cycle,
+        at: record.at,
+        population: record.population,
+        uncovered: record.uncovered,
+        silent: record.silent,
+        refused: record.refused,
+        unreadable: record.unreadable,
+        resolved: record.resolved,
+        abandoned: record.abandoned,
+        arbitrations,
+        system: record.system,
+        journal_base: record.journal_base,
+        events,
+        information_requests: record.information_requests,
+        request_spreads_bp: record.request_spreads_bp,
+        contradictions: record.contradictions,
+        contagion: record.contagion,
+        counterparty_unmodelled: record.counterparty_unmodelled,
+    })
+}
+
+/// What `record` holds in full becomes its stem's base, and a stem it does
+/// not arbitrate is dropped: the encoder's own transition, read off the record
+/// alone.
+fn advance(record: &JournaledReview, bases: &mut JournalBases) {
+    let held: BTreeSet<&str> = record
+        .arbitrations
+        .iter()
+        .filter_map(|entry| {
+            let proposition = match entry {
+                JournaledArbitration::Reasked { reasked } => &reasked.proposition,
+                JournaledArbitration::Recorded(a) => &a.proposition,
+            };
+            stem_of(proposition, record.cycle)
+        })
+        .collect();
+    bases.0.retain(|stem, _| held.contains(stem.as_str()));
+    for entry in &record.arbitrations {
+        if let JournaledArbitration::Recorded(a) = entry
+            && let Some(stem) = stem_of(&a.proposition, record.cycle)
+        {
+            bases
+                .0
+                .insert(stem.to_string(), (record.cycle, a.as_ref().clone()));
+        }
+    }
+}
+
+/// The arbitrations and events `record` stands for, against `bases` as they
+/// stood before it.
+fn rebuild_against(
+    record: &JournaledReview,
+    bases: &JournalBases,
+) -> Result<(Vec<Arbitration>, Vec<Event>)> {
+    let refuse = |what: String| {
+        qip_core::error::Error::invalid(format!(
+            "the journaled federation review of cycle {} {what}; replay it from a log that holds \
+             the pass it refers to",
+            record.cycle
+        ))
+    };
+    let mut arbitrations = Vec::with_capacity(record.arbitrations.len());
+    for entry in &record.arbitrations {
+        match entry {
+            JournaledArbitration::Recorded(a) => arbitrations.push(a.as_ref().clone()),
+            JournaledArbitration::Reasked { reasked } => {
+                let rebuilt = stem_of(&reasked.proposition, record.cycle)
+                    .and_then(|stem| bases.0.get(stem))
+                    .filter(|(cycle, _)| *cycle == reasked.of_cycle)
+                    .and_then(|(_, base)| {
+                        reask(
+                            base,
+                            &reasked.proposition,
+                            record.at,
+                            decided_position(
+                                &record.events,
+                                record.journal_base,
+                                &reasked.proposition,
+                            ),
+                        )
+                    })
+                    .ok_or_else(|| {
+                        refuse(format!(
+                            "records `{}` as unchanged since cycle {}, which this log does not \
+                             hold in full",
+                            reasked.proposition, reasked.of_cycle
+                        ))
+                    })?;
+                arbitrations.push(rebuilt);
+            }
+        }
+    }
+    let arbitrated = |proposition: &str| arbitrations.iter().find(|a| a.proposition == proposition);
+    let mut events = Vec::with_capacity(record.events.len());
+    for entry in &record.events {
+        let event = match entry {
+            JournaledEvent::Recorded(event) => event.clone(),
+            JournaledEvent::DecidedAsArbitrated {
+                decided_as_arbitrated,
+            } => {
+                let a = arbitrated(decided_as_arbitrated).ok_or_else(|| {
+                    refuse(format!(
+                        "cites a decision on `{decided_as_arbitrated}` it holds no arbitration of"
+                    ))
+                })?;
+                Event::Decided {
+                    proposition: a.proposition.clone(),
+                    at: a.at,
+                    reason: a.reason.clone(),
+                    disagreement: a.disagreement.clone(),
+                }
+            }
+            JournaledEvent::ResearchAsArbitrated {
+                research_as_arbitrated,
+            } => {
+                let task = arbitrated(research_as_arbitrated)
+                    .and_then(|a| a.research.clone())
+                    .ok_or_else(|| {
+                        refuse(format!(
+                            "cites research on `{research_as_arbitrated}` it holds no task for"
+                        ))
+                    })?;
+                Event::ResearchRaised(task)
+            }
+        };
+        events.push(event);
+    }
+    Ok((arbitrations, events))
+}
+
+/// `review` as the log should hold it, given `bases`, and the bases once it
+/// is held. Every reference is proven before it is written: the record is
+/// rebuilt against a copy of `bases` and compared with `review`, and a record
+/// that does not rebuild to exactly the review is journaled in full. A
+/// compact record that replayed as something the pass did not decide would be
+/// a second account of the pass, and the louder one.
+pub fn journal_form(
+    review: &FederationReview,
+    bases: &JournalBases,
+) -> (JournaledReview, JournalBases) {
+    let arbitrated = |proposition: &str| {
+        review
+            .arbitrations
+            .iter()
+            .find(|a| a.proposition == proposition)
+    };
+    let events: Vec<JournaledEvent> = review
+        .events
+        .iter()
+        .map(|event| match event {
+            Event::Decided {
+                proposition,
+                at,
+                reason,
+                disagreement,
+            } if arbitrated(proposition).is_some_and(|a| {
+                a.at == *at && a.reason == *reason && a.disagreement == *disagreement
+            }) =>
+            {
+                JournaledEvent::DecidedAsArbitrated {
+                    decided_as_arbitrated: proposition.clone(),
+                }
+            }
+            Event::ResearchRaised(task)
+                if arbitrated(&task.proposition)
+                    .is_some_and(|a| a.research.as_ref() == Some(task)) =>
+            {
+                JournaledEvent::ResearchAsArbitrated {
+                    research_as_arbitrated: task.proposition.clone(),
+                }
+            }
+            other => JournaledEvent::Recorded(other.clone()),
+        })
+        .collect();
+    let arbitrations: Vec<JournaledArbitration> = review
+        .arbitrations
+        .iter()
+        .map(|a| {
+            let unchanged_since = stem_of(&a.proposition, review.cycle)
+                .and_then(|stem| bases.0.get(stem))
+                .filter(|(cycle, _)| {
+                    *cycle < review.cycle && review.cycle - *cycle < REASKED_KEYFRAME_PASSES
+                })
+                .filter(|(_, base)| {
+                    reask(
+                        base,
+                        &a.proposition,
+                        review.at,
+                        decided_position(&events, review.journal_base, &a.proposition),
+                    )
+                    .as_ref()
+                        == Some(a)
+                })
+                .map(|(cycle, _)| *cycle);
+            match unchanged_since {
+                Some(of_cycle) => JournaledArbitration::Reasked {
+                    reasked: Reasked {
+                        proposition: a.proposition.clone(),
+                        of_cycle,
+                    },
+                },
+                None => JournaledArbitration::Recorded(Box::new(a.clone())),
+            }
+        })
+        .collect();
+    let compact = JournaledReview::with(review, arbitrations, events);
+    let mut advanced = bases.clone();
+    match rebuild(compact.clone(), &mut advanced) {
+        Ok(rebuilt) if rebuilt == *review => (compact, advanced),
+        _ => {
+            let full = JournaledReview::recorded(review);
+            let mut advanced = bases.clone();
+            // A record with nothing written as a reference rebuilds from
+            // itself alone, so this cannot refuse; were it to, the bases
+            // would stay where they were and the next pass journal in full.
+            match rebuild(full.clone(), &mut advanced) {
+                Ok(_) => (full, advanced),
+                Err(_) => (full, bases.clone()),
+            }
+        }
+    }
+}
+
 impl FederationReview {
     /// How many arbitrations reached each decision, as a short clause.
     pub fn detail(&self) -> String {
@@ -890,6 +1344,11 @@ pub struct FederationStage {
     /// Ids already spent on branches and merges; the federation never
     /// reuses an id.
     serial: u64,
+    /// What the log holds in full under each proposition stem, as of the
+    /// last review the kernel confirmed it journaled
+    /// ([`Self::journaled`]); what [`Self::journal_form`] writes a re-asked
+    /// arbitration against.
+    journal_bases: JournalBases,
 }
 
 /// Hand one view to `model`; true when the federation took it. A refusal is
@@ -1255,6 +1714,19 @@ impl FederationStage {
     /// Forecasts still waiting for reality, by proposition.
     pub fn pending(&self) -> usize {
         self.pending.len()
+    }
+
+    /// `review` as the log should hold it — see [`journal_form`] — and the
+    /// bases to hand [`Self::journaled`] once the kernel has appended it.
+    pub fn journal_form(&self, review: &FederationReview) -> (JournaledReview, JournalBases) {
+        journal_form(review, &self.journal_bases)
+    }
+
+    /// The record [`Self::journal_form`] returned reached the log. Only then
+    /// do later records refer to it: a reference to a record the append
+    /// refused would name a pass the log does not hold.
+    pub fn journaled(&mut self, bases: JournalBases) {
+        self.journal_bases = bases;
     }
 
     /// State the exposure riding on each subject, in the account currency,
@@ -2579,11 +3051,29 @@ pub fn replay(platform: &crate::platform::Platform) -> Result<Vec<FederationRevi
 /// detector went dark for good, reported only as a refusal on the round. A
 /// reader that keeps a cursor over the log needs the position of the refused
 /// review as well as the others, which is why it is kept in place.
+///
+/// What one bad record costs, now that a record may refer to an earlier one.
+/// A re-asked arbitration names the pass that journaled it whole, and
+/// [`journal_form`] never names one [`REASKED_KEYFRAME_PASSES`] or more passes
+/// back. So a record this read cannot decode, or one the log no longer holds,
+/// refuses at most the reviews of the `REASKED_KEYFRAME_PASSES - 1` passes
+/// after it: each refused in its own position, naming the pass it refers to,
+/// and every review after them read as before. None is read wrongly. A
+/// reference is rebuilt only from a base journaled at exactly the pass it
+/// names, so a reader that lost that pass refuses the review rather than
+/// rebuild it from an older pass on the same question. A version-1 log has
+/// no references and loses only the bad record itself. What a refused review
+/// resolved is not read either: the deep brain's belief watch counts it
+/// untrusted and reads no resolutions in its place, though the record holds
+/// them whole.
 pub fn replay_each(platform: &crate::platform::Platform) -> Result<Vec<Result<FederationReview>>> {
     let envelopes = platform.replay_journal(
         &qip_events::EventFilter::new().topic(<FederationReview as EventBody>::TOPIC),
     )?;
     let mut reviews = Vec::new();
+    // Carried across records in log order: a re-asked arbitration is rebuilt
+    // from the last record that held its stem in full.
+    let mut bases = JournalBases::default();
     for envelope in envelopes {
         // The envelope's key is `<topic name>:<body key>`; read the body's
         // key exactly rather than searching for the prefix anywhere in it.
@@ -2597,8 +3087,9 @@ pub fn replay_each(platform: &crate::platform::Platform) -> Result<Vec<Result<Fe
         }
         reviews.push(
             envelope
-                .decode::<FederationReview>()
-                .and_then(|decoded| trusted(decoded.body)),
+                .decode::<JournaledReview>()
+                .and_then(|decoded| rebuild(decoded.body, &mut bases))
+                .and_then(trusted),
         );
     }
     Ok(reviews)
@@ -4016,6 +4507,770 @@ mod tests {
         assert!(
             replay(&platform).is_err(),
             "replay still refuses the whole read"
+        );
+    }
+
+    /// The bytes a re-asked pass may journal in this fixture. Chosen between
+    /// the two forms the fixture produces, measured when this was written:
+    /// every whole review of an unchanged pass was 13,040-13,183 bytes and
+    /// every compact one 6,740-7,272, most of it the population's standings.
+    const REASKED_PASS_CEILING: usize = 8_000;
+
+    /// One instrument whose tape never moves, asked about every 100 ms as the
+    /// fast brain asks: what each pass journals, whole and compact, and the
+    /// compact form rebuilt from its bytes through a decoder of its own.
+    fn unchanged_passes(passes: u64) -> Vec<(FederationReview, JournaledReview, usize, usize)> {
+        let mut stage = FederationStage::new();
+        let mut decoder = JournalBases::default();
+        (1..=passes)
+            .map(|cycle| {
+                let now = day(0).saturating_add(Duration::from_millis(100 * cycle as i64));
+                let review = stage.run(&inputs(cycle, 100.0, day(0), None), now);
+                let (record, bases) = stage.journal_form(&review);
+                stage.journaled(bases);
+                let wire = serde_json::to_vec(&record)
+                    .unwrap_or_else(|e| panic!("cycle {cycle} serialises: {e}"));
+                let whole = serde_json::to_vec(&review)
+                    .unwrap_or_else(|e| panic!("cycle {cycle} serialises whole: {e}"))
+                    .len();
+                let decoded: JournaledReview = serde_json::from_slice(&wire)
+                    .unwrap_or_else(|e| panic!("cycle {cycle} decodes: {e}"));
+                let rebuilt = rebuild(decoded, &mut decoder)
+                    .unwrap_or_else(|e| panic!("cycle {cycle} rebuilds: {e}"));
+                assert_eq!(
+                    rebuilt, review,
+                    "cycle {cycle}: the journaled form replays as something the pass did not decide"
+                );
+                (review, record, wire.len(), whole)
+            })
+            .collect()
+    }
+
+    /// The failure this prevents: the fast brain asks every instrument's
+    /// next-close question afresh on every 100 ms pass, under a name carrying
+    /// the pass, while its bars close once a second; nine reviews in ten
+    /// journaled each instrument's arbitration, its `Decided` event and its
+    /// research task again, unchanged but for the name, and the federation's
+    /// record was 53-64% of the log's bytes. A deployed fast brain on its
+    /// committed 2 GiB reached 2.2 GB in two minutes.
+    ///
+    /// Mutation: make `journal_form` never write `Reasked` (the
+    /// `unchanged_since` filter always false) and every re-asked pass is
+    /// over the ceiling.
+    #[test]
+    fn a_question_asked_again_on_an_unchanged_tape_is_journaled_as_a_reference_and_rebuilds_exactly()
+     {
+        let passes = unchanged_passes(30);
+        assert_eq!(
+            passes[0].1.reasked(),
+            0,
+            "the first pass has nothing to refer to"
+        );
+        for (review, record, compact, whole) in passes.iter().skip(1) {
+            assert!(
+                *whole > REASKED_PASS_CEILING,
+                "premise: cycle {} whole is {whole} bytes, inside the ceiling it is meant to \
+                 exceed",
+                review.cycle
+            );
+            assert!(
+                *compact <= REASKED_PASS_CEILING,
+                "cycle {} re-asked {} of {} arbitration(s) and still journaled {compact} bytes \
+                 (whole: {whole})",
+                review.cycle,
+                record.reasked(),
+                record.arbitrations.len()
+            );
+        }
+        // Bounded however long the tape stays still: a reference is rewritten
+        // in full every `REASKED_KEYFRAME_PASSES`, never chained further back.
+        let longest = passes
+            .iter()
+            .flat_map(|(review, record, _, _)| {
+                record.arbitrations.iter().filter_map(move |a| match a {
+                    JournaledArbitration::Reasked { reasked } => {
+                        Some(review.cycle - reasked.of_cycle)
+                    }
+                    JournaledArbitration::Recorded(_) => None,
+                })
+            })
+            .max();
+        assert!(
+            longest.is_some_and(|reach| reach < REASKED_KEYFRAME_PASSES),
+            "{longest:?}"
+        );
+    }
+
+    /// The compact form through the real journal: sealed by the platform,
+    /// published, read back by [`replay`], and every review equal to the one
+    /// the pass made.
+    ///
+    /// Mutation: in [`replay_each`], start each record with empty bases (the
+    /// decoder forgets what the log held in full) and the first re-asked
+    /// review is refused as naming a pass this log does not hold.
+    #[test]
+    fn a_compact_review_replays_from_the_platform_journal_as_the_review_the_pass_made() {
+        let config = crate::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(day(0), config.seed);
+        let mut platform = crate::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            qip_financial::universe::Universe::new(),
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        let mut stage = FederationStage::new();
+        let mut made = Vec::new();
+        let mut reasked = 0;
+        for cycle in 1..=8u64 {
+            let now = day(0).saturating_add(Duration::from_millis(100 * cycle as i64));
+            // A close at the fifth pass, so the replay crosses a question
+            // that changed as well as ones that did not.
+            let (close, through) = if cycle < 5 {
+                (100.0, day(0))
+            } else {
+                (101.0, day(0).saturating_add(Duration::from_millis(450)))
+            };
+            let review = stage.run(&inputs(cycle, close, through, None), now);
+            let (record, bases) = stage.journal_form(&review);
+            reasked += record.reasked();
+            platform
+                .journal_record(record, "kernel/federation", now)
+                .unwrap_or_else(|e| panic!("journaled: {e}"));
+            stage.journaled(bases);
+            made.push(review);
+        }
+        assert!(reasked > 0, "premise: no record was journaled as re-asked");
+        let replayed = replay(&platform).unwrap_or_else(|e| panic!("the log replays: {e}"));
+        assert_eq!(replayed, made);
+    }
+
+    /// The failure this prevents: `a_question_asked_again_...` bounds the
+    /// reach of a reference by asserting it under
+    /// [`REASKED_KEYFRAME_PASSES`] over thirty passes, which no reference can
+    /// fail to be however the keyframe clause reads — so the clause could be
+    /// deleted, every reference on a tape that never moved would chain back
+    /// to the first pass for the whole run, and a reader whose log begins
+    /// mid-run would lose every pass since rather than fewer than a hundred.
+    /// Here the tape stays still for more than twice the keyframe distance.
+    ///
+    /// Mutation: drop the keyframe clause from `journal_form`'s
+    /// `unchanged_since` filter (keep only `*cycle < review.cycle`) — the
+    /// pass at the keyframe distance is journaled by reference to its stem's
+    /// first whole pass, a hundred passes back.
+    #[test]
+    fn a_question_unchanged_past_the_keyframe_distance_is_journaled_whole_again_and_no_reference_reaches_further()
+     {
+        let passes = unchanged_passes(2 * REASKED_KEYFRAME_PASSES + 5);
+        // Per stem: the last pass that journaled it whole, and every pass that
+        // did so because the keyframe distance had elapsed. The stems do not
+        // share a base — on this fixture the self-system question settles a
+        // pass after the instrument's — so neither does their keyframe.
+        let mut whole_at: BTreeMap<String, u64> = BTreeMap::new();
+        let mut keyframes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        let mut longest = 0;
+        for (review, record, _, _) in &passes {
+            for entry in &record.arbitrations {
+                let proposition = match entry {
+                    JournaledArbitration::Reasked { reasked } => &reasked.proposition,
+                    JournaledArbitration::Recorded(a) => &a.proposition,
+                };
+                let stem = stem_of(proposition, review.cycle)
+                    .unwrap_or_else(|| panic!("premise: `{proposition}` is named by its pass"))
+                    .to_string();
+                match entry {
+                    // A reference names the last pass that journaled its stem
+                    // whole, and never one the keyframe distance back or
+                    // further: so the pass at that distance is whole.
+                    JournaledArbitration::Reasked { reasked } => {
+                        assert_eq!(
+                            whole_at.get(&stem),
+                            Some(&reasked.of_cycle),
+                            "cycle {}: `{proposition}` refers to cycle {}, which is not the \
+                             last pass that journaled it whole",
+                            review.cycle,
+                            reasked.of_cycle
+                        );
+                        let reach = review.cycle - reasked.of_cycle;
+                        assert!(
+                            reach < REASKED_KEYFRAME_PASSES,
+                            "cycle {}: `{proposition}` refers {reach} passes back, past the \
+                             keyframe distance",
+                            review.cycle
+                        );
+                        longest = longest.max(reach);
+                    }
+                    JournaledArbitration::Recorded(_) => {
+                        if whole_at
+                            .get(&stem)
+                            .is_some_and(|w| review.cycle - w == REASKED_KEYFRAME_PASSES)
+                        {
+                            keyframes
+                                .entry(stem.clone())
+                                .or_default()
+                                .push(review.cycle);
+                        }
+                        whole_at.insert(stem, review.cycle);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            longest,
+            REASKED_KEYFRAME_PASSES - 1,
+            "premise: a chain reached the keyframe distance"
+        );
+        assert!(
+            whole_at.len() >= 2
+                && whole_at
+                    .keys()
+                    .all(|stem| keyframes.get(stem).is_some_and(|at| at.len() == 2)),
+            "every question still for twice the keyframe distance is journaled whole twice \
+             more: {keyframes:?} of {:?}",
+            whole_at.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// The arbitrations the domain-member fixture disputes materially, so
+    /// every pass raises research as well as deciding (the fixture of
+    /// `a_domain_member_fed_its_asset_classs_breadth_disagrees_...`).
+    fn disputed(cycle: u64) -> FederationInputs {
+        let mut inputs = inputs(cycle, 100.0, day(0), None);
+        for subject in ["BBB", "CCC"] {
+            inputs.instruments.push(InstrumentView {
+                subject: subject.into(),
+                returns: series(40, -0.01),
+                last_close: 50.0,
+                observed_through: day(0),
+                spread_ratio: None,
+                causal: None,
+                fundamental_surprise: None,
+                order_flow: Vec::new(),
+            });
+        }
+        inputs.instruments[0].returns = series(40, 0.01);
+        inputs
+    }
+
+    /// The failure this prevents: each arbitration was written three times
+    /// in its own record — whole, as the federation journal's `Decided`
+    /// event and as its `ResearchRaised` event — and the two copies were a
+    /// third of every review's bytes. They are now references, and nothing
+    /// proved either the dedup or its limit: that an event differing from
+    /// its arbitration in anything at all is kept whole, so the record says
+    /// what the federation's journal said rather than what the arbitration
+    /// says.
+    ///
+    /// Mutations, each in `journal_form`'s event map: make the `Decided` arm's
+    /// guard always false (`false && ..`) and the first assertion fails on a
+    /// decision journaled whole; the same on the `ResearchRaised` arm and it
+    /// fails on research; loosen the `Decided` guard to the proposition alone
+    /// (`arbitrated(proposition).is_some()`) and the amended event is written
+    /// as a reference, the encoder's own rebuild refuses the compact form and
+    /// the record is journaled whole, which the last assertion catches.
+    #[test]
+    fn a_decision_or_research_event_is_written_as_a_reference_only_when_it_repeats_its_arbitration()
+    {
+        let mut stage = FederationStage::new();
+        stage.set_asset_classes(
+            ["AAA", "BBB", "CCC"]
+                .into_iter()
+                .map(|s| (s.to_string(), "equity".to_string()))
+                .collect(),
+        );
+        let mut decoder = JournalBases::default();
+        let mut last = None;
+        for cycle in 1..=3_u64 {
+            let now = day(0).saturating_add(Duration::from_millis(100 * cycle as i64));
+            let review = stage.run(&disputed(cycle), now);
+            let (record, bases) = stage.journal_form(&review);
+            let (mut decided, mut raised) = (0, 0);
+            for (event, journaled) in review.events.iter().zip(&record.events) {
+                let (kind, expected) = match event {
+                    Event::Decided { proposition, .. } => {
+                        decided += 1;
+                        (
+                            "decision",
+                            JournaledEvent::DecidedAsArbitrated {
+                                decided_as_arbitrated: proposition.clone(),
+                            },
+                        )
+                    }
+                    Event::ResearchRaised(task) => {
+                        raised += 1;
+                        (
+                            "research",
+                            JournaledEvent::ResearchAsArbitrated {
+                                research_as_arbitrated: task.proposition.clone(),
+                            },
+                        )
+                    }
+                    other => ("other", JournaledEvent::Recorded(other.clone())),
+                };
+                assert_eq!(
+                    journaled, &expected,
+                    "cycle {cycle}: a {kind} event repeating its own record's arbitration was \
+                     journaled whole"
+                );
+            }
+            assert!(
+                decided > 0 && raised > 0,
+                "premise: cycle {cycle} decided {decided} and raised {raised} research task(s)"
+            );
+            assert_eq!(record.events.len(), review.events.len());
+            let wire = serde_json::to_vec(&record)
+                .unwrap_or_else(|e| panic!("cycle {cycle} serialises: {e}"));
+            let decoded: JournaledReview = serde_json::from_slice(&wire)
+                .unwrap_or_else(|e| panic!("cycle {cycle} decodes: {e}"));
+            let rebuilt = rebuild(decoded, &mut decoder)
+                .unwrap_or_else(|e| panic!("cycle {cycle} rebuilds: {e}"));
+            assert_eq!(
+                rebuilt, review,
+                "cycle {cycle}: the events rebuild differently"
+            );
+            last = Some((review, stage.journal_bases.clone()));
+            stage.journaled(bases);
+        }
+        let Some((mut amended, bases)) = last else {
+            panic!("premise: three passes ran")
+        };
+        // The federation's journal said something its arbitration does not:
+        // one decision's reason, one research task's citation.
+        let decision = amended
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::Decided { .. }))
+            .unwrap_or_else(|| panic!("premise: a decision"));
+        if let Event::Decided { reason, .. } = &mut amended.events[decision] {
+            reason.push_str(" (as the journal amended it)");
+        }
+        let research = amended
+            .events
+            .iter()
+            .position(|e| matches!(e, Event::ResearchRaised(_)))
+            .unwrap_or_else(|| panic!("premise: a research task"));
+        if let Event::ResearchRaised(task) = &mut amended.events[research] {
+            task.cites += 1;
+        }
+        let (record, _) = journal_form(&amended, &bases);
+        assert_eq!(
+            record.events[decision],
+            JournaledEvent::Recorded(amended.events[decision].clone()),
+            "a decision differing from its arbitration was written as a reference to it"
+        );
+        assert_eq!(
+            record.events[research],
+            JournaledEvent::Recorded(amended.events[research].clone()),
+            "research differing from its arbitration was written as a reference to it"
+        );
+        let mut replay_bases = bases;
+        assert_eq!(
+            rebuild(record.clone(), &mut replay_bases)
+                .unwrap_or_else(|e| panic!("the amended record rebuilds: {e}")),
+            amended
+        );
+        let referenced = record
+            .events
+            .iter()
+            .filter(|e| !matches!(e, JournaledEvent::Recorded(_)))
+            .count();
+        assert!(
+            referenced > 0 && record.reasked() > 0,
+            "the amended events took the rest of the record whole with them: {referenced} \
+             event(s) and {} arbitration(s) by reference",
+            record.reasked()
+        );
+    }
+
+    /// A record the log holds under a review's key and cannot decode as one,
+    /// as a broken or foreign writer would leave it.
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    struct Undecodable {
+        cycle: u64,
+    }
+
+    impl EventBody for Undecodable {
+        const TOPIC: Topic = Topic::WorldModelUpdated;
+        const SCHEMA_VERSION: u32 = 2;
+
+        fn idempotency_key(&self) -> Option<String> {
+            Some(format!("{IDEMPOTENCY_PREFIX}{}", self.cycle))
+        }
+    }
+
+    /// The failure this prevents: a compact record depends on an earlier
+    /// one, so a reader that lost one record could refuse everything after
+    /// it, or — worse — rebuild a reference against an older pass that
+    /// journaled the same stem and read a review the platform never made.
+    /// Nothing tested either, and the first was happening: a refused review
+    /// took the arbitrations it held whole down with it, and the two stems
+    /// of this fixture keyframe three passes apart, so each keyframe sat in a
+    /// review refused for the other stem's lost base and the refusal never
+    /// ended.
+    ///
+    /// Here the tape moves at cycle 4, the members score the close and the
+    /// question is journaled whole again at cycle 5, and that record is the
+    /// one the log lacks — held but undecodable, and absent. Every review
+    /// referring to it is refused in its own position, fewer than
+    /// [`REASKED_KEYFRAME_PASSES`] of them, and every other review — before
+    /// it, beside it and after its stem's next keyframe — reads exactly as
+    /// the pass made it.
+    ///
+    /// Mutations, in `rebuild`: drop the `*cycle == reasked.of_cycle`
+    /// filter, so a reference is rebuilt from whatever its stem's base is —
+    /// the decoder still holds cycle 4's, and the reviews after cycle 5 read
+    /// as a question the members had not yet scored; advance the bases only
+    /// when the review rebuilt (`rebuild_against(..)?` before `advance`) and
+    /// the review holding the other stem's keyframe stays refused, and with
+    /// it every review after.
+    #[test]
+    fn a_reference_to_a_record_the_log_lacks_is_refused_in_place_and_every_other_review_still_reads()
+     {
+        const MOVED: u64 = 4;
+        const LOST: u64 = 5;
+        let mut stage = FederationStage::new();
+        let made: Vec<(FederationReview, JournaledReview)> =
+            (1..=LOST + REASKED_KEYFRAME_PASSES + 3)
+                .map(|cycle| {
+                    let now = day(0).saturating_add(Duration::from_millis(100 * cycle as i64));
+                    let (close, through) = if cycle < MOVED {
+                        (100.0, day(0))
+                    } else {
+                        (101.0, day(0).saturating_add(Duration::from_millis(350)))
+                    };
+                    let review = stage.run(&inputs(cycle, close, through, None), now);
+                    let (record, bases) = stage.journal_form(&review);
+                    stage.journaled(bases);
+                    (review, record)
+                })
+                .collect();
+        let refers_to_lost = |record: &JournaledReview| {
+            record.arbitrations.iter().any(|a| {
+                matches!(a, JournaledArbitration::Reasked { reasked } if reasked.of_cycle == LOST)
+            })
+        };
+        let lost = &made[(LOST - 1) as usize].1;
+        assert!(
+            lost.cycle == LOST && lost.reasked() < lost.arbitrations.len(),
+            "premise: the lost record journaled the moved question whole"
+        );
+        let dependent: Vec<&JournaledReview> = made
+            .iter()
+            .map(|(_, record)| record)
+            .filter(|record| refers_to_lost(record))
+            .collect();
+        assert_eq!(
+            dependent.iter().map(|r| r.cycle).collect::<Vec<_>>(),
+            (LOST + 1..LOST + REASKED_KEYFRAME_PASSES).collect::<Vec<_>>(),
+            "premise: the reviews of the keyframe distance after the lost record refer to it"
+        );
+        assert!(
+            dependent.iter().any(|r| r.reasked() < r.arbitrations.len()),
+            "premise: a review referring to the lost record holds another question whole"
+        );
+
+        for undecodable in [true, false] {
+            let config = crate::PlatformConfig::default();
+            let (context, _clock) = qip_core::Context::deterministic(day(0), config.seed);
+            let mut platform = crate::Platform::new(
+                config,
+                context,
+                qip_observability::Telemetry::silent(),
+                qip_financial::universe::Universe::new(),
+                qip_risk::limits::LimitSet::conservative_default(),
+            )
+            .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+            let mut journaled = Vec::new();
+            for (review, record) in &made {
+                if review.cycle != LOST {
+                    platform
+                        .journal_record(record.clone(), "kernel/federation", review.at)
+                        .unwrap_or_else(|e| panic!("journaled: {e}"));
+                    journaled.push((review, record));
+                } else if undecodable {
+                    platform
+                        .journal_record(Undecodable { cycle: LOST }, "kernel/federation", review.at)
+                        .unwrap_or_else(|e| panic!("journaled: {e}"));
+                    journaled.push((review, record));
+                }
+            }
+            let each = replay_each(&platform).unwrap_or_else(|e| panic!("the journal reads: {e}"));
+            assert_eq!(
+                each.len(),
+                journaled.len(),
+                "every record keeps its position"
+            );
+            for ((review, record), read) in journaled.iter().zip(&each) {
+                let cycle = review.cycle;
+                if cycle == LOST {
+                    assert!(read.is_err(), "the undecodable record was read: {read:?}");
+                } else if refers_to_lost(record) {
+                    let refusal = read.as_ref().err().map(|e| e.message().to_string());
+                    assert!(
+                        refusal.as_deref().is_some_and(|m| m
+                            .contains(&format!("review of cycle {cycle} records `"))
+                            && m.contains(&format!("as unchanged since cycle {LOST}, "))),
+                        "cycle {cycle} refers to the lost record and was not refused in its \
+                         own position (undecodable: {undecodable}): {refusal:?}"
+                    );
+                } else {
+                    let read = read.as_ref().unwrap_or_else(|e| {
+                        panic!("cycle {cycle} was refused (undecodable: {undecodable}): {e}")
+                    });
+                    assert_eq!(
+                        read, *review,
+                        "cycle {cycle} replays as something the pass did not decide"
+                    );
+                }
+            }
+            assert_eq!(
+                each.iter().filter(|read| read.is_err()).count(),
+                dependent.len() + usize::from(undecodable),
+                "the lost record refused more than the reviews that refer to it"
+            );
+        }
+    }
+
+    /// A daily bar of `obj-<symbol>` on XNYS opening at `open_time`.
+    fn daily(
+        symbol: &str,
+        open_time: Timestamp,
+        open: f64,
+        close: f64,
+    ) -> qip_market_ingestion::adapter::SensedRecord {
+        let price = |p: f64| Decimal::from_f64(p).unwrap_or_else(|| panic!("a price: {p}"));
+        qip_market_ingestion::adapter::SensedRecord::Bar(Box::new(qip_market::bar::Bar {
+            object_id: qip_core::ObjectId::from_string(format!("obj-{symbol}")),
+            venue: "XNYS".to_string(),
+            interval: qip_market::bar::Interval::Day,
+            open_time,
+            open: price(open),
+            high: price(open.max(close) * 1.002),
+            low: price(open.min(close) * 0.998),
+            close: price(close),
+            volume: Decimal::from_int(1_000_000),
+            trade_count: 5_000,
+            vwap: Decimal::from_f64((open + close) / 2.0),
+            quality: qip_financial::quality::DataQuality::default(),
+        }))
+    }
+
+    /// Every federation record the platform's journal holds, decoded and
+    /// not rebuilt: the form the log keeps.
+    fn journaled_records(platform: &crate::Platform) -> Vec<JournaledReview> {
+        let ours = format!("{}:{IDEMPOTENCY_PREFIX}", Topic::WorldModelUpdated.name());
+        platform
+            .replay_journal(
+                &qip_events::EventFilter::new().topic(<FederationReview as EventBody>::TOPIC),
+            )
+            .unwrap_or_else(|e| panic!("the journal reads: {e}"))
+            .iter()
+            .filter(|envelope| envelope.idempotency_key().starts_with(&ours))
+            .map(|envelope| {
+                envelope
+                    .decode::<JournaledReview>()
+                    .unwrap_or_else(|e| panic!("a journaled review decodes: {e}"))
+                    .body
+            })
+            .collect()
+    }
+
+    /// The failure this prevents: every test of the compact form drove the
+    /// stage by hand and journaled what it chose, so the one production
+    /// caller — UNDERSTAND, which builds the form, appends it and only then
+    /// moves the stage's bases — could journal the review whole again, or
+    /// move the bases before the append returned, and nothing failed. The
+    /// second is the dangerous one: a pass whose append the log refused would
+    /// become the base the next pass refers to, and that pass's review would
+    /// be unreadable from the only log that holds it.
+    ///
+    /// Here the platform cycles every 100 ms on a tape that only moves once,
+    /// as the fast brain does between one-second bars, and the pass on which
+    /// it moves is the one whose append the log refuses.
+    ///
+    /// Mutations, in `Platform::understand_federation`: journal `review`
+    /// itself (the hunk reverted) and no record after the first holds a
+    /// reference; call `journaled(bases)` before `journal_record` and the
+    /// stage's bases move on the refused pass, the next pass refers to it,
+    /// and its review is refused on replay.
+    #[test]
+    fn the_cycle_journals_a_still_tapes_review_by_reference_and_moves_its_bases_only_once_the_append_landed()
+     {
+        const REFUSED: u64 = 5;
+        let start = day(400);
+        let config = crate::PlatformConfig::default();
+        let (context, _clock) = qip_core::Context::deterministic(start, config.seed);
+        let mut universe = qip_financial::universe::Universe::new();
+        for symbol in ["AAA", "BBB"] {
+            universe
+                .insert(
+                    qip_financial::object::FinancialObject::builder(
+                        qip_core::ObjectId::from_string(format!("obj-{symbol}")),
+                        symbol,
+                        qip_financial::asset_class::InstrumentType::CommonStock,
+                        qip_financial::costs::LiquidityProfile::listed(
+                            Decimal::from_int(5_000_000),
+                            3.0,
+                        ),
+                    )
+                    .venue("XNYS")
+                    .sector(qip_financial::asset_class::Sector::InformationTechnology)
+                    .price(Decimal::from_int(100))
+                    .provenance(qip_financial::quality::Provenance::synthetic("test", start))
+                    .build(start)
+                    .unwrap_or_else(|e| panic!("a valid object: {e}")),
+                )
+                .unwrap_or_else(|e| panic!("insertable: {e}"));
+        }
+        let mut platform = crate::Platform::new(
+            config,
+            context,
+            qip_observability::Telemetry::silent(),
+            universe,
+            qip_risk::limits::LimitSet::conservative_default(),
+        )
+        .unwrap_or_else(|e| panic!("the platform assembles: {e}"));
+        // A hundred and twenty daily bars each, the last closing two days
+        // before the first pass, so every pass reads the same tape.
+        let mut tape = Vec::new();
+        let mut aaa = 100.0_f64;
+        for symbol in ["AAA", "BBB"] {
+            let mut price = 100.0_f64;
+            for i in 0..120_i64 {
+                let noise = ((i as f64 * 0.754_877_666_2) % 1.0 - 0.5) * 0.008;
+                let open = price;
+                price *= 1.0 + noise;
+                tape.push(daily(
+                    symbol,
+                    start.saturating_sub(Duration::from_days(122 - i)),
+                    open,
+                    price,
+                ));
+            }
+            if symbol == "AAA" {
+                aaa = price;
+            }
+        }
+        platform.observe(tape);
+
+        // The log refuses every append on the refused pass: a read-only log
+        // fails inside `journal_record` exactly where a full spool would.
+        // Not `std::env::temp_dir()`, for the reason
+        // `dormancy_boot_log_path` gives.
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "qip-kernel-federation-unjournalled-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("a scratch directory: {e}"));
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, "").unwrap_or_else(|e| panic!("an empty log file: {e}"));
+
+        let mut made: BTreeMap<u64, (usize, Vec<Arbitration>)> = BTreeMap::new();
+        let mut bases_after: BTreeMap<u64, JournalBases> = BTreeMap::new();
+        for pass in 1..=7_u64 {
+            let now = start.saturating_add(Duration::from_millis(100 * pass as i64));
+            if pass == REFUSED {
+                platform.observe(vec![daily(
+                    "AAA",
+                    start.saturating_sub(Duration::from_days(2)),
+                    aaa,
+                    aaa * 1.03,
+                )]);
+                platform.replace_event_log(
+                    qip_events::EventLog::inspect(&path)
+                        .unwrap_or_else(|e| panic!("a read-only log: {e}")),
+                );
+            }
+            let report = platform.run_cycle(now);
+            if pass == REFUSED {
+                let problems = report
+                    .stage(crate::cycle::Stage::Understand)
+                    .map(|outcome| outcome.problems.clone())
+                    .unwrap_or_default();
+                assert!(
+                    problems
+                        .iter()
+                        .any(|p| p.contains("federation's review was computed and not journalled")),
+                    "premise: the log refused the refused pass's review: {problems:?}"
+                );
+                platform.replace_event_log(qip_events::EventLog::in_memory());
+            }
+            let view = platform.desk_arbitration_view();
+            assert_eq!(
+                view.cycle, pass,
+                "premise: the pass is the platform's cycle"
+            );
+            made.insert(pass, (view.journal_base, view.arbitrations.clone()));
+            drop(view);
+            bases_after.insert(pass, platform.federation().journal_bases.clone());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let records = journaled_records(&platform);
+        assert_eq!(
+            records.iter().map(|r| r.cycle).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 6, 7],
+            "premise: every pass but the refused one reached the journal"
+        );
+        assert_eq!(
+            records[0].reasked(),
+            0,
+            "the first pass has nothing to refer to"
+        );
+        let each = replay_each(&platform).unwrap_or_else(|e| panic!("the journal reads: {e}"));
+        assert_eq!(each.len(), records.len());
+        for (record, read) in records.iter().zip(&each) {
+            let cycle = record.cycle;
+            let read = read
+                .as_ref()
+                .unwrap_or_else(|e| panic!("cycle {cycle} is refused on replay: {e}"));
+            let (journal_base, arbitrations) = &made[&cycle];
+            assert_eq!(
+                (read.cycle, read.journal_base, &read.arbitrations),
+                (cycle, *journal_base, arbitrations),
+                "cycle {cycle} replays as something the pass did not decide"
+            );
+            if cycle == 1 {
+                continue;
+            }
+            assert!(
+                record.reasked() > 0,
+                "cycle {cycle} journaled all {} arbitration(s) whole on a tape it had already \
+                 read",
+                record.arbitrations.len()
+            );
+            let compact = serde_json::to_vec(record).map_or(0, |bytes| bytes.len());
+            let whole = serde_json::to_vec(read).map_or(0, |bytes| bytes.len());
+            assert!(
+                compact > 0 && compact < whole,
+                "cycle {cycle} journaled {compact} bytes against {whole} whole"
+            );
+            for entry in &record.arbitrations {
+                if let JournaledArbitration::Reasked { reasked } = entry {
+                    assert_ne!(
+                        reasked.of_cycle, REFUSED,
+                        "cycle {cycle} refers to the pass whose review the log refused"
+                    );
+                }
+            }
+        }
+
+        // And the stage itself: the refused pass decided something no base
+        // held, so bases moved on its account would show; they did not move.
+        let before = &bases_after[&(REFUSED - 1)];
+        assert!(
+            made[&REFUSED].1.iter().any(|a| {
+                stem_of(&a.proposition, REFUSED)
+                    .and_then(|stem| before.0.get(stem))
+                    .is_some_and(|(_, base)| base.disagreement != a.disagreement)
+            }),
+            "premise: the tape moved on the refused pass"
+        );
+        assert_eq!(
+            &bases_after[&REFUSED], before,
+            "the stage moved its bases on a review the log refused"
         );
     }
 }
