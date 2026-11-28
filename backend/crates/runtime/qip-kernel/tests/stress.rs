@@ -1693,3 +1693,202 @@ fn only_a_fresh_operator_intent_applies_the_joint_tail_reserve() -> Result<()> {
     );
     Ok(())
 }
+
+// --- the generated worlds on the log (R12-EXPAND-6033) -----------------------
+
+/// Two default cycles over a tape on which UNDERSTAND establishes
+/// obj-AAA -> obj-BBB, with obj-BBB held: the first cycle writes the edge, the
+/// second stresses the book through it. Returns the platform and every
+/// [`qip_kernel::platform::SyntheticEpisodeRecord`] the durable journal holds,
+/// read through `replay_journal` — the replay entry point — and selected by
+/// the lineage producer the stage writes, not by decoding whatever the topic
+/// carries (`ScenarioEvaluated` has other producers).
+fn two_cycles_with_an_established_driver()
+-> Result<(Platform, Vec<qip_kernel::platform::SyntheticEpisodeRecord>)> {
+    use qip_events::{EventFilter, Topic};
+    use qip_kernel::platform::{SYNTHETIC_EPISODE_ORIGIN, SyntheticEpisodeRecord};
+
+    let count = 120;
+    let cause_returns = noise(11, count, 0.02);
+    let mut effect_returns = vec![0.0; count];
+    let effect_noise = noise(22, count, 0.004);
+    for t in 1..count {
+        effect_returns[t] = 0.8 * cause_returns[t - 1] + effect_noise[t];
+    }
+    let mut platform = platform()?;
+    platform.observe(bars_from_returns("AAA", &cause_returns, count));
+    platform.observe(bars_from_returns("BBB", &effect_returns, count));
+    buy(&mut platform, "BBB", dec!("100"), start())?;
+    platform.run_cycle(start());
+    platform.run_cycle(start().saturating_add(Duration::from_days(1)));
+
+    let mut records = Vec::new();
+    for envelope in platform.replay_journal(&EventFilter::new().topic(Topic::ScenarioEvaluated))? {
+        if envelope.lineage().producer != SYNTHETIC_EPISODE_ORIGIN {
+            continue;
+        }
+        envelope.verify_payload_hash()?;
+        // `decode` re-admits the episode through `SyntheticEpisode`'s
+        // `TryFrom`, so a record replays only if the contract still admits
+        // it: a Monte Carlo episode without a seed fails here, not later.
+        records.push(envelope.decode::<SyntheticEpisodeRecord>()?.body);
+    }
+    Ok((platform, records))
+}
+
+/// R12-EXPAND-6033 (ADR 0149 decision 18; owner decision 5 of 2026-11-28):
+/// on `PlatformConfig::default`, every world a cycle draws from a seed is on
+/// the durable journal as a `MonteCarlo` episode carrying that seed — the
+/// three tail worlds drawn beyond history (`synthetic-1`, `synthetic-2`,
+/// `synthetic-joint`) seeded by the cycle, and the capacity probe's seeded
+/// `MarketSimulator::synthetic` agent run seeded by the configuration — and
+/// the journal replays them: a second platform fed the same tape journals the
+/// same episodes, digest for digest, so the record names a draw a reader can
+/// regenerate rather than one it must trust.
+///
+/// Until `20ffc7e` `SyntheticGenerator::MonteCarlo` had no producer and the
+/// seed field had no writer; this proves the producer through `run_cycle`
+/// rather than through `stage_simulate` on a hand-built book.
+///
+/// Mutations (each restored byte-for-byte): delete the
+/// `episodes.extend(generated_world_episodes(..))` call in `stress_the_book`
+/// — the `synthetic-1` count reads 0; delete the `probe.episode` journal in
+/// `stage_simulate` — the probe count reads 0; pass `self.cycle + 1` as the
+/// tail worlds' seed in `generated_world_episodes`' call — the seed assertion
+/// fails against the record's cycle.
+#[test]
+fn a_default_cycle_journals_its_seeded_draws_as_monte_carlo_episodes_that_replay() -> Result<()> {
+    use qip_contracts::expansion::SyntheticGenerator;
+
+    let (platform, records) = two_cycles_with_an_established_driver()?;
+    let seed = PlatformConfig::default().seed;
+    let cycles: std::collections::BTreeSet<u64> = records.iter().map(|r| r.cycle).collect();
+    assert_eq!(
+        cycles,
+        std::collections::BTreeSet::from([1, 2]),
+        "premise: both cycles stressed the held book and journaled episodes: {records:?}"
+    );
+    assert!(
+        platform.stress_report().is_some(),
+        "premise: the second cycle kept a stress report"
+    );
+    for cycle in [1_u64, 2] {
+        let of_cycle: Vec<_> = records.iter().filter(|r| r.cycle == cycle).collect();
+        for world in ["synthetic-1", "synthetic-2", "synthetic-joint"] {
+            let found: Vec<_> = of_cycle
+                .iter()
+                .filter(|r| r.episode.scenario() == world)
+                .collect();
+            assert_eq!(found.len(), 1, "cycle {cycle}, {world}: {of_cycle:?}");
+            assert_eq!(
+                found[0].episode.generator(),
+                SyntheticGenerator::MonteCarlo,
+                "cycle {cycle}, {world}"
+            );
+            assert_eq!(
+                found[0].episode.seed(),
+                Some(cycle),
+                "cycle {cycle}: {world} is drawn from the cycle's seed and the record names it"
+            );
+        }
+        let probes: Vec<_> = of_cycle
+            .iter()
+            .filter(|r| r.episode.scenario().starts_with("capacity-probe:obj-"))
+            .collect();
+        assert_eq!(
+            probes.len(),
+            1,
+            "cycle {cycle}: one probe ran: {of_cycle:?}"
+        );
+        assert_eq!(
+            probes[0].episode.generator(),
+            SyntheticGenerator::MonteCarlo
+        );
+        assert_eq!(
+            probes[0].episode.seed(),
+            Some(seed),
+            "cycle {cycle}: the probe's agent flow is drawn from the configuration's seed"
+        );
+        // Every Monte Carlo episode carries a seed; every other carries none.
+        for record in &of_cycle {
+            assert_eq!(
+                record.episode.seed().is_some(),
+                record.episode.generator() == SyntheticGenerator::MonteCarlo,
+                "{record:?}"
+            );
+        }
+    }
+
+    let (_, again) = two_cycles_with_an_established_driver()?;
+    let key = |records: &[qip_kernel::platform::SyntheticEpisodeRecord]| {
+        records
+            .iter()
+            .map(|r| {
+                (
+                    r.cycle,
+                    r.episode.scenario().to_string(),
+                    r.episode.seed(),
+                    r.episode.input_digest().to_string(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        key(&records),
+        key(&again),
+        "the same tape and seed replay to the same episodes, digest for digest"
+    );
+    Ok(())
+}
+
+/// R12-EXPAND-6033, the Conditional arm, on the graph the default cycle builds
+/// rather than one seated by hand: UNDERSTAND establishes obj-AAA -> obj-BBB
+/// from the tape in the first cycle, and the second cycle's SIMULATE applies
+/// both signs of obj-AAA's propagated shock to the held obj-BBB and journals
+/// each as a seedless `Conditional` episode, the two distinct in their digest.
+///
+/// Mutation (restored byte-for-byte): delete `Ok(episode) => episodes.push(episode)`
+/// after the Conditional `SyntheticEpisode::new` in `stress_through_the_graph`
+/// (replaced by `Ok(_) => {}`) — the conditional count reads 0.
+#[test]
+fn both_signs_of_a_driver_the_cycle_established_are_journaled_as_conditional_episodes() -> Result<()>
+{
+    use qip_contracts::expansion::SyntheticGenerator;
+
+    let (platform, records) = two_cycles_with_an_established_driver()?;
+    let edges = platform.world().causal().edges().to_vec();
+    assert!(
+        edges
+            .iter()
+            .any(|edge| edge.cause == "obj-AAA" && edge.effect == "obj-BBB"),
+        "premise: UNDERSTAND established obj-AAA -> obj-BBB: {edges:?}"
+    );
+    let stress = platform.stress_report().expect("the book is stressed");
+    assert!(
+        stress
+            .causal
+            .iter()
+            .any(|result| result.scenario == "causal:obj-AAA"),
+        "premise: the second cycle stressed the book through obj-AAA: {:?}",
+        stress.causal
+    );
+    let conditional: Vec<_> = records
+        .iter()
+        .filter(|r| r.cycle == 2 && r.episode.generator() == SyntheticGenerator::Conditional)
+        .collect();
+    assert_eq!(
+        conditional.len(),
+        2,
+        "both signs of obj-AAA's shock: {conditional:?}"
+    );
+    for record in &conditional {
+        assert_eq!(record.episode.scenario(), "causal:obj-AAA", "{record:?}");
+        assert_eq!(record.episode.seed(), None, "a propagation draws nothing");
+    }
+    assert_ne!(
+        conditional[0].episode.input_digest(),
+        conditional[1].episode.input_digest(),
+        "the two signs are two inputs"
+    );
+    Ok(())
+}

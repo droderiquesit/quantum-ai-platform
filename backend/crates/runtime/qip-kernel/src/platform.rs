@@ -22975,8 +22975,10 @@ struct CapacityProbeResult {
     latency: Duration,
     shortfall_bps: Option<f64>,
     /// The probe's own seeded draw as a synthetic episode (R12-EXPAND-6033):
-    /// `MarketSimulator::synthetic` draws its agents' flow from the cycle's
-    /// seed, so the run is a Monte Carlo path and owes the seed on its record.
+    /// `MarketSimulator::synthetic` draws its agents' flow from the
+    /// configuration's seed (`PlatformConfig::seed`, not the cycle number the
+    /// tail worlds draw from), so the run is a Monte Carlo path and owes that
+    /// seed on its record.
     episode: Option<qip_contracts::expansion::SyntheticEpisode>,
     /// The conditions the simulator reports it applied to the probe's
     /// arrival, by name — read off the run rather than off the schedule, so
