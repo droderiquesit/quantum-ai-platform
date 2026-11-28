@@ -40,8 +40,12 @@
 //! resident memory rose from 142 MB to 1.72 GB over 110 s (about 700
 //! cycles, roughly 2.4 MB a cycle), and a heap profile of 80 cycles put the
 //! growth in `qip_events::log::EventLog::append` — the in-memory event log
-//! the committed `memory` store keeps, about 41,700 records after 80 cycles,
-//! bounded only by `qip_events::log::DEFAULT_CAPACITY` (one million). Cloud
+//! the committed `memory` store keeps, bounded only by
+//! `qip_events::log::DEFAULT_CAPACITY` (one million records). An earlier
+//! version of this paragraph said "about 41,700 records after 80 cycles";
+//! the binary run after it printed 1,589, so that figure was wrong and no
+//! record count is given here: what grows is the bytes the log holds, and
+//! a count of records does not measure them. Cloud
 //! Run gives the fast brain 2 GiB (`catalogue.tf`), so the node is killed in
 //! minutes, hours before the release above. The reaction loop is not what
 //! grows; what bounds the log for this node is a capacity nobody has stated.
